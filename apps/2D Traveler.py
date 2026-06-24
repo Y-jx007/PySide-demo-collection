@@ -415,11 +415,8 @@ class TSPCanvas(QWidget):
                 painter.drawText(int(x+point_size/2+2), int(y+point_size/2), str(i))
                 painter.setPen(QPen(Qt.black, 1))
         
-        # 显示信息
+        # 显示信息（使用默认字体）
         painter.setPen(QPen(Qt.black, 1))
-        font = QFont()
-        font.setPointSize(10)
-        painter.setFont(font)
         info_text = f"代数: {self.generation}  最短距离: {self.best_distance:.2f}"
         painter.drawText(10, 20, info_text)
 

@@ -2,14 +2,18 @@ import os
 import sys
 import importlib
 import logging
+import io
+
+from PIL import Image, ImageOps
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize, QRect
-from PySide6.QtGui import QFont, QCursor
+from PySide6.QtGui import QFont, QCursor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QMessageBox,
     QLayout, QLayoutItem
 )
+
 
 # ---------- 流式布局 ----------
 class FlowLayout(QLayout):
@@ -91,40 +95,83 @@ class FlowLayout(QLayout):
 # ---------- 信号 ----------
 class AppSignal(QObject):
     error_occurred = Signal(str)
-    app_launched = Signal(object)
+    app_launched = Signal(object)  # app_class
 
 
-# ---------- 应用卡片（正方形）----------
+# ---------- 应用卡片（正方形 + 背景图片智能裁剪）----------
 class AppCard(QFrame):
-    def __init__(self, title, description, command, disabled=False, parent=None):
+    def __init__(self, title, description, command, bg_image_path=None, disabled=False, parent=None):
         super().__init__(parent)
         self.title = title
         self.description = description
         self.command = command
         self.disabled = disabled
+        self._bg_pixmap = None
+        self._load_background(bg_image_path)
         self.setup_ui()
         self.setup_styles()
 
+    def _load_background(self, image_path):
+        """使用 Pillow 将图片裁剪为正方形（居中），避免拉伸失真"""
+        if image_path and os.path.exists(image_path):
+            try:
+                img = Image.open(image_path)
+                # 卡片固定 160x160，使用 LANCZOS 高质量缩放并居中裁剪
+                img = ImageOps.fit(img, (160, 160), Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+                # 将 PIL Image 转为 QPixmap
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                self._bg_pixmap = QPixmap()
+                self._bg_pixmap.loadFromData(buffer.getvalue())
+            except Exception as e:
+                logging.warning(f"无法加载背景图片 {image_path}: {e}")
+                self._bg_pixmap = None
+
+    def paintEvent(self, event):
+        """绘制背景，再绘制控件"""
+        painter = QPainter(self)
+        if self._bg_pixmap and not self._bg_pixmap.isNull():
+            # 直接绘制处理好的正方形图片，无需缩放
+            painter.drawPixmap(0, 0, self._bg_pixmap)
+        else:
+            painter.fillRect(self.rect(), Qt.white)
+        painter.end()
+        super().paintEvent(event)
+
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         layout.setContentsMargins(12, 12, 12, 12)
+
+        # 文字容器（半透明白色背景）
+        text_container = QWidget()
+        text_container.setAttribute(Qt.WA_StyledBackground, True)
+        text_container.setStyleSheet(
+            "background-color: rgba(255, 255, 255, 0.8);"
+            "border-radius: 6px;"
+            "padding: 4px;"
+        )
+        text_layout = QVBoxLayout(text_container)
+        text_layout.setSpacing(2)
+        text_layout.setContentsMargins(6, 4, 6, 4)
 
         # 标题
         title_label = QLabel(self.title)
         title_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        title_label.setStyleSheet("color: #333;")
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setWordWrap(True)
-        layout.addWidget(title_label)
+        title_label.setStyleSheet("color: #222; background: transparent; border: none;")
+        text_layout.addWidget(title_label)
 
         # 描述
         desc_label = QLabel(self.description)
         desc_label.setFont(QFont("Segoe UI", 8))
-        desc_label.setStyleSheet("color: #666;")
         desc_label.setWordWrap(True)
         desc_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(desc_label)
+        desc_label.setStyleSheet("color: #444; background: transparent; border: none;")
+        text_layout.addWidget(desc_label)
+
+        layout.addWidget(text_container)
 
         layout.addStretch()
 
@@ -145,28 +192,38 @@ class AppCard(QFrame):
             self.button.clicked.connect(self.command)
             self.button.setStyleSheet("""
                 QPushButton {
-                    background-color: #007bff; color: white;
-                    border: none; padding: 5px 12px; border-radius: 4px;
+                    background-color: white;
+                    color: #222;
+                    border: 1.5px solid #222;
+                    padding: 5px 12px;
+                    border-radius: 4px;
                     font-size: 10px;
+                    font-weight: bold;
                 }
-                QPushButton:hover { background-color: #0056b3; }
-                QPushButton:pressed { background-color: #004085; }
+                QPushButton:hover {
+                    background-color: #222;
+                    color: white;
+                }
+                QPushButton:pressed {
+                    background-color: #000;
+                    border-color: #000;
+                    color: white;
+                }
             """)
 
         self.button.setFixedSize(100, 28)
         layout.addWidget(self.button, 0, Qt.AlignCenter)
 
-        # ★ 关键修复：固定正方形尺寸 ★
-        self.setFixedSize(160, 160)   # 恢复原尺寸，确保卡片为正方形
+        self.setFixedSize(160, 160)
 
     def setup_styles(self):
         self.setStyleSheet("""
             AppCard {
-                background-color: white;
+                background: transparent;
                 border: 1px solid #dee2e6;
                 border-radius: 6px;
             }
-            AppCard:hover { border-color: #007bff; }
+            AppCard:hover { border-color: #222; }
         """)
 
 
@@ -241,7 +298,7 @@ class ApplicationLauncher(QMainWindow):
             ("Mandelbrot-Julia", "复动力系统生成分形",                 "2D Mandelbrot.py", "复动力系统"),
             ("Newton",       "牛顿迭代法生成分形",                     "2D Newton.py", "牛顿迭代法分形"),
             ("Lindenmayer",  "林氏系统分形",                          "2D Lindenmayer.py", "林氏系统"),
-            ("IFS分形",      "迭代函数系统生成分形图案",                "2D LFS.py", "LFS分形"),
+            ("IFS分形",      "迭代函数系统生成分形图案",                "2D IFS.py", "IFS分形"),
             ("Logistic分形", "逻辑映射生成分形图案",                    "2D Logistic.py", "逻辑映射分形"),
             ("Lloyd",        "用Voronoi图的Lloyd松弛过程模拟蜂巢结构的形成", "2D Lloyd.py", "Lloyd松弛"),
             ("幅角图",       "在复平面上可视化复变函数",                "2D Cplot.py", "辐角图"),
@@ -249,9 +306,12 @@ class ApplicationLauncher(QMainWindow):
             ("Conway",       "模拟和可视化生命游戏",                    "2D Conway.py", "元胞自动机"),
         ]
 
+        base_dir = os.path.dirname(__file__)
         for title, desc, filename, friendly in app_definitions:
             command = self._make_launcher(filename, friendly)
-            card = AppCard(title, desc, command)
+            image_name = os.path.splitext(filename)[0] + ".png"
+            image_path = os.path.join(base_dir, "images", image_name)
+            card = AppCard(title, desc, command, bg_image_path=image_path)
             self.cards.append(card)
             self.flow_layout.addWidget(card)
 
@@ -311,7 +371,6 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 9))
-
     launcher = ApplicationLauncher()
     launcher.show()
 

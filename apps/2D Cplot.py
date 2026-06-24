@@ -7,36 +7,8 @@ class CodeTextEdit(QTextEdit):
     """自定义代码编辑器，提供更好的代码编辑体验"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setup_editor()
+        # 不再设置自定义样式和字体，使用系统默认
     
-    def setup_editor(self):
-        """设置编辑器样式"""
-        # 设置等宽字体
-        font = QFont("Consolas", 10)
-        font.setStyleHint(QFont.TypeWriter)
-        self.setFont(font)
-        
-        # 启用换行
-        self.setWordWrapMode(QTextOption.NoWrap)
-        
-        # 设置制表符宽度为4个空格
-        self.setTabStopDistance(20)
-        
-        # 设置样式
-        self.setStyleSheet("""
-            CodeTextEdit {
-                border: 1px solid #ced4da;
-                background-color: #f8f9fa;
-                color: #495057;
-                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-                font-size: 12px;
-                padding: 8px;
-            }
-            CodeTextEdit:focus {
-                border: 1px solid #6c757d;
-                background-color: #ffffff;
-            }
-        """)
 class CPlotController(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -96,7 +68,7 @@ class CPlotController(QMainWindow):
     
     def setup_ui(self):
         """设置用户界面"""
-        self.setup_window_style()
+        # 不再调用 setup_window_style，使用系统默认风格
         
         # 中央部件和布局
         central_widget = QWidget()
@@ -123,74 +95,6 @@ class CPlotController(QMainWindow):
         
         # 状态提示
         self.setup_status_label(layout)
-    
-    def setup_window_style(self):
-        """设置窗口样式"""
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #f8f9fa;
-            }
-            QGroupBox {
-                font-weight: bold;
-                border: 1px solid #dee2e6;
-                margin-top: 1ex;
-                padding-top: 12px;
-                background-color: #ffffff;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 8px 0 8px;
-                color: #495057;
-            }
-            QPushButton {
-                background-color: #ffffff;
-                color: #495057;
-                border: 1px solid #ced4da;
-                padding: 5px 16px;
-                border-radius: 0px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #f8f9fa;
-                border-color: #ced4da;
-            }
-            QPushButton:pressed {
-                background-color: #e9ecef;
-            }
-            QPushButton:checked {
-                background-color: #6c757d;
-                color: white;
-                border-color: #6c757d;
-            }
-            QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                padding: 4px;
-                border: 1px solid #ced4da;
-                background-color: #ffffff;
-                font-size: 12px;
-            }
-            QLabel {
-                color: #495057;
-                font-weight: 500;
-                font-size: 12px;
-            }
-            QCheckBox {
-                spacing: 4px;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-            }
-            QCheckBox::indicator:unchecked {
-                border: 1px solid #ced4da;
-                background-color: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                border: 1px solid #545b62;
-                background-color: #6c757d;
-            }
-        """)
     
     def setup_scroll_area(self):
         """设置滚动区域"""
@@ -407,7 +311,6 @@ class CPlotController(QMainWindow):
     def setup_status_label(self, layout):
         """设置状态标签"""
         self.status_label = QLabel("准备就绪")
-        self.status_label.setStyleSheet("color: #6c757d; font-style: italic; padding: 4px; font-size: 11px;")
         layout.addWidget(self.status_label)
     
     def setup_connections(self):
@@ -601,4 +504,3 @@ if __name__ == "__main__":
     window.show()
     
     sys.exit(app.exec())
-

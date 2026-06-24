@@ -1,0 +1,189 @@
+/* ============================================================
+   统一样式表 — 适用于:
+   1. 傅里叶变换绘图工具
+   2. 元胞自动机（生命游戏）
+   3. 二维伊辛模型 (Taichi + OpenGL)
+   ============================================================ */
+
+/* 主窗口 */
+QMainWindow {
+    background-color: #f8f9fa;
+    color: #333333;
+}
+
+/* 分组框 */
+QGroupBox {
+    font-weight: bold;
+    border: 1px solid #aaaaaa;
+    border-radius: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    background-color: white;
+    font-size: 12px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 3px;
+    color: #495057;
+}
+
+/* 通用标签 */
+QLabel {
+    color: #495057;
+    font-weight: 500;
+    font-size: 11px;
+}
+QLabel#status_label {
+    color: #2a2a2a;
+    font-weight: bold;
+}
+
+/* 输入框 & 下拉框 */
+QLineEdit, QComboBox {
+    background-color: white;
+    color: #495057;
+    border: 1px solid #ced4da;
+    border-radius: 3px;
+    padding: 4px 6px;
+    font-size: 11px;
+}
+QLineEdit:focus, QComboBox:focus {
+    border: 1px solid #80bdff;
+}
+
+/* 数字输入框（自旋框） */
+QSpinBox, QDoubleSpinBox {
+    background-color: white;
+    color: #495057;
+    border: 1px solid #ced4da;
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-size: 11px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid #80bdff;
+}
+
+/* 按钮 — 统一样式 */
+QPushButton {
+    border: 1px solid #999999;
+    border-radius: 3px;
+    background-color: #f0f0f0;
+    padding: 4px 8px;
+    min-width: 60px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    border-color: #2a82da;
+    background-color: #e6f0fa;
+}
+QPushButton:pressed {
+    border-color: #1a5fa8;
+    background-color: #d0e2f5;
+}
+QPushButton:disabled {
+    border: 1px solid #c3c3c3;
+    background-color: #fafafa;
+    color: #a0a0a0;
+}
+QPushButton:checked {
+    background-color: #6c757d;
+    color: white;
+    border-color: #6c757d;
+}
+
+/* 复选框 */
+QCheckBox {
+    color: #495057;
+    spacing: 4px;
+    font-size: 11px;
+}
+QCheckBox::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #ced4da;
+    border-radius: 2px;
+    background: white;
+}
+QCheckBox::indicator:checked {
+    background: #6c757d;
+    border: 1px solid #6c757d;
+}
+
+/* 滑块 */
+QSlider::groove:horizontal {
+    border: 1px solid #ced4da;
+    height: 3px;
+    background: #e9ecef;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #6c757d;
+    border: 1px solid #495057;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    margin: -5px 0;
+}
+
+/* 选项卡（傅里叶工具） */
+QTabWidget::pane {
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    background-color: white;
+}
+QTabBar::tab {
+    background-color: #f8f9fa;
+    color: #6c757d;
+    padding: 6px 12px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 2px;
+    font-weight: 500;
+    font-size: 11px;
+}
+QTabBar::tab:selected {
+    background-color: white;
+    color: #495057;
+    border-bottom: 2px solid #6c757d;
+}
+QTabBar::tab:hover {
+    background-color: #e9ecef;
+}
+
+/* 进度条（预留） */
+QProgressBar {
+    border: 1px solid #8f8f91;
+    border-radius: 4px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #2a82da;
+}
+
+/* 自定义绘图画布（傅里叶工具） */
+SimpleDrawingCanvas {
+    background-color: white;
+    border: 1px solid #cccccc;
+}
+
+/* matplotlib 画布（傅里叶工具） */
+FigureCanvas {
+    background-color: white;
+    border: 1px solid #dee2e6;
+}
+
+/* 工具栏分隔线（傅里叶工具） */
+QFrame#separator {
+    border-left: 1px solid #dee2e6;
+    border-right: none;
+    border-top: none;
+    border-bottom: none;
+}
+
+/* OpenGL 绘图区域（伊辛模型） */
+IsingModelGLWidget {
+    background-color: white;
+    border: 1px solid #aaaaaa;
+}

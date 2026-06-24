@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QFontDatabase, QImage, QPainter
+from PySide6.QtGui import QImage, QPainter
 ti.init(arch=ti.gpu)
 # 定义双精度复数向量类型
 c64 = ti.types.vector(2, ti.f64)
@@ -190,15 +190,6 @@ def build_kernel():
             pixels[j, i] = pack_color(color_r, color_g, color_b)
     fractal_kernel = render
 build_kernel()
-# -------------------- 中文字体设置 --------------------
-def setup_chinese_font():
-    families = QFontDatabase().families()
-    font_families = ["Microsoft YaHei", "SimHei", "SimSun", "NSimSun"]
-    for font_family in font_families:
-        if font_family in families:
-            app_font = QFont(font_family, 9)
-            QApplication.setFont(app_font)
-            break
 # -------------------- 分形显示组件 --------------------
 class FractalWidget(QWidget):
     def __init__(self, parent=None, is_left=True):
@@ -466,7 +457,6 @@ class ComplexDynamicsApp(QMainWindow):
         control_status_layout.addLayout(button_layout)
         info_label = QLabel("左键:切换实时更新 中键:拖拽 滚轮:缩放 左图:Mandelbrot集 右图:Julia集")
         info_label.setWordWrap(True)
-        info_label.setStyleSheet("font-size:10px; color:#666;")
         control_status_layout.addWidget(info_label)
         control_layout.addWidget(control_status_group)
         # 自定义函数输入组
@@ -576,12 +566,12 @@ class ComplexDynamicsApp(QMainWindow):
         self.left_widget.needs_recompute = True
         self.right_widget.needs_recompute = True
     def closeEvent(self, event):
+                self.left_widget.timer.stop()
+                self.right_widget.timer.stop()
                 ti.reset()
                 event.accept()
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    setup_chinese_font()
     window = ComplexDynamicsApp()
     window.show()
     sys.exit(app.exec())
-

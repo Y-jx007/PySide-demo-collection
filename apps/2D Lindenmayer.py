@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayo
                                QTextEdit, QGroupBox, QComboBox, QColorDialog, QSplitter,
                                QFrame, QSizePolicy, QFileDialog, QMessageBox, QGridLayout)
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QPainter, QPen, QColor, QLinearGradient, QFont, QPixmap,QImage
+from PySide6.QtGui import QPainter, QPen, QColor, QLinearGradient, QFont, QPixmap, QImage
 
 
 class LSystem:
@@ -233,12 +233,11 @@ class LSystemWindow(QMainWindow):
         super().__init__()
         self.init_ui()
         self.setup_default_systems()
-        self.apply_styles()
         
     def init_ui(self):
         """初始化用户界面"""
         self.setWindowTitle("L-system 分形生成器")
-        self.setGeometry(100, 100, 900, 600)  # 更小的初始窗口
+        self.setGeometry(100, 100, 900, 600)
         
         # 创建中央部件
         central_widget = QWidget()
@@ -254,7 +253,7 @@ class LSystemWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
         main_layout.addWidget(splitter)
         
-        # 左侧控制面板 - 更窄
+        # 左侧控制面板
         control_widget = QWidget()
         control_widget.setMaximumWidth(280)
         control_layout = QVBoxLayout(control_widget)
@@ -271,7 +270,7 @@ class LSystemWindow(QMainWindow):
         
         # 创建界面组件
         self.create_system_selection(control_layout)
-        self.create_parameters_and_colors_section(control_layout)  # 合并参数和颜色部分
+        self.create_parameters_and_colors_section(control_layout)
         self.create_rules_section(control_layout)
         self.create_buttons_section(control_layout)
         
@@ -292,7 +291,6 @@ class LSystemWindow(QMainWindow):
     
     def create_parameters_and_colors_section(self, layout):
         """创建参数和颜色设置部分 - 两列布局"""
-        # 创建水平容器
         container = QWidget()
         container_layout = QHBoxLayout(container)
         container_layout.setSpacing(10)
@@ -346,12 +344,15 @@ class LSystemWindow(QMainWindow):
         colors_layout.setSpacing(8)
         colors_layout.setContentsMargins(8, 0, 8, 8)
         
-        # 渐变起始颜色
+        # 渐变起始颜色（恢复色块显示）
         start_color_layout = QHBoxLayout()
         start_color_layout.addWidget(QLabel("起始:"))
         start_color_layout.addStretch()
         self.start_color_preview = ClickableColorLabel("start", self)
-        self.start_color_preview.setStyleSheet("background-color: rgb(139, 69, 19); border: 2px solid #666; border-radius: 3px;")
+        self.start_color_preview.setStyleSheet(
+            f"background-color: rgb({self.canvas.start_color.red()}, {self.canvas.start_color.green()}, {self.canvas.start_color.blue()}); "
+            "border: 2px solid #666; border-radius: 3px;"
+        )
         start_color_layout.addWidget(self.start_color_preview)
         colors_layout.addLayout(start_color_layout)
         
@@ -360,7 +361,10 @@ class LSystemWindow(QMainWindow):
         end_color_layout.addWidget(QLabel("结束:"))
         end_color_layout.addStretch()
         self.end_color_preview = ClickableColorLabel("end", self)
-        self.end_color_preview.setStyleSheet("background-color: rgb(34, 139, 34); border: 2px solid #666; border-radius: 3px;")
+        self.end_color_preview.setStyleSheet(
+            f"background-color: rgb({self.canvas.end_color.red()}, {self.canvas.end_color.green()}, {self.canvas.end_color.blue()}); "
+            "border: 2px solid #666; border-radius: 3px;"
+        )
         end_color_layout.addWidget(self.end_color_preview)
         colors_layout.addLayout(end_color_layout)
         
@@ -369,7 +373,10 @@ class LSystemWindow(QMainWindow):
         bg_color_layout.addWidget(QLabel("背景:"))
         bg_color_layout.addStretch()
         self.bg_color_preview = ClickableColorLabel("bg", self)
-        self.bg_color_preview.setStyleSheet("background-color: rgb(240, 240, 240); border: 2px solid #666; border-radius: 3px;")
+        self.bg_color_preview.setStyleSheet(
+            f"background-color: rgb({self.canvas.bg_color.red()}, {self.canvas.bg_color.green()}, {self.canvas.bg_color.blue()}); "
+            "border: 2px solid #666; border-radius: 3px;"
+        )
         bg_color_layout.addWidget(self.bg_color_preview)
         colors_layout.addLayout(bg_color_layout)
         
@@ -378,7 +385,7 @@ class LSystemWindow(QMainWindow):
         layout.addWidget(container)
     
     def create_rules_section(self, layout):
-        """创建规则设置部分 - 增加高度和明显边框"""
+        """创建规则设置部分"""
         group_box = QGroupBox("L-system规则")
         group_layout = QVBoxLayout(group_box)
         group_layout.setSpacing(8)
@@ -394,12 +401,12 @@ class LSystemWindow(QMainWindow):
         axiom_layout.addWidget(self.axiom_edit)
         group_layout.addLayout(axiom_layout)
         
-        # 规则 - 增加高度
+        # 规则
         rules_layout = QVBoxLayout()
         rules_layout.setSpacing(4)
         rules_layout.addWidget(QLabel("规则 (每行一个，格式: 前驱->后继):"))
         self.rules_edit = QTextEdit()
-        self.rules_edit.setMaximumHeight(120)  # 稍微减少高度以适应两列布局
+        self.rules_edit.setMaximumHeight(120)
         self.rules_edit.setPlaceholderText("输入规则，每行一个\n例如: F->F+F-F-F+F")
         rules_layout.addWidget(self.rules_edit)
         group_layout.addLayout(rules_layout)
@@ -407,9 +414,9 @@ class LSystemWindow(QMainWindow):
         layout.addWidget(group_box)
     
     def create_buttons_section(self, layout):
-        """创建按钮部分 - 更小的按钮"""
+        """创建按钮部分"""
         group_box = QGroupBox("操作")
-        group_layout = QHBoxLayout(group_box)  # 改为水平布局
+        group_layout = QHBoxLayout(group_box)
         group_layout.setSpacing(6)
         group_layout.setContentsMargins(8, 0, 8, 8)
         
@@ -433,79 +440,6 @@ class LSystemWindow(QMainWindow):
         
         # 添加弹性空间
         layout.addStretch()
-    
-    def apply_styles(self):
-        """应用样式表 - 输入框背景改为灰色"""
-        style = """
-        QMainWindow {
-            background-color: #f0f0f0;
-        }
-        QGroupBox {
-            font-weight: bold;
-            font-size: 11px;
-            border: 2px solid #aaaaaa;
-            border-radius: 6px;
-            margin-top: 10px;
-            padding-top: 10px;
-            background-color: white;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px 0 5px;
-            color: #333333;
-        }
-        QPushButton {
-            background-color: #e0e0e0;
-            border: 1px solid #999999;
-            color: #333333;
-            padding: 4px 8px;
-            text-align: center;
-            text-decoration: none;
-            font-size: 11px;
-            border-radius: 3px;
-            min-width: 60px;
-        }
-        QPushButton:hover {
-            background-color: #d0d0d0;
-            border: 1px solid #777777;
-        }
-        QPushButton:pressed {
-            background-color: #c0c0c0;
-        }
-        QComboBox, QSpinBox, QDoubleSpinBox {
-            border: 1px solid #999999;
-            border-radius: 3px;
-            padding: 3px;
-            background-color: white;
-            font-size: 11px;
-        }
-        QTextEdit {
-            border: 3px solid #555555;
-            border-radius: 5px;
-            padding: 6px;
-            background-color: #f5f5f5;
-            font-size: 11px;
-            selection-background-color: #4a90d9;
-            font-family: Consolas, 'Courier New', monospace;
-        }
-        QTextEdit:focus {
-            border: 3px solid #4a90d9;
-            background-color: #f0f0f0;
-        }
-        QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-            border: 1px solid #4a90d9;
-        }
-        QLabel {
-            font-size: 11px;
-            color: #333333;
-        }
-        QSplitter::handle {
-            background-color: #aaaaaa;
-            width: 2px;
-        }
-        """
-        self.setStyleSheet(style)
     
     def setup_default_systems(self):
         """设置默认的L-system系统"""
@@ -616,7 +550,7 @@ class LSystemWindow(QMainWindow):
         self.canvas.update()
     
     def choose_color(self, color_type):
-        """选择颜色"""
+        """选择颜色并更新色块显示"""
         if color_type == "start":
             current_color = self.canvas.start_color
             title = "选择渐变起始颜色"
@@ -631,13 +565,22 @@ class LSystemWindow(QMainWindow):
         if color.isValid():
             if color_type == "start":
                 self.canvas.start_color = color
-                self.start_color_preview.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); border: 2px solid #666; border-radius: 3px;")
+                self.start_color_preview.setStyleSheet(
+                    f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); "
+                    "border: 2px solid #666; border-radius: 3px;"
+                )
             elif color_type == "end":
                 self.canvas.end_color = color
-                self.end_color_preview.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); border: 2px solid #666; border-radius: 3px;")
+                self.end_color_preview.setStyleSheet(
+                    f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); "
+                    "border: 2px solid #666; border-radius: 3px;"
+                )
             else:  # bg
                 self.canvas.bg_color = color
-                self.bg_color_preview.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); border: 2px solid #666; border-radius: 3px;")
+                self.bg_color_preview.setStyleSheet(
+                    f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); "
+                    "border: 2px solid #666; border-radius: 3px;"
+                )
             
             self.canvas.update()
     
@@ -663,10 +606,6 @@ class LSystemWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # 设置应用程序字体
-    font = QFont("Microsoft YaHei", 9)
-    app.setFont(font)
     
     window = LSystemWindow()
     window.show()

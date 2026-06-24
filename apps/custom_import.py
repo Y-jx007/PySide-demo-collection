@@ -5,7 +5,7 @@ import math
 import taichi_forge as ti
 import taichi_forge.math as tm
 from mpmath import mp
-from PIL import Image
+from PIL import Image,ImageDraw
 from numba import njit, prange
 import matplotlib.pyplot as plt
 from PySide6.QtWidgets import *

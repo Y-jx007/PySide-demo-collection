@@ -1,16 +1,6 @@
-﻿import sys
-import math
-import numpy as np
-from numba import njit
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                               QHBoxLayout, QGroupBox, QLabel, QPushButton,
-                               QSpinBox, QDoubleSpinBox, QSlider, QSplitter)
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QSurfaceFormat
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
+﻿from custom_import import *
 from OpenGL.GL import *
 from OpenGL.GL.shaders import compileProgram, compileShader
-
 
 # ========== Numba 加速的物理核心 ==========
 
@@ -380,7 +370,7 @@ class HistogramWidget(QWidget):
         self.bar_spacing = 0
         self.initial_speed = 20.0
         self.setMinimumSize(500, 500)
-        self.setStyleSheet("background-color: #f0f0f0;")
+        # 已移除 setStyleSheet
 
     def update_data(self, speed_array):
         self.speed_data = speed_array if speed_array is not None and len(speed_array) > 0 else None
@@ -418,8 +408,7 @@ class HistogramWidget(QWidget):
             painter.setPen(QPen(Qt.black, 2))
             painter.drawLine(margin, self.height() - margin, self.width() - margin, self.height() - margin)
             painter.drawLine(margin, margin, margin, self.height() - margin)
-            # 刻度
-            painter.setFont(QFont("Arial", 8))
+            # 刻度（不再设置自定义字体）
             for i in range(6):
                 x = margin + i * (graph_w / 5)
                 val = i * (self.max_speed / 5)

@@ -245,7 +245,6 @@ class FractalWidget(QWidget):
         if self.points is None:
             # 绘制默认提示
             painter.setPen(QColor(180, 180, 180))
-            painter.setFont(QFont("Arial", 14))
             painter.drawText(self.rect(), Qt.AlignCenter, "选择分形类型并点击生成")
             return
         
@@ -262,47 +261,6 @@ class MainWindow(QMainWindow):
         # 蕨类孢子色（浅黄绿色）和蕨类叶子色（深绿色）
         self.color_start = QColor(218, 247, 166)  # 蕨类孢子色 - 浅黄绿色
         self.color_end = QColor(34, 139, 34)      # 蕨类叶子色 - 森林绿
-        
-        # 设置朴素简约的窗口样式
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #f5f5f5;
-            }
-            QWidget {
-                background-color: #f5f5f5;
-                color: #333333;
-            }
-            QComboBox, QSpinBox, QTextEdit {
-                background-color: white;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 5px;
-            }
-            QComboBox:focus, QSpinBox:focus, QTextEdit:focus {
-                border-color: #666666;
-            }
-            QPushButton {
-                background-color: #e0e0e0;
-                color: #333333;
-                border: 1px solid #cccccc;
-                border-radius: 3px;
-                padding: 6px 10px;
-                min-width: 70px;
-            }
-            QPushButton:hover {
-                background-color: #d0d0d0;
-            }
-            QPushButton:pressed {
-                background-color: #c0c0c0;
-            }
-            QPushButton:disabled {
-                background-color: #f0f0f0;
-                color: #999999;
-            }
-            QLabel {
-                color: #333333;
-            }
-        """)
         
         self.init_ui()
         # 初始化显示蕨类植物参数并生成分形
@@ -342,7 +300,6 @@ class MainWindow(QMainWindow):
         # 标题
         title = QLabel("IFS 分形生成器")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 10px;")
         layout.addWidget(title)
         
         # 分形选择
@@ -374,7 +331,6 @@ class MainWindow(QMainWindow):
         
         # 分区标题
         section_title = QLabel(title)
-        section_title.setStyleSheet("font-weight: bold;")
         layout.addWidget(section_title)
         
         # 分区内容
@@ -408,7 +364,6 @@ class MainWindow(QMainWindow):
             
             # 颜色设置标题
             color_title = QLabel("颜色渐变设置:")
-            color_title.setStyleSheet("margin-top: 8px;")
             content_layout.addWidget(color_title)
             
             # 颜色选择 - 在同一行显示起始和结束颜色
@@ -440,7 +395,6 @@ class MainWindow(QMainWindow):
             # 颜色说明
             color_info = QLabel("提示: 分形点将按迭代顺序从起始颜色渐变到结束颜色")
             color_info.setWordWrap(True)
-            color_info.setStyleSheet("font-size: 11px; color: #666666; margin-top: 5px;")
             content_layout.addWidget(color_info)
         
         layout.addWidget(content)
@@ -456,7 +410,6 @@ class MainWindow(QMainWindow):
         
         # 标题
         custom_title = QLabel("分形参数")
-        custom_title.setStyleSheet("font-weight: bold;")
         layout.addWidget(custom_title)
         
         # 说明文本
@@ -498,7 +451,6 @@ class MainWindow(QMainWindow):
         
         # 显示区域标题
         display_title = QLabel("分形预览")
-        display_title.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
         layout.addWidget(display_title)
         
         # 分形显示区域
@@ -607,10 +559,6 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # 设置应用程序字体
-    font = QFont("Arial", 9)
-    app.setFont(font)
     
     window = MainWindow()
     window.show()

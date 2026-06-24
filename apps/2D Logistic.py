@@ -761,9 +761,6 @@ class LyapunovFractalApp(QMainWindow):
         splitter.setSizes([350, 1050])
         
         main_layout.addWidget(splitter)
-        
-        # 应用样式
-        self.apply_styles()
     
     def create_control_panel(self):
         """创建控制面板 - 使用两列布局"""
@@ -1033,88 +1030,6 @@ class LyapunovFractalApp(QMainWindow):
         
         return panel
     
-    def apply_styles(self):
-        """应用样式"""
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #f8f9fa;
-            }
-            QGroupBox {
-                font-weight: bold;
-                border: 1px solid #dee2e6;
-                border-radius: 4px;
-                margin-top: 1ex;
-                padding-top: 8px;
-                background-color: white;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 4px 0 4px;
-                color: #495057;
-            }
-            QLabel {
-                color: #495057;
-                font-weight: 500;
-            }
-            QLineEdit, QComboBox, QSpinBox {
-                background-color: white;
-                color: #495057;
-                border: 1px solid #ced4da;
-                border-radius: 3px;
-                padding: 3px 5px;
-                font-size: 11px;
-            }
-            QPushButton {
-                background-color: #ffffff;
-                color: #495057;
-                border: 1px solid #ced4da;
-                padding: 5px 10px;
-                border-radius: 0px;
-                font-weight: 500;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #e9ecef;
-                border-color: #adb5bd;
-            }
-            QPushButton:pressed {
-                background-color: #dee2e6;
-            }
-            QPushButton:disabled {
-                background-color: #f8f9fa;
-                color: #6c757d;
-            }
-            QScrollArea {
-                border: 1px solid #ced4da;
-                background-color: white;
-            }
-            QTabWidget::pane {
-                border: 1px solid #ced4da;
-                background-color: white;
-            }
-            QTabBar::tab {
-                background-color: #e9ecef;
-                border: 1px solid #ced4da;
-                padding: 6px 12px;
-                margin-right: 2px;
-            }
-            QTabBar::tab:selected {
-                background-color: white;
-                border-bottom-color: white;
-            }
-            QProgressBar {
-                border: 1px solid #ced4da;
-                border-radius: 3px;
-                text-align: center;
-                background-color: #f8f9fa;
-            }
-            QProgressBar::chunk {
-                background-color: #007bff;
-                width: 20px;
-            }
-        """)
-    
     # =========================================================================
     # 事件处理函数
     # =========================================================================
@@ -1372,9 +1287,6 @@ class LyapunovFractalApp(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # 设置应用程序字体
-    app.setStyle("Fusion")
     
     window = LyapunovFractalApp()
     window.show()

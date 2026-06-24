@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QFontDatabase, QImage, QPainter
+from PySide6.QtGui import QImage, QPainter
 
 ti.init(arch=ti.gpu)
 
@@ -586,7 +586,6 @@ class NewtonNovaApp(QMainWindow):
         status_layout.addLayout(btn_layout)
 
         info_label = QLabel("左键:切换实时更新 中键:拖拽 滚轮:缩放 左:牛顿 右:Nova")
-        info_label.setStyleSheet("font-size:10px; color:#666;")
         status_layout.addWidget(info_label)
 
         control_layout.addWidget(control_status_group)
@@ -610,7 +609,6 @@ class NewtonNovaApp(QMainWindow):
         self.roots_spin = QSpinBox()
         self.roots_spin.setRange(1, 20)
         self.roots_spin.setValue(self.custom_num_roots)
-        self.roots_spin.setFixedWidth(60)
         roots_layout.addWidget(self.roots_spin)
         roots_layout.addStretch()
         custom_layout.addLayout(roots_layout)
@@ -715,20 +713,14 @@ class NewtonNovaApp(QMainWindow):
         self.right_widget.needs_recompute = True
 
     def closeEvent(self, event):
+            self.left_widget.timer.stop()
+            self.right_widget.timer.stop()
             ti.reset()
             event.accept()
 
 
-def setup_chinese_font():
-    families = QFontDatabase().families()
-    for family in ["Microsoft YaHei", "SimHei", "SimSun", "NSimSun"]:
-        if family in families:
-            QApplication.setFont(QFont(family, 9))
-            break
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    setup_chinese_font()
     window = NewtonNovaApp()
     window.show()
     sys.exit(app.exec())

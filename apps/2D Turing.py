@@ -188,18 +188,15 @@ class ReactionDiffusionWidget(QWidget):
         self.manual_f_input = QLineEdit()
         self.manual_f_input.setPlaceholderText("f值")
         self.manual_f_input.setMaximumWidth(60)
-        self.manual_f_input.setStyleSheet("QLineEdit { border: 1px solid gray; border-radius: 3px; padding: 2px; }")
         manual_input_layout.addWidget(self.manual_f_input)
         
         self.manual_k_input = QLineEdit()
         self.manual_k_input.setPlaceholderText("k值")
         self.manual_k_input.setMaximumWidth(60)
-        self.manual_k_input.setStyleSheet("QLineEdit { border: 1px solid gray; border-radius: 3px; padding: 2px; }")
         manual_input_layout.addWidget(self.manual_k_input)
         
         self.apply_manual_button = QPushButton("应用")
         self.apply_manual_button.setMaximumWidth(60)
-        self.apply_manual_button.setStyleSheet(self.get_button_style())
         self.apply_manual_button.clicked.connect(self.apply_manual_parameters)
         manual_input_layout.addWidget(self.apply_manual_button)
         
@@ -217,7 +214,6 @@ class ReactionDiffusionWidget(QWidget):
         mode_layout.addWidget(QLabel("显示模式:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["物质V", "物质U", "UV混合"])
-        self.mode_combo.setStyleSheet("QComboBox { border: 1px solid gray; border-radius: 3px; padding: 2px; }")
         self.mode_combo.currentTextChanged.connect(self.change_visualization_mode)
         mode_layout.addWidget(self.mode_combo)
         display_layout.addLayout(mode_layout)
@@ -227,7 +223,6 @@ class ReactionDiffusionWidget(QWidget):
         color_layout.addWidget(QLabel("颜色:"))
         self.color_combo = QComboBox()
         self.color_combo.addItems(["默认", "反色"])
-        self.color_combo.setStyleSheet("QComboBox { border: 1px solid gray; border-radius: 3px; padding: 2px; }")
         self.color_combo.currentTextChanged.connect(self.change_color_scheme)
         color_layout.addWidget(self.color_combo)
         display_layout.addLayout(color_layout)
@@ -238,7 +233,6 @@ class ReactionDiffusionWidget(QWidget):
         self.size_combo = QComboBox()
         self.size_combo.addItems(["128x128", "256x256", "512x512", "1024x1024"])
         self.size_combo.setCurrentText("1024x1024")
-        self.size_combo.setStyleSheet("QComboBox { border: 1px solid gray; border-radius: 3px; padding: 2px; }")
         self.size_combo.currentTextChanged.connect(self.change_size)
         size_layout.addWidget(self.size_combo)
         display_layout.addLayout(size_layout)
@@ -255,7 +249,6 @@ class ReactionDiffusionWidget(QWidget):
         pattern_layout.addWidget(QLabel("初始模式:"))
         self.pattern_combo = QComboBox()
         self.pattern_combo.addItems(["随机", "中心", "边缘", "点阵"])
-        self.pattern_combo.setStyleSheet("QComboBox { border: 1px solid gray; border-radius: 3px; padding: 2px; }")
         pattern_layout.addWidget(self.pattern_combo)
         init_layout.addLayout(pattern_layout)
         
@@ -264,7 +257,6 @@ class ReactionDiffusionWidget(QWidget):
         preset_layout.addWidget(QLabel("预设:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(["迷宫","条纹","斑点","蜂巢","云雾"])
-        self.preset_combo.setStyleSheet("QComboBox { border: 1px solid gray; border-radius: 3px; padding: 2px; }")
         self.preset_combo.currentTextChanged.connect(self.apply_preset)
         preset_layout.addWidget(self.preset_combo)
         init_layout.addLayout(preset_layout)
@@ -276,21 +268,14 @@ class ReactionDiffusionWidget(QWidget):
         control_group = QGroupBox("控制")
         control_layout = QVBoxLayout()
         
-        # 按钮样式
-        button_style = self.get_button_style()
-        
         # 第一行按钮
         button_row1 = QHBoxLayout()
         
         self.play_button = QPushButton("暂停")
-        self.play_button.setFixedHeight(25)
-        self.play_button.setStyleSheet(button_style)
         self.play_button.clicked.connect(self.toggle_play)
         button_row1.addWidget(self.play_button)
         
         self.reset_button = QPushButton("重置")
-        self.reset_button.setFixedHeight(25)
-        self.reset_button.setStyleSheet(button_style)
         self.reset_button.clicked.connect(self.reset_simulation)
         button_row1.addWidget(self.reset_button)
         
@@ -300,14 +285,10 @@ class ReactionDiffusionWidget(QWidget):
         button_row2 = QHBoxLayout()
         
         self.step_button = QPushButton("单步")
-        self.step_button.setFixedHeight(25)
-        self.step_button.setStyleSheet(button_style)
         self.step_button.clicked.connect(self.step_simulation)
         button_row2.addWidget(self.step_button)
         
         self.save_button = QPushButton("保存")
-        self.save_button.setFixedHeight(25)
-        self.save_button.setStyleSheet(button_style)
         self.save_button.clicked.connect(self.save_image)
         button_row2.addWidget(self.save_button)
         
@@ -347,25 +328,6 @@ class ReactionDiffusionWidget(QWidget):
         
         # 启动定时器
         self.timer.start(30)  # 约33 FPS
-    
-    def get_button_style(self):
-        """获取按钮样式"""
-        return """
-            QPushButton { 
-                border: 1px solid gray; 
-                border-radius: 3px; 
-                background-color: #f0f0f0;
-                padding: 3px;
-                min-height: 20px;
-            }
-            QPushButton:pressed { 
-                background-color: #d0d0d0; 
-                border: 1px solid #404040;
-            }
-            QPushButton:hover { 
-                background-color: #e8e8e8; 
-            }
-        """
     
     def create_slider_with_label(self, label_text, min_val, max_val, default_val, scale=100):
         """创建参数滑块和标签"""
@@ -563,6 +525,7 @@ class ReactionDiffusionWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
     def closeEvent(self, event):
+                self.centralWidget().timer.stop()
                 ti.reset()
                 event.accept()
 
