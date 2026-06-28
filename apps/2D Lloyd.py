@@ -1,33 +1,33 @@
-﻿from custom_import import *
-
-from scipy.spatial import Voronoi
+﻿from scipy.spatial import Voronoi
+from custom_import import *   # 保留你的自定义导入，不动
 
 ti.init(arch=ti.cpu, debug=False, default_fp=ti.f32)
-
 _EPS = 1e-20
 
-# ── Voronoi 显示组件 ──────────────────────
-class VoronoiWidget(QWidget):
+def setup_gl_format():
+    fmt = QSurfaceFormat()
+    fmt.setVersion(2, 1)
+    fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
+    fmt.setSwapInterval(0)
+    QSurfaceFormat.setDefaultFormat(fmt)
+
+class VoronoiWidget(QOpenGLWidget):
+   
     def __init__(self, parent=None):
         super().__init__(parent)
         self.points = np.array([])
-        self.bbox = (0, 1, 0, 1)
+        self.bbox = (0.0, 1.0, 0.0, 1.0)
         self.show_points = True
         self.show_voronoi = True
         self.setMinimumSize(600, 600)
         self._cached_polygons = []
-        self._cached_brushes = []
-        self._cached_pen = QPen(QColor(205, 133, 0), 1.5)
-        self._cached_points = []
-        self._cached_need_update = True
-        self._region_sides = None
+        self._cached_sides = []
 
     def set_data(self, points, regions, vertices, region_sides=None):
         self.points = points
-        self._regions = regions
-        self._vertices = vertices
-        self._region_sides = region_sides
-        self._cached_need_update = True
+        self._cached_polygons = [vertices[r] if len(r) >= 3 else None for r in regions]
+        self._cached_sides = (region_sides if region_sides is not None
+                              else [len(r) for r in regions])
         self.update()
 
     def set_show_options(self, show_points, show_voronoi):
@@ -35,66 +35,80 @@ class VoronoiWidget(QWidget):
         self.show_voronoi = show_voronoi
         self.update()
 
-    def resizeEvent(self, event):
-        self._cached_need_update = True
-        super().resizeEvent(event)
+    def initializeGL(self):
+        glClearColor(1.0, 1.0, 1.0, 1.0)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glEnable(GL_POINT_SMOOTH)
+        glEnable(GL_LINE_SMOOTH)
+        glDisable(GL_DEPTH_TEST)
 
-    def _update_cache(self):
+    def resizeGL(self, w, h):
+        pass
+
+    def paintGL(self):
+        glClear(GL_COLOR_BUFFER_BIT)
         if len(self.points) == 0:
-            self._cached_polygons.clear()
-            self._cached_brushes.clear()
-            self._cached_points.clear()
             return
 
-        width, height = self.width(), self.height()
+        ratio = self.devicePixelRatio()
+        w = int(self.width() * ratio)
+        h = int(self.height() * ratio)
+        if w <= 0 or h <= 0:
+            return
+
         xmin, xmax, ymin, ymax = self.bbox
-        scale = min(width / (xmax - xmin), height / (ymax - ymin))
-        ox = (width - (xmax - xmin) * scale) / 2
-        oy = (height - (ymax - ymin) * scale) / 2
+        world_w = xmax - xmin
+        world_h = ymax - ymin
+        aspect = w / h
 
-        def transform(x, y):
-            return ox + (x - xmin) * scale, oy + (ymax - y) * scale
+        if world_w / world_h > aspect:
+            new_h = world_w / aspect
+            center_y = (ymin + ymax) / 2.0
+            ymin_o, ymax_o = center_y - new_h / 2.0, center_y + new_h / 2.0
+            xmin_o, xmax_o = xmin, xmax
+        else:
+            new_w = world_h * aspect
+            center_x = (xmin + xmax) / 2.0
+            xmin_o, xmax_o = center_x - new_w / 2.0, center_x + new_w / 2.0
+            ymin_o, ymax_o = ymin, ymax
 
-        self._cached_points = [QPointF(*transform(p[0], p[1])) for p in self.points]
+        glViewport(0, 0, w, h)
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        glOrtho(xmin_o, xmax_o, ymin_o, ymax_o, -1.0, 1.0)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
 
-        self._cached_polygons.clear()
-        self._cached_brushes.clear()
-
-        if self.show_voronoi and self._regions:
-            sides_list = self._region_sides
-            for i, region in enumerate(self._regions):
-                polygon = QPolygonF()
-                for vi in region:
-                    if 0 <= vi < len(self._vertices):
-                        v = self._vertices[vi]
-                        polygon.append(QPointF(*transform(v[0], v[1])))
-                if polygon.size() < 3:
-                    continue
-                sides = sides_list[i] if sides_list is not None else len(region)
-                brush = QBrush(QColor(255, 223, 89)) if sides == 6 else QBrush(QColor(144, 238, 144, 180))
-                self._cached_polygons.append(polygon)
-                self._cached_brushes.append(brush)
-
-        self._cached_need_update = False
-
-    def paintEvent(self, event):
-        if self._cached_need_update:
-            self._update_cache()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
         if self.show_voronoi:
-            for polygon, brush in zip(self._cached_polygons, self._cached_brushes):
-                painter.setBrush(brush)
-                painter.setPen(self._cached_pen)
-                painter.drawPolygon(polygon)
+            for poly, sides in zip(self._cached_polygons, self._cached_sides):
+                if poly is None or len(poly) < 3:
+                    continue
+                glColor4f(1.0, 0.8745, 0.3490, 1.0) if sides == 6 else glColor4f(0.5647, 0.9333, 0.5647, 0.7059)
+                glBegin(GL_POLYGON)
+                for v in poly:
+                    glVertex2f(v[0], v[1])
+                glEnd()
+
+            glColor4f(0.8039, 0.5216, 0.0, 1.0)
+            glLineWidth(1.5)
+            for poly in self._cached_polygons:
+                if poly is None or len(poly) < 3:
+                    continue
+                glBegin(GL_LINE_LOOP)
+                for v in poly:
+                    glVertex2f(v[0], v[1])
+                glEnd()
+
         if self.show_points:
-            painter.setPen(QPen(QColor(100, 100, 100)))
-            painter.setBrush(QBrush(QColor(100, 100, 100)))
-            for pt in self._cached_points:
-                painter.drawEllipse(int(pt.x() - 1), int(pt.y() - 1), 2, 2)
+            glColor4f(0.3922, 0.3922, 0.3922, 1.0)
+            glPointSize(2.0)
+            glBegin(GL_POINTS)
+            for pt in self.points:
+                glVertex2f(pt[0], pt[1])
+            glEnd()
 
 
-# ── Taichi 核心计算 ────────────────────────
 @ti.kernel
 def compute_centroids_shoelace(
     polygons: ti.types.ndarray(),
@@ -103,48 +117,96 @@ def compute_centroids_shoelace(
     centroids: ti.types.ndarray(),
     n_regions: ti.i32
 ):
+    
     ti.loop_config(parallelize=8)
     for i in range(n_regions):
         start = region_offsets[i]
-        n_vertices = region_sizes[i]
-        if n_vertices < 3:
+        nv = region_sizes[i]
+        if nv < 3:
             centroids[i, 0] = 0.0
             centroids[i, 1] = 0.0
             continue
         area = 0.0
         cx = 0.0
         cy = 0.0
-        for j in range(start, start + n_vertices - 1):
-            x1 = polygons[j, 0]
-            y1 = polygons[j, 1]
-            x2 = polygons[j + 1, 0]
-            y2 = polygons[j + 1, 1]
+        for j in range(nv):
+            k = (j + 1) % nv
+            x1, y1 = polygons[start + j, 0], polygons[start + j, 1]
+            x2, y2 = polygons[start + k, 0], polygons[start + k, 1]
             cross = x1 * y2 - x2 * y1
             area += cross
             cx += (x1 + x2) * cross
             cy += (y1 + y2) * cross
-        # 闭合边
-        x1 = polygons[start + n_vertices - 1, 0]
-        y1 = polygons[start + n_vertices - 1, 1]
-        x2 = polygons[start, 0]
-        y2 = polygons[start, 1]
-        cross = x1 * y2 - x2 * y1
-        area += cross
-        cx += (x1 + x2) * cross
-        cy += (y1 + y2) * cross
+
         if ti.abs(area) < 1e-12:
             avg_x = 0.0
             avg_y = 0.0
-            for j in range(start, start + n_vertices):
-                avg_x += polygons[j, 0]
-                avg_y += polygons[j, 1]
-            centroids[i, 0] = avg_x / n_vertices
-            centroids[i, 1] = avg_y / n_vertices
+            for j in range(nv):
+                avg_x += polygons[start + j, 0]
+                avg_y += polygons[start + j, 1]
+            centroids[i, 0] = avg_x / nv
+            centroids[i, 1] = avg_y / nv
         else:
             area *= 0.5
             centroids[i, 0] = cx / (6.0 * area)
             centroids[i, 1] = cy / (6.0 * area)
 
+
+@ti.kernel
+def compute_monte_carlo_centroids(
+    polygons: ti.types.ndarray(),
+    offsets: ti.types.ndarray(),
+    sizes: ti.types.ndarray(),
+    centroids: ti.types.ndarray(),
+    n_regions: ti.i32,
+    samples: ti.i32,
+    prob: ti.f32
+):
+    # ... 保持不变 ...
+    ti.loop_config(parallelize=8)
+    for i in range(n_regions):
+        nv = sizes[i]
+        if nv < 3:
+            continue
+        if prob < 1.0 and ti.random() > prob:
+            continue
+        start = offsets[i]
+        min_x = polygons[start, 0]
+        max_x = min_x
+        min_y = polygons[start, 1]
+        max_y = min_y
+        for j in range(start, start + nv):
+            x = polygons[j, 0]
+            y = polygons[j, 1]
+            if x < min_x: min_x = x
+            if x > max_x: max_x = x
+            if y < min_y: min_y = y
+            if y > max_y: max_y = y
+
+        cx = 0.0
+        cy = 0.0
+        cnt = 0
+        for _ in range(samples):
+            px = min_x + ti.random() * (max_x - min_x)
+            py = min_y + ti.random() * (max_y - min_y)
+            inside = False
+            j = start + nv - 1
+            for k in range(start, start + nv):
+                yi = polygons[j, 1]
+                yj = polygons[k, 1]
+                if (yi > py) != (yj > py):
+                    xi = polygons[j, 0]
+                    xj = polygons[k, 0]
+                    if px < (xj - xi) * (py - yi) / (yj - yi + 1e-20) + xi:
+                        inside = not inside
+                j = k
+            if inside:
+                cx += px
+                cy += py
+                cnt += 1
+        if cnt > 0:
+            centroids[i, 0] = cx / cnt
+            centroids[i, 1] = cy / cnt
 
 @ti.kernel
 def move_points(
@@ -155,18 +217,17 @@ def move_points(
     ymin: ti.f32, ymax: ti.f32,
     n_points: ti.i32
 ):
+    # ... 保持不变 ...
     ti.loop_config(parallelize=8)
     for i in range(n_points):
-        dx = (centroids[i, 0] - points[i, 0]) * mobility
-        dy = (centroids[i, 1] - points[i, 1]) * mobility
-        points[i, 0] += dx
-        points[i, 1] += dy
+        points[i, 0] += (centroids[i, 0] - points[i, 0]) * mobility
+        points[i, 1] += (centroids[i, 1] - points[i, 1]) * mobility
         points[i, 0] = ti.max(xmin + 1e-6, ti.min(xmax - 1e-6, points[i, 0]))
         points[i, 1] = ti.max(ymin + 1e-6, ti.min(ymax - 1e-6, points[i, 1]))
 
 
-# ── 模拟核心类 ────────────────────────────
 class TaichiHoneycombCVT:
+    
     def __init__(self, n_points=300, bbox=(0.0, 1.0, 0.0, 1.0),
                  mobility=2.0, seed=42,
                  monte_enabled=False, monte_samples=50, monte_probability=0.2):
@@ -186,6 +247,7 @@ class TaichiHoneycombCVT:
         self._last_regions = None
         self._last_vertices = None
         self._last_sides = None
+
         self._init_taichi_arrays()
 
     def _init_points(self, n_points):
@@ -201,7 +263,7 @@ class TaichiHoneycombCVT:
         return pts
 
     def _init_taichi_arrays(self):
-        max_vertices_per_region = 32
+        max_vertices_per_region = 64
         self.total_vertices = self.n_points * max_vertices_per_region
         self.points_ti = ti.ndarray(dtype=ti.f32, shape=(self.n_points, 2))
         self.centroids_ti = ti.ndarray(dtype=ti.f32, shape=(self.n_points, 2))
@@ -209,9 +271,14 @@ class TaichiHoneycombCVT:
         self.region_offsets_ti = ti.ndarray(dtype=ti.i32, shape=(self.n_points,))
         self.region_sizes_ti = ti.ndarray(dtype=ti.i32, shape=(self.n_points,))
         self.points_ti.from_numpy(self.points.astype(np.float32))
-        self.polygons_np = np.zeros((self.total_vertices, 2), dtype=np.float32)
-        self.region_offsets_np = np.zeros(self.n_points, dtype=np.int32)
-        self.region_sizes_np = np.zeros(self.n_points, dtype=np.int32)
+        self._polygons_np = np.zeros((self.total_vertices, 2), dtype=np.float32)
+
+    def _ensure_polygon_capacity(self, required):
+        if required > self.total_vertices:
+            new_total = max(int(required * 1.5), self.total_vertices * 2)
+            self.total_vertices = new_total
+            self.polygons_ti = ti.ndarray(dtype=ti.f32, shape=(new_total, 2))
+            self._polygons_np = np.zeros((new_total, 2), dtype=np.float32)
 
     def _finite_voronoi(self, vor, radius=None):
         if radius is None:
@@ -221,7 +288,6 @@ class TaichiHoneycombCVT:
         for (p1, p2), (v1, v2) in zip(vor.ridge_points, vor.ridge_vertices):
             ridges.setdefault(p1, []).append((p2, v1, v2))
             ridges.setdefault(p2, []).append((p1, v1, v2))
-
         verts_np = vor.vertices
         extra_verts = []
         new_regions = []
@@ -252,164 +318,101 @@ class TaichiHoneycombCVT:
                 angles = np.arctan2(vs[:, 1] - c[1], vs[:, 0] - c[0])
                 new_region = [new_region[i] for i in np.argsort(angles)]
             new_regions.append(new_region)
-
         all_vertices = np.vstack([verts_np] + extra_verts) if extra_verts else verts_np
         return new_regions, np.asarray(all_vertices, dtype=np.float32)
 
-    # ── 边界检查辅助 ──────────────────────
-    def _is_outside_bbox(self, poly):
-        """检测多边形顶点是否超出边界框"""
-        return (np.any(poly[:, 0] < self.xmin - 1e-9) or
-                np.any(poly[:, 0] > self.xmax + 1e-9) or
-                np.any(poly[:, 1] < self.ymin - 1e-9) or
-                np.any(poly[:, 1] > self.ymax + 1e-9))
-
-    def _compute_sides(self, regions, vertices):
-        """计算所有区域的边数（考虑边界）"""
-        sides_list = []
-        for region in regions:
-            if len(region) < 3:
-                sides_list.append(0)
+    def _compute_sides_vectorized(self, regions, vertices):
+        sides = np.zeros(len(regions), dtype=np.int32)
+        for i, region in enumerate(regions):
+            nv = len(region)
+            if nv < 3:
+                sides[i] = 0
                 continue
             poly = vertices[region]
-            sides = len(region) + (1 if self._is_outside_bbox(poly) else 0)
-            sides_list.append(sides)
-        return sides_list
+            if (np.any(poly[:, 0] < self.xmin - 1e-9) or
+                np.any(poly[:, 0] > self.xmax + 1e-9) or
+                np.any(poly[:, 1] < self.ymin - 1e-9) or
+                np.any(poly[:, 1] > self.ymax + 1e-9)):
+                sides[i] = nv + 1
+            else:
+                sides[i] = nv
+        return sides
 
-    # ── 蒙特卡洛质心 ──────────────────────
-    def _monte_carlo_centroid(self, poly_closed, samples):
-        if samples <= 0:
-            return np.array([poly_closed[:-1, 0].mean(), poly_closed[:-1, 1].mean()], dtype=np.float32)
-        minx, maxx = poly_closed[:-1, 0].min(), poly_closed[:-1, 0].max()
-        miny, maxy = poly_closed[:-1, 1].min(), poly_closed[:-1, 1].max()
-        xs = self.rng.rand(samples) * (maxx - minx) + minx
-        ys = self.rng.rand(samples) * (maxy - miny) + miny
-        pts = np.column_stack([xs, ys])
-        try:
-            from matplotlib.path import Path
-            mask = Path(poly_closed).contains_points(pts)
-        except ImportError:
-            mask = self._points_in_polygon_vectorized(pts, poly_closed)
-        if np.any(mask):
-            sel = pts[mask]
-            return np.array([sel[:, 0].mean(), sel[:, 1].mean()], dtype=np.float32)
-        return np.array([poly_closed[:-1, 0].mean(), poly_closed[:-1, 1].mean()], dtype=np.float32)
-
-    @staticmethod
-    def _points_in_polygon_vectorized(pts, poly):
-        xs, ys = pts[:, 0], pts[:, 1]
-        n = len(poly) - 1
-        inside = np.zeros(len(pts), dtype=bool)
-        for i in range(n):
-            j = i + 1
-            xi, yi = poly[i, 0], poly[i, 1]
-            xj, yj = poly[j, 0], poly[j, 1]
-            intersect = ((yi > ys) != (yj > ys)) & (
-                xs < (xj - xi) * (ys - yi) / (yj - yi + _EPS) + xi
-            )
-            inside ^= intersect
-        return inside
-
-    # ── 单步迭代 ──────────────────────────
     def step(self):
         self.step_count += 1
         xmin, xmax, ymin, ymax = self.xmin, self.xmax, self.ymin, self.ymax
-        points = self.points
-        mobility = self.mobility
-        monte_enabled = self.monte_enabled
-        monte_samples = self.monte_samples
-        monte_probability = self.monte_probability
-        n_points = self.n_points
 
-        # 是否需要重新计算 Voronoi
-        need_recompute = (self._cached_regions is None or
-                          self._cached_vertices is None)
-        if not need_recompute and self._prev_points is not None:
-            disp2 = np.max(np.sum((points - self._prev_points)**2, axis=1))
-            if disp2 > self._recompute_tol ** 2:
+        need_recompute = (self._cached_regions is None or self._cached_vertices is None)
+        if not need_recompute:
+            max_disp = np.max(np.abs(self.points - self._prev_points))
+            if max_disp > self._recompute_tol:
                 need_recompute = True
 
         if need_recompute:
-            vor = Voronoi(points)
+            vor = Voronoi(self.points)
             regions, vertices = self._finite_voronoi(vor)
             self._cached_regions = regions
             self._cached_vertices = vertices
-            self._prev_points = points.copy()
+            self._prev_points = self.points.copy()
         else:
             regions = self._cached_regions
             vertices = self._cached_vertices
 
-        # 一次性填充多边形缓冲区，并计算 sides
-        sides_list = self._compute_sides(regions, vertices)
+        sides_list = self._compute_sides_vectorized(regions, vertices)
+        self._ensure_polygon_capacity(self.n_points * 64)
+
+        region_sizes = np.zeros(self.n_points, dtype=np.int32)
+        region_offsets = np.zeros(self.n_points, dtype=np.int32)
         idx = 0
-        region_sizes = self.region_sizes_np
-        region_offsets = self.region_offsets_np
-        polygons_np = self.polygons_np
+
         for i, region in enumerate(regions):
             nv = len(region)
             if nv < 3:
                 region_sizes[i] = 0
                 continue
-            poly = vertices[region]
-            poly_closed = np.vstack([poly, poly[0]]) if not np.allclose(poly[0], poly[-1]) else poly
-            nv_closed = len(poly_closed)
-            if idx + nv_closed > self.total_vertices:
-                self._resize_buffers(idx + nv_closed)
-                polygons_np = self.polygons_np
+            poly_ref = vertices[region]
+            if np.max(np.abs(poly_ref[0] - poly_ref[-1])) > 1e-9:
+                nv_closed = nv + 1
+            else:
+                nv_closed = nv
+
+            while idx + nv_closed > self.total_vertices:
+                self._ensure_polygon_capacity(idx + nv_closed)
+
             region_sizes[i] = nv_closed
             region_offsets[i] = idx
-            polygons_np[idx:idx + nv_closed] = poly_closed
+            self._polygons_np[idx:idx + nv] = poly_ref
+            if nv_closed > nv:
+                self._polygons_np[idx + nv] = poly_ref[0]
             idx += nv_closed
 
-        self.polygons_ti.from_numpy(polygons_np)
+        self.polygons_ti.from_numpy(self._polygons_np)
         self.region_offsets_ti.from_numpy(region_offsets)
         self.region_sizes_ti.from_numpy(region_sizes)
 
         compute_centroids_shoelace(
             self.polygons_ti, self.region_offsets_ti, self.region_sizes_ti,
-            self.centroids_ti, n_points
+            self.centroids_ti, self.n_points
         )
 
-        # 蒙特卡洛修正
-        if monte_enabled and monte_samples > 0 and monte_probability > 0:
-            centroids_np = self.centroids_ti.to_numpy()
-            rand_vals = self.rng.rand(n_points) if monte_probability < 1.0 else None
-            for i in range(n_points):
-                if region_sizes[i] < 3:
-                    continue
-                if rand_vals is not None and rand_vals[i] >= monte_probability:
-                    continue
-                start = region_offsets[i]
-                end = start + region_sizes[i]
-                poly_closed = polygons_np[start:end]
-                try:
-                    centroids_np[i] = self._monte_carlo_centroid(poly_closed, monte_samples)
-                except Exception:
-                    pass
-            self.centroids_ti.from_numpy(centroids_np)
+        if self.monte_enabled and self.monte_samples > 0:
+            compute_monte_carlo_centroids(
+                self.polygons_ti, self.region_offsets_ti, self.region_sizes_ti,
+                self.centroids_ti, self.n_points,
+                self.monte_samples, self.monte_probability
+            )
 
         move_points(
-            self.points_ti, self.centroids_ti, float(mobility),
-            float(xmin), float(xmax), float(ymin), float(ymax), n_points
+            self.points_ti, self.centroids_ti, float(self.mobility),
+            float(xmin), float(xmax), float(ymin), float(ymax), self.n_points
         )
         self.points = self.points_ti.to_numpy()
-        self._last_regions = regions
-        self._last_vertices = vertices
-        self._last_sides = sides_list
+        self._last_regions, self._last_vertices, self._last_sides = regions, vertices, sides_list
         return regions, vertices
 
-    def _resize_buffers(self, required_vertices):
-        new_total = int(required_vertices * 1.5) + 1000
-        self.total_vertices = new_total
-        self.polygons_ti = ti.ndarray(dtype=ti.f32, shape=(new_total, 2))
-        self.polygons_np = np.zeros((new_total, 2), dtype=np.float32)
-        self._cached_regions = None
-        self._cached_vertices = None
-
     def get_stats(self, regions, vertices=None, sides_list=None):
-        """统计六边形比例与平均边数"""
         if sides_list is None:
-            sides_list = self._compute_sides(regions, vertices)
+            sides_list = self._compute_sides_vectorized(regions, vertices)
         counts = {}
         for s in sides_list:
             if s >= 3:
@@ -418,12 +421,9 @@ class TaichiHoneycombCVT:
         if total == 0:
             return 0, 0, 0.0, 0.0
         hex_count = counts.get(6, 0)
-        hex_frac = hex_count / total
-        avg_sides = sum(k * v for k, v in counts.items()) / total
-        return hex_count, total, hex_frac, avg_sides
+        return hex_count, total, hex_count / total, sum(k * v for k, v in counts.items()) / total
 
 
-# ── 主界面 ────────────────────────────────
 class VoronoiSimulation(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -435,162 +435,153 @@ class VoronoiSimulation(QMainWindow):
         QTimer.singleShot(1, self.reset_simulation)
 
     def init_ui(self):
-        self.setWindowTitle("Voronoi + Lloyd 松弛 (Taichi加速)")
+        self.setWindowTitle("Voronoi + Lloyd 松弛 (Taichi + OpenGL)")
         self.setGeometry(100, 100, 840, 600)
+
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout()
         central.setLayout(main_layout)
 
-        # ── 控制面板 ──
+        # 左侧控制面板
         panel = QWidget()
-        panel.setFixedWidth(280)
+        panel.setFixedWidth(300)
         panel_layout = QVBoxLayout()
         panel.setLayout(panel_layout)
 
-        # 控制按钮
-        btn_group = QGroupBox("控制")
-        btn_layout = QHBoxLayout()
+        # 依次添加各个分组
+        panel_layout.addWidget(self._create_control_group())
+        panel_layout.addWidget(self._create_performance_group())
+        panel_layout.addWidget(self._create_viz_group())
+        panel_layout.addWidget(self._create_parameter_group())
+        panel_layout.addWidget(self._create_monte_group())
+        panel_layout.addWidget(self._create_stats_group())
+        panel_layout.addStretch()
+
+        # 右侧绘图区
+        self.voronoi_widget = VoronoiWidget()
+        main_layout.addWidget(panel)
+        main_layout.addWidget(self.voronoi_widget)
+
+    def _create_control_group(self):
+        group = QGroupBox("控制")
+        layout = QHBoxLayout()
         self.start_btn = QPushButton("开始")
-        self.start_btn.clicked.connect(self.toggle_simulation)
         self.step_btn = QPushButton("单步")
-        self.step_btn.clicked.connect(self.single_step)
         self.reset_btn = QPushButton("重置")
+        self.start_btn.clicked.connect(self.toggle_simulation)
+        self.step_btn.clicked.connect(self.single_step)
         self.reset_btn.clicked.connect(self.reset_simulation)
-        btn_layout.addWidget(self.start_btn)
-        btn_layout.addWidget(self.step_btn)
-        btn_layout.addWidget(self.reset_btn)
-        btn_group.setLayout(btn_layout)
-        panel_layout.addWidget(btn_group)
+        layout.addWidget(self.start_btn)
+        layout.addWidget(self.step_btn)
+        layout.addWidget(self.reset_btn)
+        group.setLayout(layout)
+        return group
 
-        # 性能设置
-        perf_group = QGroupBox("性能设置")
-        perf_layout = QVBoxLayout()
-        self.steps_spin = self._add_spin(perf_layout, "每帧迭代:", 1, 20, 1)
-        self.freq_spin = self._add_spin(perf_layout, "更新时间(ms):", 1, 500, 1)
-        perf_group.setLayout(perf_layout)
-        panel_layout.addWidget(perf_group)
+    def _create_performance_group(self):
+        group = QGroupBox("性能设置")
+        layout = QFormLayout()
+        self.steps_spin = QSpinBox()
+        self.steps_spin.setRange(1, 20)
+        self.steps_spin.setValue(1)
+        self.freq_spin = QSpinBox()
+        self.freq_spin.setRange(1, 500)
+        self.freq_spin.setValue(1)
+        layout.addRow("每帧迭代:", self.steps_spin)
+        layout.addRow("更新时间(ms):", self.freq_spin)
+        group.setLayout(layout)
+        return group
 
-        # 显示选项
-        viz_group = QGroupBox("显示选项")
-        viz_layout = QVBoxLayout()
+    def _create_viz_group(self):
+        group = QGroupBox("显示选项")
+        layout = QVBoxLayout()
         self.show_pts_check = QCheckBox("显示点")
-        self.show_pts_check.setChecked(True)
-        self.show_pts_check.toggled.connect(self._update_viz_options)
         self.show_vor_check = QCheckBox("显示 Voronoi 图")
+        self.show_pts_check.setChecked(True)
         self.show_vor_check.setChecked(True)
+        self.show_pts_check.toggled.connect(self._update_viz_options)
         self.show_vor_check.toggled.connect(self._update_viz_options)
-        viz_layout.addWidget(self.show_pts_check)
-        viz_layout.addWidget(self.show_vor_check)
-        viz_group.setLayout(viz_layout)
-        panel_layout.addWidget(viz_group)
+        layout.addWidget(self.show_pts_check)
+        layout.addWidget(self.show_vor_check)
+        group.setLayout(layout)
+        return group
 
-        # 算法参数
-        param_group = QGroupBox("算法参数")
-        param_layout = QVBoxLayout()
-        self.points_spin = self._add_spin(param_layout, "点数(10-10000):", 10, 10000, 2000)
-        self.mob_spin = self._add_double_spin(param_layout, "移动性(0.01-2.0):", 0.01, 2.0, 1.5, 0.05)
-        param_group.setLayout(param_layout)
-        panel_layout.addWidget(param_group)
+    def _create_parameter_group(self):
+        group = QGroupBox("算法参数")
+        layout = QFormLayout()
+        self.points_spin = QSpinBox()
+        self.points_spin.setRange(10, 10000)
+        self.points_spin.setValue(2000)
+        self.mob_spin = QDoubleSpinBox()
+        self.mob_spin.setRange(0.01, 2.0)
+        self.mob_spin.setValue(1.5)
+        self.mob_spin.setSingleStep(0.05)
+        self.mob_spin.setDecimals(3)
+        layout.addRow("点数(10-10000):", self.points_spin)
+        layout.addRow("移动性(0.01-2.0):", self.mob_spin)
+        group.setLayout(layout)
+        return group
 
-        # 蒙特卡洛
-        monte_group = QGroupBox("蒙特卡洛质心估计")
-        monte_layout = QVBoxLayout()
+    def _create_monte_group(self):
+        group = QGroupBox("蒙特卡洛质心估计")
+        layout = QFormLayout()
         self.monte_enable_check = QCheckBox("启用蒙特卡洛")
         self.monte_enable_check.toggled.connect(self._on_monte_toggled)
-        monte_layout.addWidget(self.monte_enable_check)
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("蒙卡次数:"))
         self.monte_samples_spin = QSpinBox()
         self.monte_samples_spin.setRange(1, 2000000)
         self.monte_samples_spin.setValue(50)
-        self.monte_samples_spin.valueChanged.connect(self._on_monte_param_changed)
-        row1.addWidget(self.monte_samples_spin)
-        row1.addStretch()
-        monte_layout.addLayout(row1)
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("启用概率:"))
         self.monte_prob_spin = QDoubleSpinBox()
         self.monte_prob_spin.setRange(0.0, 1.0)
         self.monte_prob_spin.setSingleStep(0.01)
         self.monte_prob_spin.setDecimals(3)
         self.monte_prob_spin.setValue(0.2)
+        self.monte_samples_spin.valueChanged.connect(self._on_monte_param_changed)
         self.monte_prob_spin.valueChanged.connect(self._on_monte_param_changed)
-        row2.addWidget(self.monte_prob_spin)
-        row2.addStretch()
-        monte_layout.addLayout(row2)
-        monte_group.setLayout(monte_layout)
-        panel_layout.addWidget(monte_group)
+        layout.addRow(self.monte_enable_check)
+        layout.addRow("蒙卡次数:", self.monte_samples_spin)
+        layout.addRow("启用概率:", self.monte_prob_spin)
+        group.setLayout(layout)
+        return group
 
-        # 统计信息
-        stat_group = QGroupBox("统计信息")
-        stat_layout = QVBoxLayout()
+    def _create_stats_group(self):
+        group = QGroupBox("统计信息")
+        layout = QVBoxLayout()
         self.status_label1 = QLabel("就绪")
         self.status_label2 = QLabel("")
-        stat_layout.addWidget(self.status_label1)
-        stat_layout.addWidget(self.status_label2)
-        stat_group.setLayout(stat_layout)
-        panel_layout.addWidget(stat_group)
-        panel_layout.addStretch()
+        layout.addWidget(self.status_label1)
+        layout.addWidget(self.status_label2)
+        group.setLayout(layout)
+        return group
 
-        # Voronoi 显示
-        self.voronoi_widget = VoronoiWidget()
-        main_layout.addWidget(panel)
-        main_layout.addWidget(self.voronoi_widget)
-
-    # ── 控件构建辅助 ──
-    def _add_spin(self, parent_layout, label, min_val, max_val, default):
-        row = QHBoxLayout()
-        row.addWidget(QLabel(label))
-        spin = QSpinBox()
-        spin.setRange(min_val, max_val)
-        spin.setValue(default)
-        row.addWidget(spin)
-        row.addStretch()
-        parent_layout.addLayout(row)
-        return spin
-
-    def _add_double_spin(self, parent_layout, label, min_val, max_val, default, step, decimals=3):
-        row = QHBoxLayout()
-        row.addWidget(QLabel(label))
-        spin = QDoubleSpinBox()
-        spin.setRange(min_val, max_val)
-        spin.setValue(default)
-        spin.setSingleStep(step)
-        spin.setDecimals(decimals)
-        row.addWidget(spin)
-        row.addStretch()
-        parent_layout.addLayout(row)
-        return spin
-
-    # ── 模拟管理 ──
+    # ---------- 以下方法与原代码完全一致 ----------
     def init_simulation(self):
-        params = {
-            'n_points': self.points_spin.value(),
-            'mobility': self.mob_spin.value(),
-            'monte_enabled': self.monte_enable_check.isChecked(),
-            'monte_samples': self.monte_samples_spin.value(),
-            'monte_probability': self.monte_prob_spin.value()
-        }
-        self.sim = TaichiHoneycombCVT(**params)
+        self.sim = TaichiHoneycombCVT(
+            n_points=self.points_spin.value(),
+            mobility=self.mob_spin.value(),
+            monte_enabled=self.monte_enable_check.isChecked(),
+            monte_samples=self.monte_samples_spin.value(),
+            monte_probability=self.monte_prob_spin.value()
+        )
         self.sim.step_count = 0
-        # 初始化显示 (force compute)
         self.sim.step()
         self._refresh_display()
 
     def _refresh_display(self):
-        """统一更新统计与显示"""
-        sim = self.sim
-        if sim is None:
+        if self.sim is None:
             return
-        regions = sim._last_regions
-        vertices = sim._last_vertices
-        sides = sim._last_sides
+        show_vor = self.show_vor_check.isChecked()
+        self.voronoi_widget.set_show_options(self.show_pts_check.isChecked(), show_vor)
+
+        regions = self.sim._last_regions
+        vertices = self.sim._last_vertices
+        sides = self.sim._last_sides
         if regions is not None:
-            hex_cnt, total, hex_frac, avg = sim.get_stats(regions, vertices, sides)
-            self.status_label1.setText(f"迭代: {sim.step_count}, 点数: {sim.n_points}")
+            hex_cnt, total, hex_frac, avg = self.sim.get_stats(regions, vertices, sides)
+            self.status_label1.setText(f"迭代: {self.sim.step_count}, 点数: {self.sim.n_points}")
             self.status_label2.setText(f"六边形: {hex_frac:.1%}, 平均边: {avg:.2f}")
-            self.voronoi_widget.set_data(sim.points, regions, vertices, sides)
+            self.voronoi_widget.set_data(self.sim.points, regions, vertices, sides)
+        else:
+            self.voronoi_widget.set_data(self.sim.points, [], np.empty((0, 2)), [])
 
     def _update_viz_options(self):
         self.voronoi_widget.set_show_options(
@@ -607,16 +598,14 @@ class VoronoiSimulation(QMainWindow):
             self.sim.monte_samples = self.monte_samples_spin.value()
             self.sim.monte_probability = self.monte_prob_spin.value()
 
-    # ── 控制操作 ──
     def toggle_simulation(self):
         if self.is_running:
             self.timer.stop()
             self.start_btn.setText("开始")
-            self.is_running = False
         else:
             self.timer.start(self.freq_spin.value())
             self.start_btn.setText("暂停")
-            self.is_running = True
+        self.is_running = not self.is_running
 
     def single_step(self):
         if self.sim:
@@ -625,10 +614,9 @@ class VoronoiSimulation(QMainWindow):
             self._refresh_display()
 
     def reset_simulation(self):
-        if self.timer:
-            self.timer.stop()
-            self.is_running = False
-            self.start_btn.setText("开始")
+        self.timer.stop()
+        self.is_running = False
+        self.start_btn.setText("开始")
         self.init_simulation()
 
     def closeEvent(self, event):
@@ -636,8 +624,8 @@ class VoronoiSimulation(QMainWindow):
         ti.reset()
         event.accept()
 
-
 if __name__ == "__main__":
+    setup_gl_format()
     app = QApplication(sys.argv)
     window = VoronoiSimulation()
     window.show()

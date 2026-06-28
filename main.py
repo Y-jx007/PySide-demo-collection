@@ -291,6 +291,9 @@ class ApplicationLauncher(QMainWindow):
         app_definitions = [
             ("Fourier",      "绘制图形并查看其傅里叶变换",              "2D Fourier.py", "二维傅里叶变换"),
             ("Arnold",       "可视化图像猫变换",                       "2D Arnold.py", "猫变换"),
+            ("Lloyd",        "用Voronoi图的Lloyd松弛过程模拟蜂巢结构的形成", "2D Lloyd.py", "Lloyd松弛"),
+            ("幅角图",       "在复平面上可视化复变函数",                "2D Cplot.py", "辐角图"),
+            ("旅商问题",     "使用遗传算法解决旅行商问题",              "2D Traveler.py", "旅行商问题遗传算法"),
             ("Schrödinger",  "Runge-Kutta模拟二维量子波包演化过程",      "2D Schrödinger.py", "薛定谔方程"),
             ("Turing",       "模拟Gray-Scott反应扩散系统生成图灵斑的过程", "2D Turing.py", "反应扩散模型"),
             ("Ising",        "模拟二维伊辛模型",                       "2D Ising.py", "二维伊辛模型"),
@@ -300,9 +303,7 @@ class ApplicationLauncher(QMainWindow):
             ("Lindenmayer",  "林氏系统分形",                          "2D Lindenmayer.py", "林氏系统"),
             ("IFS分形",      "迭代函数系统生成分形图案",                "2D IFS.py", "IFS分形"),
             ("Logistic分形", "逻辑映射生成分形图案",                    "2D Logistic.py", "逻辑映射分形"),
-            ("Lloyd",        "用Voronoi图的Lloyd松弛过程模拟蜂巢结构的形成", "2D Lloyd.py", "Lloyd松弛"),
-            ("幅角图",       "在复平面上可视化复变函数",                "2D Cplot.py", "辐角图"),
-            ("旅商问题",     "使用遗传算法解决旅行商问题",              "2D Traveler.py", "旅行商问题遗传算法"),
+            ("Lenia",       "连续化元胞自动机",                         "2D Lenia.py", "连续生命游戏"),
             ("Conway",       "模拟和可视化生命游戏",                    "2D Conway.py", "元胞自动机"),
         ]
 
