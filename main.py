@@ -246,7 +246,7 @@ class ApplicationLauncher(QMainWindow):
     def setup_ui(self):
         self.setWindowTitle("绘图工具集")
         self.setMinimumSize(640, 480)
-        self.resize(1100, 600)
+        self.resize(1200, 600)
 
         screen = QApplication.primaryScreen().availableGeometry()
         self.move((screen.width() - self.width()) // 2,
@@ -298,6 +298,7 @@ class ApplicationLauncher(QMainWindow):
             ("Turing",       "模拟Gray-Scott反应扩散系统生成图灵斑的过程", "2D Turing.py", "反应扩散模型"),
             ("Ising",        "模拟二维伊辛模型",                       "2D Ising.py", "二维伊辛模型"),
             ("Maxwell",      "模拟气体分子速率分布",                    "2D Maxwell.py", "麦克斯韦分布律"),
+            ("Navier-Stokes", "2DQ9格子Boltzmann模拟Karmen涡街",       "2D Navier-Stokes.py", "Navier-Stokes方程"),
             ("Mandelbrot-Julia", "复动力系统生成分形",                 "2D Mandelbrot.py", "复动力系统"),
             ("Newton",       "牛顿迭代法生成分形",                     "2D Newton.py", "牛顿迭代法分形"),
             ("Lindenmayer",  "林氏系统分形",                          "2D Lindenmayer.py", "林氏系统"),

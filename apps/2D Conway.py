@@ -410,7 +410,6 @@ class MainWindow(QMainWindow):
         self.zoom_label.setText(f"{self.cell_size}px")
         self.status_label.setText(f"网格: {self.width}x{self.height}, 细胞大小: {self.cell_size}px, FPS: {self.fps}")
 
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
