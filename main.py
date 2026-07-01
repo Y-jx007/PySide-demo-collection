@@ -278,6 +278,7 @@ class ApplicationLauncher(QMainWindow):
             ("Lloyd",        "用Voronoi图的Lloyd松弛过程模拟蜂巢结构的形成", "2D Lloyd.py", "Lloyd松弛"),
             ("幅角图",       "在复平面上可视化复变函数",                "2D Cplot.py", "辐角图"),
             ("旅商问题",     "使用遗传算法解决旅行商问题",              "2D Traveler.py", "旅行商问题遗传算法"),
+            ("Lorenz",       "三维奇异吸引子可视化",                       "3D Lorenz.py", "洛伦兹吸引子"),
             ("Schrödinger",  "Runge-Kutta模拟二维量子波包演化过程",      "2D Schrödinger.py", "薛定谔方程"),
             ("Turing",       "模拟Gray-Scott反应扩散系统生成图灵斑的过程", "2D Turing.py", "反应扩散模型"),
             ("Ising",        "模拟二维伊辛模型",                       "2D Ising.py", "二维伊辛模型"),

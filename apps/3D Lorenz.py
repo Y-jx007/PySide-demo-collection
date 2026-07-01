@@ -1,10 +1,9 @@
 from custom_import import *
-import re
 
 # ---------- Taichi 初始化 ----------
 ti.init(arch=ti.cpu, debug=False)
 
-# ---------- 预设积分内核（RK4）----------
+# ---------- 预设积分内核（RK4）----------  (原样保留，一个都没少)
 @ti.kernel
 def lorenz_integrate(
     x_in: ti.f64, y_in: ti.f64, z_in: ti.f64,
@@ -153,20 +152,16 @@ FORMULAS = {
 
 # ---------- 3D 渲染组件 ----------
 class AttractorGLWidget(QOpenGLWidget):
-    def __init__(self, parent=None):
+    def __init__(self, camera, parent=None):
         super().__init__(parent)
+        self.camera = camera
         self.trail = np.empty((0, 3), dtype=np.float32)
         self.line_color = QColor(0, 0, 0)
         self.bg_color = QColor(230, 230, 230)
-        self.camera = OrbitCamera()
         self.last_mouse = None
 
-    def reset_view(self):
-        self.camera.reset()
-
     def initializeGL(self):
-        glClearColor(self.bg_color.redF(), self.bg_color.greenF(),
-                     self.bg_color.blueF(), 1.0)
+        glClearColor(*self.bg_color.getRgbF()[:3], 1.0)
 
     def resizeGL(self, w, h):
         glViewport(0, 0, w, h)
@@ -174,7 +169,6 @@ class AttractorGLWidget(QOpenGLWidget):
     def paintGL(self):
         glDisable(GL_DEPTH_TEST)
         glClear(GL_COLOR_BUFFER_BIT)
-
         if self.trail.shape[0] < 2:
             return
 
@@ -186,15 +180,17 @@ class AttractorGLWidget(QOpenGLWidget):
         glLoadMatrixf(proj.data())
 
         glMatrixMode(GL_MODELVIEW)
-        glLoadMatrixf(self.camera.view_matrix().data())
+        glLoadIdentity()
+        mv = self.camera.view_matrix() * self.camera.model_matrix()
+        glLoadMatrixf(mv.data())
 
-        glColor3f(self.line_color.redF(), self.line_color.greenF(), self.line_color.blueF())
+        glColor3f(*self.line_color.getRgbF()[:3])
         glEnableClientState(GL_VERTEX_ARRAY)
         glVertexPointer(3, GL_FLOAT, 0, self.trail.tobytes())
         glDrawArrays(GL_LINE_STRIP, 0, self.trail.shape[0])
         glDisableClientState(GL_VERTEX_ARRAY)
 
-    def update_trail(self, points: np.ndarray, max_len=50000):
+    def update_trail(self, points, max_len=50000):
         if points.ndim == 1:
             points = points.reshape(-1, 3)
         self.trail = np.concatenate([self.trail, points.astype(np.float32)])
@@ -205,18 +201,22 @@ class AttractorGLWidget(QOpenGLWidget):
         self.trail = np.empty((0, 3), dtype=np.float32)
 
     def mousePressEvent(self, event):
-        self.last_mouse = event.position()
+        self.last_mouse = event.pos()
 
     def mouseMoveEvent(self, event):
         if self.last_mouse is None:
             return
-        dx = event.position().x() - self.last_mouse.x()
-        dy = event.position().y() - self.last_mouse.y()
-        if event.buttons() & Qt.LeftButton:
-            self.camera.rotate(dx * 0.5, dy * 0.5)
-        elif event.buttons() & Qt.MiddleButton:
-            self.camera.pan(dx * 0.01, -dy * 0.01)
-        self.last_mouse = event.position()
+        dx = event.pos().x() - self.last_mouse.x()
+        dy = event.pos().y() - self.last_mouse.y()
+        btn = event.buttons()
+        if btn & Qt.LeftButton:
+            if event.modifiers() & Qt.ControlModifier:
+                self.camera.rotate_model(0, 0, dx * 0.5)
+            else:
+                self.camera.rotate_model(dy * 0.5, dx * 0.5, 0)
+        elif btn & Qt.MiddleButton:
+            self.camera.pan(-dx * 0.1, dy * 0.1)
+        self.last_mouse = event.pos()
         self.update()
 
     def wheelEvent(self, event):
@@ -228,210 +228,213 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("3D 吸引子 (Taichi)")
-        self.resize(900, 680)
+        self.resize(1100, 680)
 
         self.running = False
         self.current_preset = "Lorenz"
         self.integrate_kernel = PRESETS["Lorenz"][0]
-        self.custom_dx_code = None
-        self.custom_dy_code = None
-        self.custom_dz_code = None
+        self.custom_code = [None, None, None]  # dx, dy, dz
         self.x, self.y, self.z = 0.1, 0.0, 0.0
         self.params = list(PRESETS["Lorenz"][2])
         self.dt = 0.005
-        self.steps_per_frame = 50
+        self.steps_per_frame = 80
 
+        self.camera = OrbitCamera()
+        self._init_ui()
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_simulation)
+        self.timer.start(16)  # ~60 FPS
+
+        self.on_preset_changed("Lorenz")
+        self.reset_sim()
+
+    def _init_ui(self):
         central = QSplitter(Qt.Horizontal)
         self.setCentralWidget(central)
 
-        # ---- 左侧面板 ----
+        # ---- 左侧控制面板 (两列网格布局) ----
         panel = QWidget()
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(6, 6, 6, 6)
-        panel_layout.setSpacing(4)
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setSpacing(8)
+
+        row = 0
 
         # 预设选择
         preset_layout = QHBoxLayout()
-        preset_layout.setSpacing(4)
         preset_layout.addWidget(QLabel("预设:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(PRESETS.keys())
         self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
         preset_layout.addWidget(self.preset_combo)
-        panel_layout.addLayout(preset_layout)
+        grid.addLayout(preset_layout, row, 0, 1, 2)
+        row += 1
 
-        # 参数组
+        # 参数组 (6个参数，两列排布)
         param_group = QGroupBox("参数")
-        param_group.setContentsMargins(4, 12, 4, 4)
-        self.param_form = QFormLayout()
-        self.param_form.setSpacing(3)
-        self.param_form.setContentsMargins(2, 2, 2, 2)
+        param_grid = QGridLayout(param_group)
+        param_grid.setSpacing(4)
         self.param_spins = []
         self.param_labels = []
         for i in range(6):
+            label = QLabel("")
             spin = QDoubleSpinBox()
             spin.setRange(-100, 100)
             spin.setDecimals(4)
             spin.setSingleStep(0.1)
-            spin.setMaximumWidth(100)
-            self.param_spins.append(spin)
-            label = QLabel("")
             self.param_labels.append(label)
-            self.param_form.addRow(label, spin)
-        param_group.setLayout(self.param_form)
-        panel_layout.addWidget(param_group)
+            self.param_spins.append(spin)
+            col = i // 3
+            row_in = i % 3
+            hb = QHBoxLayout()
+            hb.addWidget(label)
+            hb.addWidget(spin)
+            hb.addStretch()
+            param_grid.addLayout(hb, row_in, col)
+        grid.addWidget(param_group, row, 0, 1, 2)
+        row += 1
 
-        # 初始条件
+        # 初始条件 (左列) + 模拟设置 (右列)
         init_group = QGroupBox("初始条件")
-        init_group.setContentsMargins(4, 12, 4, 4)
-        init_layout = QFormLayout()
-        init_layout.setSpacing(3)
-        init_layout.setContentsMargins(2, 2, 2, 2)
-        self.x0_spin = QDoubleSpinBox(); self.x0_spin.setRange(-100,100); self.x0_spin.setValue(0.1); self.x0_spin.setMaximumWidth(100)
-        self.y0_spin = QDoubleSpinBox(); self.y0_spin.setRange(-100,100); self.y0_spin.setValue(0.0); self.y0_spin.setMaximumWidth(100)
-        self.z0_spin = QDoubleSpinBox(); self.z0_spin.setRange(-100,100); self.z0_spin.setValue(0.0); self.z0_spin.setMaximumWidth(100)
-        init_layout.addRow("x₀:", self.x0_spin)
-        init_layout.addRow("y₀:", self.y0_spin)
-        init_layout.addRow("z₀:", self.z0_spin)
-        init_group.setLayout(init_layout)
-        panel_layout.addWidget(init_group)
+        init_form = QFormLayout(init_group)
+        self.x0_spin = QDoubleSpinBox(); self.x0_spin.setRange(-100,100); self.x0_spin.setValue(0.1); self.x0_spin
+        self.y0_spin = QDoubleSpinBox(); self.y0_spin.setRange(-100,100); self.y0_spin.setValue(0.0); self.y0_spin
+        self.z0_spin = QDoubleSpinBox(); self.z0_spin.setRange(-100,100); self.z0_spin.setValue(0.0); self.z0_spin
+        init_form.addRow("x₀:", self.x0_spin)
+        init_form.addRow("y₀:", self.y0_spin)
+        init_form.addRow("z₀:", self.z0_spin)
+        grid.addWidget(init_group, row, 0)
 
-        # 模拟设置
         sim_group = QGroupBox("模拟设置")
-        sim_group.setContentsMargins(4, 12, 4, 4)
-        sim_layout = QFormLayout()
-        sim_layout.setSpacing(3)
-        sim_layout.setContentsMargins(2, 2, 2, 2)
-        self.dt_spin = QDoubleSpinBox(); self.dt_spin.setRange(0.0001,0.1); self.dt_spin.setValue(0.005); self.dt_spin.setDecimals(5); self.dt_spin.setMaximumWidth(100)
-        self.steps_spin = QDoubleSpinBox(); self.steps_spin.setRange(1,500); self.steps_spin.setDecimals(0); self.steps_spin.setValue(self.steps_per_frame); self.steps_spin.setMaximumWidth(100)
-        sim_layout.addRow("dt:", self.dt_spin)
-        sim_layout.addRow("每帧步数:", self.steps_spin)
+        sim_form = QFormLayout(sim_group)
+        self.dt_spin = QDoubleSpinBox(); self.dt_spin.setRange(0.0001,0.1); self.dt_spin.setValue(0.005); self.dt_spin.setDecimals(5); self.dt_spin
+        self.steps_spin = QSpinBox(); self.steps_spin.setRange(1,500); self.steps_spin.setValue(80); self.steps_spin
+        self.trail_len_spin = QSpinBox(); self.trail_len_spin.setRange(1000,200000); self.trail_len_spin.setValue(50000); self.trail_len_spin; self.trail_len_spin.setSingleStep(5000)
+        sim_form.addRow("dt:", self.dt_spin)
+        sim_form.addRow("每帧步数:", self.steps_spin)
+        sim_form.addRow("最大点数:", self.trail_len_spin)
 
-        zoom_layout = QHBoxLayout()
-        zoom_layout.setSpacing(4)
-        zoom_label = QLabel("视距:")
-        self.zoom_slider = QSlider(Qt.Horizontal)
-        self.zoom_slider.setRange(5, 200)
-        self.zoom_slider.setValue(100)
-        self.zoom_slider.setMaximumWidth(100)
-        self.zoom_value_label = QLabel("100")
-        self.zoom_slider.valueChanged.connect(self.on_zoom_changed)
-        zoom_layout.addWidget(zoom_label)
-        zoom_layout.addWidget(self.zoom_slider)
-        zoom_layout.addWidget(self.zoom_value_label)
-        sim_layout.addRow(zoom_layout)
-        sim_group.setLayout(sim_layout)
-        panel_layout.addWidget(sim_group)
+        # 视距滑块 (使用工厂方法，方便统一管理)
+        zoom_container, self.zoom_slider, self.zoom_label = self._create_slider_pair(
+            5, 200, 100, "视距:", lambda v: setattr(self.camera, 'distance', float(v)))
+        sim_form.addRow(zoom_container)
+        grid.addWidget(sim_group, row, 1)
+        row += 1
 
-        # 自定义方程
+        # 变换滑块组 (旋转+平移，两列紧凑排列)
+        trans_group = QGroupBox("模型旋转 / 平移")
+        trans_grid = QGridLayout(trans_group)
+        trans_grid.setSpacing(4)
+
+        # 旋转
+        rx_c, self.rot_x_slider, _ = self._create_slider_pair(0, 360, 0, "绕X:", lambda v: setattr(self.camera, 'rot_x', float(v)))
+        ry_c, self.rot_y_slider, _ = self._create_slider_pair(0, 360, 0, "绕Y:", lambda v: setattr(self.camera, 'rot_y', float(v)))
+        rz_c, self.rot_z_slider, _ = self._create_slider_pair(0, 360, 0, "绕Z:", lambda v: setattr(self.camera, 'rot_z', float(v)))
+        # 平移
+        px_c, self.pan_x_slider, _ = self._create_slider_pair(-200, 200, 0, "平移X:", lambda v: self.camera.target.setX(float(v)))
+        py_c, self.pan_y_slider, _ = self._create_slider_pair(-200, 200, 0, "平移Y:", lambda v: self.camera.target.setY(float(v)))
+        pz_c, self.pan_z_slider, _ = self._create_slider_pair(-200, 200, 0, "平移Z:", lambda v: self.camera.target.setZ(float(v)))
+
+        trans_grid.addWidget(rx_c, 0, 0); trans_grid.addWidget(ry_c, 0, 1)
+        trans_grid.addWidget(rz_c, 1, 0); trans_grid.addWidget(px_c, 1, 1)
+        trans_grid.addWidget(py_c, 2, 0); trans_grid.addWidget(pz_c, 2, 1)
+        grid.addWidget(trans_group, row, 0, 1, 2)
+        row += 1
+
+        # 自定义方程 (条件可见)
         self.custom_group = QGroupBox("自定义方程")
-        self.custom_group.setContentsMargins(4, 12, 4, 4)
-        custom_layout = QFormLayout()
-        custom_layout.setSpacing(3)
-        custom_layout.setContentsMargins(2, 2, 2, 2)
-        self.dx_edit = QLineEdit("p0*(y - x)"); self.dx_edit.setMaximumWidth(120)
-        self.dy_edit = QLineEdit("x*(p1 - z) - y"); self.dy_edit.setMaximumWidth(120)
-        self.dz_edit = QLineEdit("x*y - p2*z"); self.dz_edit.setMaximumWidth(120)
-        custom_layout.addRow("dx/dt:", self.dx_edit)
-        custom_layout.addRow("dy/dt:", self.dy_edit)
-        custom_layout.addRow("dz/dt:", self.dz_edit)
-        self.apply_custom_btn = QPushButton("编译并应用"); self.apply_custom_btn.setMaximumWidth(100)
-        custom_layout.addRow(self.apply_custom_btn)
-        self.custom_group.setLayout(custom_layout)
+        cust_layout = QFormLayout(self.custom_group)
+        self.dx_edit = QLineEdit("p0*(y - x)"); self.dx_edit
+        self.dy_edit = QLineEdit("x*(p1 - z) - y"); self.dy_edit
+        self.dz_edit = QLineEdit("x*y - p2*z"); self.dz_edit
+        self.apply_custom_btn = QPushButton("编译并应用"); self.apply_custom_btn
+        self.apply_custom_btn.clicked.connect(self.compile_custom)
+        cust_layout.addRow("dx/dt:", self.dx_edit)
+        cust_layout.addRow("dy/dt:", self.dy_edit)
+        cust_layout.addRow("dz/dt:", self.dz_edit)
+        cust_layout.addRow(self.apply_custom_btn)
         self.custom_group.setVisible(False)
-        panel_layout.addWidget(self.custom_group)
+        grid.addWidget(self.custom_group, row, 0, 1, 2)
+        row += 1
 
         # 公式显示
         formula_group = QGroupBox("公式")
-        formula_group.setContentsMargins(4, 12, 4, 4)
+        formula_layout = QVBoxLayout(formula_group)
         self.formula_label = QLabel(FORMULAS["Lorenz"])
         self.formula_label.setStyleSheet("font-family: monospace; font-size: 9pt;")
-        formula_layout = QVBoxLayout()
         formula_layout.addWidget(self.formula_label)
-        formula_group.setLayout(formula_layout)
-        panel_layout.addWidget(formula_group)
+        grid.addWidget(formula_group, row, 0, 1, 2)
+        row += 1
 
         # 按钮行
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(4)
-        self.start_btn = QPushButton("开始"); self.start_btn.setMaximumWidth(60)
-        self.pause_btn = QPushButton("暂停"); self.pause_btn.setMaximumWidth(60)
-        self.reset_btn = QPushButton("重置"); self.reset_btn.setMaximumWidth(60)
+        self.start_btn = QPushButton("开始")
+        self.pause_btn = QPushButton("暂停")
+        self.reset_btn = QPushButton("重置")
         btn_layout.addWidget(self.start_btn)
         btn_layout.addWidget(self.pause_btn)
         btn_layout.addWidget(self.reset_btn)
-        panel_layout.addLayout(btn_layout)
-        panel_layout.addStretch()
+        btn_layout.addStretch()
+        grid.addLayout(btn_layout, row, 0, 1, 2)
 
-        central.addWidget(panel)
-
-        # OpenGL 窗口
-        self.gl_widget = AttractorGLWidget()
-        central.addWidget(self.gl_widget)
-        central.setSizes([250, 650])
-
-        # 信号连接
         self.start_btn.clicked.connect(self.start_sim)
         self.pause_btn.clicked.connect(self.pause_sim)
         self.reset_btn.clicked.connect(self.reset_sim)
-        self.apply_custom_btn.clicked.connect(self.compile_custom)
 
-        # 定时器
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_simulation)
-        self.timer.setInterval(16)
+        central.addWidget(panel)
 
-        self.on_preset_changed("Lorenz")
-        self.reset_sim()
+        # OpenGL 视图
+        self.gl_widget = AttractorGLWidget(camera=self.camera)
+        central.addWidget(self.gl_widget)
+        central.setSizes([420, 580])
 
-    # ---------- 控制逻辑 ----------
+    def _create_slider_pair(self, min_val, max_val, init, label_text, callback):
+        """创建标签+滑块+数值显示的控件组合，返回 (容器, 滑块, 标签)"""
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QLabel(label_text))
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(min_val, max_val)
+        slider.setValue(init)
+        val_label = QLabel(str(init))
+        val_label.setMinimumWidth(30)
+        # 连接信号：更新回调 + 数值显示 + 刷新 OpenGL
+        slider.valueChanged.connect(lambda v: (callback(v), val_label.setText(str(v)), self.gl_widget.update()))
+        layout.addWidget(slider)
+        layout.addWidget(val_label)
+        return container, slider, val_label
+
+    # ---------- 预设与自定义逻辑 ----------
     def on_preset_changed(self, name):
         self.current_preset = name
         _, labels, defaults = PRESETS[name]
-        for i, spin in enumerate(self.param_spins):
+        for i, (spin, def_val) in enumerate(zip(self.param_spins, defaults)):
             label_text = labels[i] if labels[i] else f"p{i}"
             self.param_labels[i].setText(label_text)
-            spin.setValue(defaults[i])
-        if name == "Custom":
-            self.custom_group.setVisible(True)
-            self.integrate_kernel = None
-        else:
-            self.custom_group.setVisible(False)
-            self.integrate_kernel = PRESETS[name][0]
+            spin.setValue(def_val)
+        self.integrate_kernel = PRESETS[name][0]
+        self.custom_group.setVisible(name == "Custom")
         self.formula_label.setText(FORMULAS.get(name, ""))
+        if name != "Custom":
+            self.custom_code = [None, None, None]
         self.running = False
-
-    def on_zoom_changed(self, value):
-        self.gl_widget.camera.distance = float(value)
-        self.zoom_value_label.setText(str(value))
-        self.gl_widget.update()
 
     def compile_custom(self):
         try:
-            import math
-            dx_expr = make_safe_expression(self.dx_edit.text())
-            dy_expr = make_safe_expression(self.dy_edit.text())
-            dz_expr = make_safe_expression(self.dz_edit.text())
-
-            test_ns = {'x': 0.0, 'y': 0.0, 'z': 0.0,
-                       'p0': 0.0, 'p1': 0.0, 'p2': 0.0,
-                       'p3': 0.0, 'p4': 0.0, 'p5': 0.0,
-                       'math': math}
-            eval(compile(dx_expr, '<dx>', 'eval'), test_ns)
-            eval(compile(dy_expr, '<dy>', 'eval'), test_ns)
-            eval(compile(dz_expr, '<dz>', 'eval'), test_ns)
-
-            self.custom_dx_code = compile(dx_expr, '<dx>', 'eval')
-            self.custom_dy_code = compile(dy_expr, '<dy>', 'eval')
-            self.custom_dz_code = compile(dz_expr, '<dz>', 'eval')
-
+            for i, edit in enumerate([self.dx_edit, self.dy_edit, self.dz_edit]):
+                expr = make_safe_expression(edit.text())
+                ns = {'x':0,'y':0,'z':0,'p0':0,'p1':0,'p2':0,'p3':0,'p4':0,'p5':0,'math':math}
+                eval(compile(expr, f'<d{i}>', 'eval'), ns)
+                self.custom_code[i] = compile(expr, f'<d{i}>', 'eval')
             QMessageBox.information(self, "成功", "自定义方程编译成功！")
         except Exception as e:
-            QMessageBox.critical(self, "编译错误", f"自定义方程编译失败:\n{str(e)}")
-            self.custom_dx_code = self.custom_dy_code = self.custom_dz_code = None
+            QMessageBox.critical(self, "编译错误", str(e))
+            self.custom_code = [None, None, None]
 
     def start_sim(self):
-        if self.current_preset == "Custom" and (self.custom_dx_code is None):
+        if self.current_preset == "Custom" and any(c is None for c in self.custom_code):
             QMessageBox.warning(self, "提示", "请先编译自定义方程！")
             return
         self.running = True
@@ -441,41 +444,37 @@ class MainWindow(QMainWindow):
 
     def reset_sim(self):
         self.running = False
-        self.x = self.x0_spin.value()
-        self.y = self.y0_spin.value()
-        self.z = self.z0_spin.value()
+        self.x, self.y, self.z = self.x0_spin.value(), self.y0_spin.value(), self.z0_spin.value()
         self.gl_widget.clear_trail()
-        self.gl_widget.reset_view()
+        self.camera.reset()
+        # 重置所有滑块
         self.zoom_slider.setValue(100)
-        self.zoom_value_label.setText("100")
+        for slider in [self.rot_x_slider, self.rot_y_slider, self.rot_z_slider,
+                       self.pan_x_slider, self.pan_y_slider, self.pan_z_slider]:
+            slider.setValue(0)
         self.gl_widget.update()
 
     def update_simulation(self):
         if not self.running:
             return
-        self.params = [spin.value() for spin in self.param_spins]
-        self.dt = self.dt_spin.value()
-        n = int(self.steps_spin.value())
+        params = [s.value() for s in self.param_spins]
+        dt = self.dt_spin.value()
+        n = self.steps_spin.value()
         if n <= 0:
             return
 
         if self.current_preset == "Custom":
-            if self.custom_dx_code is None:
+            if any(c is None for c in self.custom_code):
                 return
-            out, new_x, new_y, new_z = integrate_custom_python(
-                self.x, self.y, self.z, self.params, self.dt, n,
-                self.custom_dx_code, self.custom_dy_code, self.custom_dz_code
+            out, self.x, self.y, self.z = integrate_custom_python(
+                self.x, self.y, self.z, params, dt, n, *self.custom_code
             )
-            self.x, self.y, self.z = new_x, new_y, new_z
         else:
             out = np.zeros((n, 3), dtype=np.float64)
-            kernel = self.integrate_kernel
-            if kernel is None:
-                return
-            kernel(self.x, self.y, self.z, *self.params, self.dt, n, out, 0)
+            self.integrate_kernel(self.x, self.y, self.z, *params, dt, n, out, 0)
             self.x, self.y, self.z = out[-1, 0], out[-1, 1], out[-1, 2]
 
-        self.gl_widget.update_trail(out)
+        self.gl_widget.update_trail(out, self.trail_len_spin.value())
         self.gl_widget.update()
 
     def closeEvent(self, event):
@@ -483,15 +482,13 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         event.accept()
 
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
     fmt = QSurfaceFormat()
     fmt.setVersion(2, 1)
     fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
-
     window = MainWindow()
     window.show()
-    window.timer.start()
     sys.exit(app.exec())
