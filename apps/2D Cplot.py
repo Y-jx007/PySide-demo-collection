@@ -1,7 +1,6 @@
 ﻿from custom_import import *
 import cplot
 mp.dps = 15  # 设置mpmath的精度
-from custom_function import vectorize_func
 
 class CodeTextEdit(QTextEdit):
     """自定义代码编辑器，提供更好的代码编辑体验"""

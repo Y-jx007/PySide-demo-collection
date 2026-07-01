@@ -1,6 +1,4 @@
-﻿from custom_import import *
-
-def vectorize_func(func):
+﻿def vectorize_func(func):
             """将mp函数向量化"""
             def vectorized_func(z_array,*args, **kwargs):
                 if np.isscalar(z_array):
@@ -16,27 +14,56 @@ def vectorize_func(func):
                 return result
             return vectorized_func
 
-class ColorButton(QWidget):
-    """可点击的色块按钮，点击后弹出颜色选择对话框"""
-    colorChanged = Signal(QColor)
+def make_safe_expression(expr: str) -> str:
+    """将 sin, cos 等替换为 math.sin, math.cos，便于 eval 使用"""
+    funcs = ['sin', 'cos', 'exp', 'log', 'sqrt', 'abs', 'tanh']
+    for f in funcs:
+        expr = re.sub(rf'\b{f}\b', f'math.{f}', expr)
+    return expr
 
-    def __init__(self, color, parent=None):
-        super().__init__(parent)
-        self.color = color
-        self.setFixedSize(28, 28)
-        self.setCursor(Qt.PointingHandCursor)
+def integrate_custom_python(x0, y0, z0, params, dt, n, dx_code, dy_code, dz_code):
+    """使用预编译的表达式进行 RK4 积分"""
+    out = np.zeros((n, 3), dtype=np.float64)
+    x, y, z = x0, y0, z0
+    p = params
+    ns = {'x': x, 'y': y, 'z': z,
+          'p0': p[0], 'p1': p[1], 'p2': p[2],
+          'p3': p[3], 'p4': p[4], 'p5': p[5],
+          'math': math}
+    for i in range(n):
+        ns['x'], ns['y'], ns['z'] = x, y, z
+        dx1 = eval(dx_code, ns)
+        dy1 = eval(dy_code, ns)
+        dz1 = eval(dz_code, ns)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(0, 0, self.width(), self.height(), self.color)
-        painter.setPen(QPen(QColor(100, 100, 100), 1))
-        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        x2 = x + 0.5 * dt * dx1
+        y2 = y + 0.5 * dt * dy1
+        z2 = z + 0.5 * dt * dz1
+        ns['x'], ns['y'], ns['z'] = x2, y2, z2
+        dx2 = eval(dx_code, ns)
+        dy2 = eval(dy_code, ns)
+        dz2 = eval(dz_code, ns)
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            color = QColorDialog.getColor(self.color, self, "选择颜色")
-            if color.isValid():
-                self.color = color
-                self.update()
-                self.colorChanged.emit(color)
+        x3 = x + 0.5 * dt * dx2
+        y3 = y + 0.5 * dt * dy2
+        z3 = z + 0.5 * dt * dz2
+        ns['x'], ns['y'], ns['z'] = x3, y3, z3
+        dx3 = eval(dx_code, ns)
+        dy3 = eval(dy_code, ns)
+        dz3 = eval(dz_code, ns)
+
+        x4 = x + dt * dx3
+        y4 = y + dt * dy3
+        z4 = z + dt * dz3
+        ns['x'], ns['y'], ns['z'] = x4, y4, z4
+        dx4 = eval(dx_code, ns)
+        dy4 = eval(dy_code, ns)
+        dz4 = eval(dz_code, ns)
+
+        x += dt / 6.0 * (dx1 + 2*dx2 + 2*dx3 + dx4)
+        y += dt / 6.0 * (dy1 + 2*dy2 + 2*dy3 + dy4)
+        z += dt / 6.0 * (dz1 + 2*dz2 + 2*dz3 + dz4)
+        out[i, 0] = x
+        out[i, 1] = y
+        out[i, 2] = z
+    return out, x, y, z

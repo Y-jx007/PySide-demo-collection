@@ -6,7 +6,7 @@ import io
 
 from PIL import Image, ImageOps
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize, QRect
+from PySide6.QtCore import Qt, Signal, QSize, QRect
 from PySide6.QtGui import QFont, QCursor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -92,12 +92,6 @@ class FlowLayout(QLayout):
         return total_height
 
 
-# ---------- 信号 ----------
-class AppSignal(QObject):
-    error_occurred = Signal(str)
-    app_launched = Signal(object)  # app_class
-
-
 # ---------- 应用卡片（正方形 + 背景图片智能裁剪）----------
 class AppCard(QFrame):
     def __init__(self, title, description, command, bg_image_path=None, disabled=False, parent=None):
@@ -116,9 +110,7 @@ class AppCard(QFrame):
         if image_path and os.path.exists(image_path):
             try:
                 img = Image.open(image_path)
-                # 卡片固定 160x160，使用 LANCZOS 高质量缩放并居中裁剪
                 img = ImageOps.fit(img, (160, 160), Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-                # 将 PIL Image 转为 QPixmap
                 buffer = io.BytesIO()
                 img.save(buffer, format='PNG')
                 self._bg_pixmap = QPixmap()
@@ -128,10 +120,8 @@ class AppCard(QFrame):
                 self._bg_pixmap = None
 
     def paintEvent(self, event):
-        """绘制背景，再绘制控件"""
         painter = QPainter(self)
         if self._bg_pixmap and not self._bg_pixmap.isNull():
-            # 直接绘制处理好的正方形图片，无需缩放
             painter.drawPixmap(0, 0, self._bg_pixmap)
         else:
             painter.fillRect(self.rect(), Qt.white)
@@ -143,7 +133,6 @@ class AppCard(QFrame):
         layout.setSpacing(6)
         layout.setContentsMargins(12, 12, 12, 12)
 
-        # 文字容器（半透明白色背景）
         text_container = QWidget()
         text_container.setAttribute(Qt.WA_StyledBackground, True)
         text_container.setStyleSheet(
@@ -155,7 +144,6 @@ class AppCard(QFrame):
         text_layout.setSpacing(2)
         text_layout.setContentsMargins(6, 4, 6, 4)
 
-        # 标题
         title_label = QLabel(self.title)
         title_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         title_label.setAlignment(Qt.AlignCenter)
@@ -163,7 +151,6 @@ class AppCard(QFrame):
         title_label.setStyleSheet("color: #222; background: transparent; border: none;")
         text_layout.addWidget(title_label)
 
-        # 描述
         desc_label = QLabel(self.description)
         desc_label.setFont(QFont("Segoe UI", 8))
         desc_label.setWordWrap(True)
@@ -172,10 +159,8 @@ class AppCard(QFrame):
         text_layout.addWidget(desc_label)
 
         layout.addWidget(text_container)
-
         layout.addStretch()
 
-        # 按钮
         if self.disabled:
             self.button = QPushButton("开发中")
             self.button.setEnabled(False)
@@ -213,7 +198,6 @@ class AppCard(QFrame):
 
         self.button.setFixedSize(100, 28)
         layout.addWidget(self.button, 0, Qt.AlignCenter)
-
         self.setFixedSize(160, 160)
 
     def setup_styles(self):
@@ -229,14 +213,16 @@ class AppCard(QFrame):
 
 # ---------- 主窗口 ----------
 class ApplicationLauncher(QMainWindow):
+    error_occurred = Signal(str)
+    app_launched = Signal(object)
+
     def __init__(self):
         super().__init__()
         self.active_windows = []
         self.cards = []
 
-        self.signal = AppSignal()
-        self.signal.error_occurred.connect(self.show_error)
-        self.signal.app_launched.connect(self.handle_app_launch)
+        self.error_occurred.connect(self.show_error)
+        self.app_launched.connect(self.handle_app_launch)
 
         logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -281,11 +267,9 @@ class ApplicationLauncher(QMainWindow):
         main_layout.addWidget(info)
 
     def _make_launcher(self, module_filename, friendly_name):
-        def launcher():
-            apps_dir = os.path.join(os.path.dirname(__file__), 'apps')
-            module_path = os.path.join(apps_dir, module_filename)
-            QTimer.singleShot(0, lambda: self.load_app_module(module_path, friendly_name))
-        return launcher
+        apps_dir = os.path.join(os.path.dirname(__file__), 'apps')
+        module_path = os.path.join(apps_dir, module_filename)
+        return lambda: self.load_app_module(module_path, friendly_name)
 
     def setup_apps(self):
         app_definitions = [
@@ -342,10 +326,10 @@ class ApplicationLauncher(QMainWindow):
             if app_class is None:
                 raise ImportError("模块中未找到 QMainWindow 子类")
 
-            self.signal.app_launched.emit(app_class)
+            self.app_launched.emit(app_class)
         except Exception as e:
             logging.exception(f"加载模块失败: {friendly_name}")
-            self.signal.error_occurred.emit(f"无法启动 {friendly_name}: {str(e)}")
+            self.error_occurred.emit(f"无法启动 {friendly_name}: {str(e)}")
 
     def handle_app_launch(self, app_class):
         try:
@@ -365,8 +349,8 @@ class ApplicationLauncher(QMainWindow):
             win.close()
         event.accept()
 
-
 if __name__ == "__main__":
+    # 恢复路径搜索，确保 apps 目录下的模块及其依赖可被 import 找到
     apps_dir = os.path.join(os.path.dirname(__file__), 'apps')
     if apps_dir not in sys.path:
         sys.path.append(apps_dir)
