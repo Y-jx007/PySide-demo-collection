@@ -3,7 +3,7 @@ from custom_import import *
 # ---------- Taichi 初始化 ----------
 ti.init(arch=ti.cpu, debug=False)
 
-# ---------- 预设积分内核（RK4）----------  (原样保留，一个都没少)
+# ---------- 预设积分内核（RK4）----------
 @ti.kernel
 def lorenz_integrate(
     x_in: ti.f64, y_in: ti.f64, z_in: ti.f64,
@@ -223,6 +223,24 @@ class AttractorGLWidget(QOpenGLWidget):
         self.camera.zoom(event.angleDelta().y() * 0.05)
         self.update()
 
+# ---------- 正方形容器（新增）----------
+class SquareGLContainer(QWidget):
+    """强制内部 AttractorGLWidget 保持正方形，并居中显示"""
+    def __init__(self, camera, parent=None):
+        super().__init__(parent)
+        self.gl_widget = AttractorGLWidget(camera, parent=self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.gl_widget, 0, Qt.AlignCenter)
+
+        # 可选：设置容器背景色以凸显边框
+        self.setStyleSheet("background-color: #cccccc; border: 2px solid black;")
+
+    def resizeEvent(self, event):
+        size = min(self.width(), self.height())
+        self.gl_widget.setFixedSize(size, size)
+        super().resizeEvent(event)
+
 # ---------- 主窗口 ----------
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -253,7 +271,7 @@ class MainWindow(QMainWindow):
         central = QSplitter(Qt.Horizontal)
         self.setCentralWidget(central)
 
-        # ---- 左侧控制面板 (两列网格布局) ----
+        # ---- 左侧控制面板 ----
         panel = QWidget()
         grid = QGridLayout(panel)
         grid.setContentsMargins(8, 8, 8, 8)
@@ -271,7 +289,7 @@ class MainWindow(QMainWindow):
         grid.addLayout(preset_layout, row, 0, 1, 2)
         row += 1
 
-        # 参数组 (6个参数，两列排布)
+        # 参数组
         param_group = QGroupBox("参数")
         param_grid = QGridLayout(param_group)
         param_grid.setSpacing(4)
@@ -295,12 +313,12 @@ class MainWindow(QMainWindow):
         grid.addWidget(param_group, row, 0, 1, 2)
         row += 1
 
-        # 初始条件 (左列) + 模拟设置 (右列)
+        # 初始条件 + 模拟设置
         init_group = QGroupBox("初始条件")
         init_form = QFormLayout(init_group)
-        self.x0_spin = QDoubleSpinBox(); self.x0_spin.setRange(-100,100); self.x0_spin.setValue(0.1); self.x0_spin
-        self.y0_spin = QDoubleSpinBox(); self.y0_spin.setRange(-100,100); self.y0_spin.setValue(0.0); self.y0_spin
-        self.z0_spin = QDoubleSpinBox(); self.z0_spin.setRange(-100,100); self.z0_spin.setValue(0.0); self.z0_spin
+        self.x0_spin = QDoubleSpinBox(); self.x0_spin.setRange(-100,100); self.x0_spin.setValue(0.1)
+        self.y0_spin = QDoubleSpinBox(); self.y0_spin.setRange(-100,100); self.y0_spin.setValue(0.0)
+        self.z0_spin = QDoubleSpinBox(); self.z0_spin.setRange(-100,100); self.z0_spin.setValue(0.0)
         init_form.addRow("x₀:", self.x0_spin)
         init_form.addRow("y₀:", self.y0_spin)
         init_form.addRow("z₀:", self.z0_spin)
@@ -308,30 +326,27 @@ class MainWindow(QMainWindow):
 
         sim_group = QGroupBox("模拟设置")
         sim_form = QFormLayout(sim_group)
-        self.dt_spin = QDoubleSpinBox(); self.dt_spin.setRange(0.0001,0.1); self.dt_spin.setValue(0.005); self.dt_spin.setDecimals(5); self.dt_spin
-        self.steps_spin = QSpinBox(); self.steps_spin.setRange(1,500); self.steps_spin.setValue(80); self.steps_spin
-        self.trail_len_spin = QSpinBox(); self.trail_len_spin.setRange(1000,200000); self.trail_len_spin.setValue(50000); self.trail_len_spin; self.trail_len_spin.setSingleStep(5000)
+        self.dt_spin = QDoubleSpinBox(); self.dt_spin.setRange(0.0001,0.1); self.dt_spin.setValue(0.005); self.dt_spin.setDecimals(5)
+        self.steps_spin = QSpinBox(); self.steps_spin.setRange(1,500); self.steps_spin.setValue(80)
+        self.trail_len_spin = QSpinBox(); self.trail_len_spin.setRange(1000,200000); self.trail_len_spin.setValue(50000); self.trail_len_spin.setSingleStep(5000)
         sim_form.addRow("dt:", self.dt_spin)
         sim_form.addRow("每帧步数:", self.steps_spin)
         sim_form.addRow("最大点数:", self.trail_len_spin)
 
-        # 视距滑块 (使用工厂方法，方便统一管理)
         zoom_container, self.zoom_slider, self.zoom_label = self._create_slider_pair(
             5, 200, 100, "视距:", lambda v: setattr(self.camera, 'distance', float(v)))
         sim_form.addRow(zoom_container)
         grid.addWidget(sim_group, row, 1)
         row += 1
 
-        # 变换滑块组 (旋转+平移，两列紧凑排列)
+        # 变换滑块组
         trans_group = QGroupBox("模型旋转 / 平移")
         trans_grid = QGridLayout(trans_group)
         trans_grid.setSpacing(4)
 
-        # 旋转
         rx_c, self.rot_x_slider, _ = self._create_slider_pair(0, 360, 0, "绕X:", lambda v: setattr(self.camera, 'rot_x', float(v)))
         ry_c, self.rot_y_slider, _ = self._create_slider_pair(0, 360, 0, "绕Y:", lambda v: setattr(self.camera, 'rot_y', float(v)))
         rz_c, self.rot_z_slider, _ = self._create_slider_pair(0, 360, 0, "绕Z:", lambda v: setattr(self.camera, 'rot_z', float(v)))
-        # 平移
         px_c, self.pan_x_slider, _ = self._create_slider_pair(-200, 200, 0, "平移X:", lambda v: self.camera.target.setX(float(v)))
         py_c, self.pan_y_slider, _ = self._create_slider_pair(-200, 200, 0, "平移Y:", lambda v: self.camera.target.setY(float(v)))
         pz_c, self.pan_z_slider, _ = self._create_slider_pair(-200, 200, 0, "平移Z:", lambda v: self.camera.target.setZ(float(v)))
@@ -342,13 +357,13 @@ class MainWindow(QMainWindow):
         grid.addWidget(trans_group, row, 0, 1, 2)
         row += 1
 
-        # 自定义方程 (条件可见)
+        # 自定义方程
         self.custom_group = QGroupBox("自定义方程")
         cust_layout = QFormLayout(self.custom_group)
-        self.dx_edit = QLineEdit("p0*(y - x)"); self.dx_edit
-        self.dy_edit = QLineEdit("x*(p1 - z) - y"); self.dy_edit
-        self.dz_edit = QLineEdit("x*y - p2*z"); self.dz_edit
-        self.apply_custom_btn = QPushButton("编译并应用"); self.apply_custom_btn
+        self.dx_edit = QLineEdit("p0*(y - x)")
+        self.dy_edit = QLineEdit("x*(p1 - z) - y")
+        self.dz_edit = QLineEdit("x*y - p2*z")
+        self.apply_custom_btn = QPushButton("编译并应用")
         self.apply_custom_btn.clicked.connect(self.compile_custom)
         cust_layout.addRow("dx/dt:", self.dx_edit)
         cust_layout.addRow("dy/dt:", self.dy_edit)
@@ -384,13 +399,17 @@ class MainWindow(QMainWindow):
 
         central.addWidget(panel)
 
-        # OpenGL 视图
-        self.gl_widget = AttractorGLWidget(camera=self.camera)
-        central.addWidget(self.gl_widget)
-        central.setSizes([420, 580])
+        # 右侧正方形 OpenGL 画布（修改点）
+        self.right_container = SquareGLContainer(self.camera)
+        central.addWidget(self.right_container)
+
+        # 调整分割比例：左侧变窄，右侧保持足够空间
+        central.setSizes([280, 700])
+
+        # 保持外部代码兼容性
+        self.gl_widget = self.right_container.gl_widget
 
     def _create_slider_pair(self, min_val, max_val, init, label_text, callback):
-        """创建标签+滑块+数值显示的控件组合，返回 (容器, 滑块, 标签)"""
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -400,7 +419,6 @@ class MainWindow(QMainWindow):
         slider.setValue(init)
         val_label = QLabel(str(init))
         val_label.setMinimumWidth(30)
-        # 连接信号：更新回调 + 数值显示 + 刷新 OpenGL
         slider.valueChanged.connect(lambda v: (callback(v), val_label.setText(str(v)), self.gl_widget.update()))
         layout.addWidget(slider)
         layout.addWidget(val_label)

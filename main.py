@@ -291,6 +291,7 @@ class ApplicationLauncher(QMainWindow):
             ("Logistic分形", "逻辑映射生成分形图案",                    "2D Logistic.py", "逻辑映射分形"),
             ("Lenia",       "连续化元胞自动机",                         "2D Lenia.py", "连续生命游戏"),
             ("Conway",       "模拟和可视化生命游戏",                    "2D Conway.py", "元胞自动机"),
+            ("Distill",    "神经网络元胞自动机",                  "2D Distill.py", "神经网络元胞自动机"),
         ]
 
         base_dir = os.path.dirname(__file__)

@@ -6,13 +6,14 @@ def preprocess_expression(expr):
     return expr.replace('^', '**').replace(' and ', ' & ').replace(' or ', ' | ')
 
 def safe_eval(expr, x, y):
+    """安全求值：限制在数学函数命名空间内，不暴露 __builtins__"""
     safe_dict = {
         "x": x, "y": y,
         "sin": np.sin, "cos": np.cos, "tan": np.tan,
         "exp": np.exp, "log": np.log, "sqrt": np.sqrt,
         "abs": np.abs, "pi": np.pi, "atan2": np.arctan2
     }
-    return eval(expr, {"__builtins__": None}, safe_dict)
+    return eval(expr, {"__builtins__": {}}, safe_dict)
 
 def calculate_fourier(image_array):
     if np.all(image_array == 0):

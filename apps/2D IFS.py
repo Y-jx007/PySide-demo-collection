@@ -86,92 +86,102 @@ class FractalWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.points = None
+        self._cached_image = None
         self.color_start = QColor(218, 247, 166)
         self.color_end = QColor(34, 139, 34)
         self.setMinimumSize(400, 400)
 
     def set_points(self, points):
         self.points = points
+        self._cached_image = None
         self.update()
 
     def set_colors(self, start, end):
         self.color_start = start
         self.color_end = end
+        self._cached_image = None
         if self.points is not None:
             self.update()
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), Qt.white)
+    def _render_to_image(self):
+        """将点集渲染为 QImage（使用 numpy 批量计算替代逐点 Qt 绘制）"""
         if self.points is None:
-            painter.setPen(QColor(180, 180, 180))
-            painter.drawText(self.rect(), Qt.AlignCenter, "选择分形类型并点击生成")
-            return
+            return None
 
-        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+
         x_coords = self.points[:, 0]
         y_coords = self.points[:, 1]
         x_min, x_max = x_coords.min(), x_coords.max()
         y_min, y_max = y_coords.min(), y_coords.max()
 
-        w, h = self.width(), self.height()
         scale_x = w / (x_max - x_min) if x_max != x_min else 1
         scale_y = h / (y_max - y_min) if y_max != y_min else 1
         scale = min(scale_x, scale_y) * 0.9
         offset_x = (w - (x_max - x_min) * scale) / 2
         offset_y = (h - (y_max - y_min) * scale) / 2
 
+        # 批量计算像素坐标
+        px = ((x_coords - x_min) * scale + offset_x).astype(np.int32)
+        py = ((y_coords - y_min) * scale + offset_y).astype(np.int32)
+        py = h - py  # 翻转 Y 轴
+
+        # 裁剪到有效范围
+        mask = (px >= 0) & (px < w) & (py >= 0) & (py < h)
+        px, py = px[mask], py[mask]
+
+        # 计算每个点的颜色（基于迭代索引的比例→梯度）
         total = len(self.points)
-        for i in range(total):
-            t = math.sqrt(i / total) if total > 0 else 0
-            r = int(self.color_start.red() + (self.color_end.red() - self.color_start.red()) * t)
-            g = int(self.color_start.green() + (self.color_end.green() - self.color_start.green()) * t)
-            b = int(self.color_start.blue() + (self.color_end.blue() - self.color_start.blue()) * t)
-            r = max(0, min(255, r))
-            g = max(0, min(255, g))
-            b = max(0, min(255, b))
-            painter.setPen(QPen(QColor(r, g, b), 1))
-            px = int(offset_x + (self.points[i, 0] - x_min) * scale)
-            py = int(h - (offset_y + (self.points[i, 1] - y_min) * scale))
-            painter.drawPoint(px, py)
+        indices = np.where(mask)[0]
+        t = np.sqrt(indices / total) if total > 0 else np.zeros_like(indices, dtype=float)
+
+        sr, sg, sb = self.color_start.red(), self.color_start.green(), self.color_start.blue()
+        er, eg, eb = self.color_end.red(), self.color_end.green(), self.color_end.blue()
+
+        r = np.clip(sr + (er - sr) * t, 0, 255).astype(np.uint8)
+        g = np.clip(sg + (eg - sg) * t, 0, 255).astype(np.uint8)
+        b = np.clip(sb + (eb - sb) * t, 0, 255).astype(np.uint8)
+
+        # 创建 RGB 图像
+        img = np.full((h, w, 3), 255, dtype=np.uint8)  # 白色背景
+        img[py, px, 0] = r
+        img[py, px, 1] = g
+        img[py, px, 2] = b
+
+        return QImage(img.data, w, h, w * 3, QImage.Format_RGB888)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        if self.points is None:
+            painter.fillRect(self.rect(), Qt.white)
+            painter.setPen(QColor(180, 180, 180))
+            painter.drawText(self.rect(), Qt.AlignCenter, "选择分形类型并点击生成")
+            painter.end()
+            return
+
+        if self._cached_image is None:
+            self._cached_image = self._render_to_image()
+
+        if self._cached_image:
+            painter.drawImage(self.rect(), self._cached_image)
+        else:
+            painter.fillRect(self.rect(), Qt.white)
+        painter.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._cached_image = None  # 尺寸变化后重新渲染
 
     def get_image(self):
         if self.points is None:
             return None
-        pixmap = QPixmap(self.size())
-        pixmap.fill(Qt.white)
-        painter = QPainter(pixmap)
-        self.draw_fractal(painter)
-        painter.end()
+        img = self._render_to_image()
+        if img is None:
+            return None
+        pixmap = QPixmap.fromImage(img)
         return pixmap
-
-    def draw_fractal(self, painter):
-        if self.points is None:
-            return
-        painter.setRenderHint(QPainter.Antialiasing)
-        x_coords = self.points[:, 0]
-        y_coords = self.points[:, 1]
-        x_min, x_max = x_coords.min(), x_coords.max()
-        y_min, y_max = y_coords.min(), y_coords.max()
-        w, h = self.width(), self.height()
-        scale_x = w / (x_max - x_min) if x_max != x_min else 1
-        scale_y = h / (y_max - y_min) if y_max != y_min else 1
-        scale = min(scale_x, scale_y) * 0.9
-        offset_x = (w - (x_max - x_min) * scale) / 2
-        offset_y = (h - (y_max - y_min) * scale) / 2
-        total = len(self.points)
-        for i in range(total):
-            t = math.sqrt(i / total) if total > 0 else 0
-            r = int(self.color_start.red() + (self.color_end.red() - self.color_start.red()) * t)
-            g = int(self.color_start.green() + (self.color_end.green() - self.color_start.green()) * t)
-            b = int(self.color_start.blue() + (self.color_end.blue() - self.color_start.blue()) * t)
-            r = max(0, min(255, r))
-            g = max(0, min(255, g))
-            b = max(0, min(255, b))
-            painter.setPen(QPen(QColor(r, g, b), 1))
-            px = int(offset_x + (self.points[i, 0] - x_min) * scale)
-            py = int(h - (offset_y + (self.points[i, 1] - y_min) * scale))
-            painter.drawPoint(px, py)
 
 
 class MainWindow(QMainWindow):

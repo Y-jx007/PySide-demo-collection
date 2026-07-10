@@ -1,4 +1,8 @@
-from custom_import import *
+import math
+import numpy as np
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen, QVector3D, QMatrix4x4
+from PySide6.QtWidgets import QPushButton, QColorDialog
 
 class OrbitCamera:
     def __init__(self, target=QVector3D(0, 0, 0), distance=100.0):
