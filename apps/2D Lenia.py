@@ -22,7 +22,7 @@ random_state = None
 draw_points_batch = None   # 新的批量绘制 kernel
 step = None
 
-PRESET_FILE = "2D Lenia presets.npz"
+PRESET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../2D Lenia presets.npz")
 
 
 def init_taichi(field_size=256):
@@ -303,13 +303,9 @@ class LeniaApp(QMainWindow):
             btn.clicked.connect(slot)
             tool_bar.addWidget(btn)
         tool_bar.addSpacing(10)
-        for text, slot in [("保存预设", self.save_preset),
-                           ("加载预设", self.load_preset),
-                           ("重命名", self.rename_preset),
-                           ("删除", self.delete_preset)]:
-            btn = QPushButton(text)
-            btn.clicked.connect(slot)
-            tool_bar.addWidget(btn)
+        self.gallery_btn = QPushButton("预设")
+        self.gallery_btn.clicked.connect(self.open_gallery)
+        tool_bar.addWidget(self.gallery_btn)
         tool_bar.addStretch()
         main_layout.addLayout(tool_bar)
 
@@ -651,73 +647,23 @@ class LeniaApp(QMainWindow):
         ti.reset()
         event.accept()
 
-    # ================== 预设管理 ==================
-    def _get_preset_dict(self):
-        presets = {}
-        try:
-            data = np.load(PRESET_FILE, allow_pickle=False)
-        except FileNotFoundError:
-            return presets
-        keys = list(data.keys())
-        names = set()
-        for k in keys:
-            if k.endswith('_state') or k.endswith('_params'):
-                name = k.rsplit('_', 1)[0]
-                names.add(name)
-        for name in names:
-            state_key = f"{name}_state"
-            params_key = f"{name}_params"
-            if state_key in data and params_key in data:
-                presets[name] = {
-                    'state': data[state_key],
-                    'params': data[params_key]
-                }
-        return presets
-
-    def _save_preset_dict(self, preset_dict):
-        save_dict = {}
-        for n, d in preset_dict.items():
-            save_dict[f"{n}_state"] = d['state']
-            save_dict[f"{n}_params"] = d['params']
-        np.savez_compressed(PRESET_FILE, **save_dict)
-
-    def save_preset(self):
-        name, ok = QInputDialog.getText(self, "保存预设", "输入预设名称：")
-        if not ok or not name.strip():
+    # ================== 预设画廊（下拉弹出窗） ==================
+    def open_gallery(self):
+        if hasattr(self, '_gallery_popup') and self._gallery_popup.isVisible():
+            self._gallery_popup.hide()
             return
-        name = name.strip()
-        presets = self._get_preset_dict()
-        if name in presets:
-            reply = QMessageBox.question(
-                self, "覆盖确认",
-                f"预设 “{name}” 已存在，是否覆盖？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.No:
-                return
-
-        params = np.array([
-            self.R, self.num_rings, self.rho, self.omega,
-            *self.betas, self.mu, self.sigma, self.dt, FIELD_SIZE
-        ], dtype=np.float32)
-        state_arr = np.copy(state.to_numpy())
-        presets[name] = {'state': state_arr, 'params': params}
-        self._save_preset_dict(presets)
-
-    def load_preset(self):
-        presets = self._get_preset_dict()
-        if not presets:
-            QMessageBox.information(self, "提示", "没有找到任何预设。")
-            return
-        names = sorted(presets.keys())
-        name, ok = QInputDialog.getItem(self, "加载预设", "选择预设：", names, 0, False)
-        if not ok or not name:
-            return
-        self._apply_preset_data(presets[name])
+        gallery = PresetGallery(self)
+        # 定位在按钮下方
+        btn_rect = self.gallery_btn.rect()
+        bottom_left = self.gallery_btn.mapToGlobal(QPoint(0, btn_rect.height()))
+        gallery.move(bottom_left)
+        gallery.show()
+        self._gallery_popup = gallery
 
     def _apply_preset_data(self, data):
+        """从预设数据加载参数和状态"""
         params = data['params']
+        # 预设参数顺序: R, num_rings, rho, omega, *betas(6), mu, sigma, dt, FIELD_SIZE
         defaults = [15, 3, 0.5, 0.15, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
                     0.156, 0.0224, 0.1, 256]
         if len(params) < 14:
@@ -772,50 +718,280 @@ class LeniaApp(QMainWindow):
         if was_running:
             self.sim_timer.start(30)
 
-    def rename_preset(self):
-        presets = self._get_preset_dict()
-        if not presets:
-            QMessageBox.information(self, "提示", "没有预设可以重命名。")
-            return
-        names = sorted(presets.keys())
-        old_name, ok = QInputDialog.getItem(self, "重命名预设", "选择预设：", names, 0, False)
-        if not ok or not old_name:
-            return
-        new_name, ok = QInputDialog.getText(self, "重命名", "新名称：", text=old_name)
-        if not ok or not new_name.strip() or new_name.strip() == old_name:
-            return
-        new_name = new_name.strip()
-        if new_name in presets:
-            reply = QMessageBox.question(
-                self, "覆盖确认",
-                f"预设 “{new_name}” 已存在，是否覆盖？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.No:
-                return
-        presets[new_name] = presets.pop(old_name)
-        self._save_preset_dict(presets)
 
-    def delete_preset(self):
-        presets = self._get_preset_dict()
-        if not presets:
-            QMessageBox.information(self, "提示", "没有预设可以删除。")
+class PresetGallery(QWidget):
+    """下拉画廊：网格排列预设，双击加载但保持打开，点击外部关闭"""
+    class Thumbnail(QWidget):
+        clicked = Signal(str)
+
+        def __init__(self, name, state_arr, parent=None):
+            super().__init__(parent)
+            self.name = name
+            self._state = state_arr
+            self._selected = False
+            self._cached_scaled = None
+            self.setCursor(Qt.PointingHandCursor)
+            self.setToolTip(name)
+
+        def paintEvent(self, event):
+            s = self.width()
+            if self._cached_scaled is None or self._cached_scaled.width() != s:
+                # 生成并缓存缩略图
+                arr = self._state
+                fs = arr.shape[0]
+                active = arr > 0.05
+                if active.any():
+                    ys, xs = np.nonzero(active)
+                    cy = np.arctan2(np.mean(np.sin(2*np.pi*ys/fs)), np.mean(np.cos(2*np.pi*ys/fs))) / (2*np.pi) * fs
+                    cx = np.arctan2(np.mean(np.sin(2*np.pi*xs/fs)), np.mean(np.cos(2*np.pi*xs/fs))) / (2*np.pi) * fs
+                    arr = np.roll(arr, shift=(int(round(fs/2 - cy)), int(round(fs/2 - cx))), axis=(0, 1))
+                arr_clip = np.clip(arr * 255, 0, 255).astype(np.uint8)
+                qimg = QImage(arr_clip.tobytes(), fs, fs, fs, QImage.Format_Grayscale8)
+                scaled = qimg.scaled(s-4, s-4, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self._cached_scaled = scaled
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.drawImage((s - self._cached_scaled.width())//2, (s - self._cached_scaled.height())//2, self._cached_scaled)
+            if self._selected:
+                painter.setPen(QPen(QColor(0xFF, 0xD7, 0x00), 2))
+                painter.drawRect(1, 1, s - 3, s - 3)
+            painter.setPen(Qt.white)
+            f = painter.font()
+            f.setPointSize(8)
+            painter.setFont(f)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(self.name)
+            th = fm.height()
+            painter.fillRect(2, 2, min(tw+8, s-4), th+2, QColor(0,0,0,160))
+            painter.drawText(QRect(4, 2, min(tw+8, s-4)-4, th), Qt.AlignLeft|Qt.AlignVCenter, self.name)
+
+        def mousePressEvent(self, event):
+            self.clicked.emit(self.name)
+
+        def mouseDoubleClickEvent(self, event):
+            self.clicked.emit('\0' + self.name)   # 特殊标记双击
+
+    class GridWidget(QWidget):
+        def __init__(self, cell_size, parent=None):
+            super().__init__(parent)
+            self.cell_size = cell_size
+            self.cols = 1
+            self._thumbnails = []
+
+        def set_layout_data(self, cols, thumb_data):
+            self.cols = cols
+            for w, _, _ in self._thumbnails:
+                w.setParent(None)
+            self._thumbnails = thumb_data
+            for w, r, c in self._thumbnails:
+                w.setParent(self)
+                w.setFixedSize(self.cell_size, self.cell_size)
+                w.move(c * self.cell_size, r * self.cell_size)
+                w.show()
+            rows = max((r for _, r, _ in self._thumbnails), default=0) + 1
+            self.setMinimumSize(cols * self.cell_size, rows * self.cell_size)
+            self.updateGeometry()
+
+        def paintEvent(self, event):
+            super().paintEvent(event)
+            if self.cell_size <= 0:
+                return
+            painter = QPainter(self)
+            painter.setPen(QPen(QColor(0x55, 0x55, 0x55), 1))
+            w = self.width()
+            h = self.height()
+            for col in range(self.cols + 1):
+                x = col * self.cell_size
+                painter.drawLine(x, 0, x, h)
+            rows = max(1, (h + self.cell_size - 1) // self.cell_size)
+            for row in range(rows + 1):
+                y = row * self.cell_size
+                painter.drawLine(0, y, w, y)
+
+    def __init__(self, app_window):
+        super().__init__()
+        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.app = app_window
+        self._presets = {}
+        self._selected = None
+        self._cell_size = 100
+
+        # 设置合适的默认大小
+        self.resize(626, 480)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+
+        tb = QHBoxLayout()
+        tb.setContentsMargins(0, 0, 0, 4)
+        for txt, slot in [("保存当前", self._save_current),
+                          ("重命名", self._rename_selected),
+                          ("删除", self._delete_selected)]:
+            btn = QPushButton(txt)
+            btn.clicked.connect(slot)
+            tb.addWidget(btn)
+        tb.addStretch()
+        main_layout.addLayout(tb)
+
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        self._refresh_content()
+
+    def _cols(self):
+        w = self.tabs.contentsRect().width()
+        return max(2, w // self._cell_size)
+
+    def _refresh_content(self):
+        self.tabs.clear()
+        self._presets = PresetGallery.load_preset_dict()
+        by_rings = {}
+        for n, d in self._presets.items():
+            by_rings.setdefault(int(d['params'][1]), []).append((n, d))
+        for rings in sorted(by_rings.keys()):
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            cols = self._cols()
+            grid = self.GridWidget(self._cell_size)
+            items = sorted(by_rings[rings], key=lambda x: x[0])
+            thumb_data = []
+            for i, (n, d) in enumerate(items):
+                t = self.Thumbnail(n, d['state'])
+                t.clicked.connect(self._on_thumbnail_clicked)
+                if self._selected == n:
+                    t._selected = True
+                row, col = i // cols, i % cols
+                thumb_data.append((t, row, col))
+            grid.set_layout_data(cols, thumb_data)
+            sc.setWidget(grid)
+            self.tabs.addTab(sc, f"{rings} 环")
+        if not self._presets:
+            lab = QLabel("暂无预设，请先保存")
+            lab.setAlignment(Qt.AlignCenter)
+            lab.setStyleSheet("color:#888; font-size:16px;")
+            self.tabs.addTab(lab, "空")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        for i in range(self.tabs.count()):
+            sc = self.tabs.widget(i)
+            if sc and sc.widget():
+                grid = sc.widget()
+                if isinstance(grid, self.GridWidget):
+                    cols = self._cols()
+                    thumbs = grid._thumbnails[:]
+                    new_data = []
+                    for idx, (w, _, _) in enumerate(thumbs):
+                        row, col = idx // cols, idx % cols
+                        new_data.append((w, row, col))
+                    grid.set_layout_data(cols, new_data)
+
+    def _on_thumbnail_clicked(self, name):
+        if name.startswith('\0'):   # 双击加载
+            real = name[1:]
+            if real in self._presets:
+                self.app._apply_preset_data(self._presets[real])
             return
-        names = sorted(presets.keys())
-        name, ok = QInputDialog.getItem(self, "删除预设", "选择预设：", names, 0, False)
-        if not ok or not name:
+        # 单击选中
+        self._selected = name
+        for i in range(self.tabs.count()):
+            sc = self.tabs.widget(i)
+            if sc and sc.widget():
+                grid = sc.widget()
+                if isinstance(grid, self.GridWidget):
+                    for w, _, _ in grid._thumbnails:
+                        if isinstance(w, self.Thumbnail):
+                            w._selected = (w.name == name)
+                            w._cached_scaled = None
+                            w.update()
+
+    def _save_current(self):
+        name, ok = QInputDialog.getText(self, "保存预设", "名称：")
+        if not ok or not name.strip():
             return
-        reply = QMessageBox.question(
-            self, "确认删除",
-            f"确定要删除预设 “{name}” 吗？此操作不可恢复。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if reply == QMessageBox.No:
+        name = name.strip()
+        ps = PresetGallery.load_preset_dict()
+        if name in ps:
+            r = QMessageBox.question(self, "覆盖", f"'{name}'已存在，覆盖？",
+                                     QMessageBox.Yes | QMessageBox.No)
+            if r == QMessageBox.No:
+                return
+        ps[name] = {
+            'state': np.copy(state.to_numpy()),
+            'params': np.array([
+                self.app.R, self.app.num_rings,
+                self.app.rho, self.app.omega,
+                *self.app.betas,
+                self.app.mu, self.app.sigma,
+                self.app.dt, FIELD_SIZE
+            ], dtype=np.float32)
+        }
+        PresetGallery.save_preset_dict(ps)
+        self._refresh_content()
+
+    def _delete_selected(self):
+        if not self._selected:
             return
-        del presets[name]
-        self._save_preset_dict(presets)
+        r = QMessageBox.question(self, "确认", f"删除'{self._selected}'?",
+                                 QMessageBox.Yes | QMessageBox.No)
+        if r == QMessageBox.No:
+            return
+        ps = PresetGallery.load_preset_dict()
+        ps.pop(self._selected, None)
+        PresetGallery.save_preset_dict(ps)
+        self._selected = None
+        self._refresh_content()
+
+    def _rename_selected(self):
+        if not self._selected:
+            return
+        ps = PresetGallery.load_preset_dict()
+        old = self._selected
+        new, ok = QInputDialog.getText(self, "重命名", "新名称：", text=old)
+        if not ok or not new.strip() or new.strip() == old:
+            return
+        new = new.strip()
+        if new in ps:
+            QMessageBox.warning(self, "失败", f"'{new}'已存在")
+            return
+        ps[new] = ps.pop(old)
+        PresetGallery.save_preset_dict(ps)
+        self._selected = new
+        self._refresh_content()
+
+    @staticmethod
+    def load_preset_dict():
+        presets = {}
+        try:
+            data = np.load(PRESET_FILE, allow_pickle=False)
+        except FileNotFoundError:
+            return presets
+        keys = list(data.keys())
+        names = set()
+        for k in keys:
+            if k.endswith('_state') or k.endswith('_params'):
+                names.add(k.rsplit('_', 1)[0])
+        for name in names:
+            state_key = f"{name}_state"
+            params_key = f"{name}_params"
+            if state_key in data and params_key in data:
+                presets[name] = {
+                    'state': data[state_key],
+                    'params': data[params_key]
+                }
+        return presets
+
+    @staticmethod
+    def save_preset_dict(preset_dict):
+        save_dict = {}
+        for n, d in preset_dict.items():
+            save_dict[f"{n}_state"] = d['state']
+            save_dict[f"{n}_params"] = d['params']
+        np.savez_compressed(PRESET_FILE, **save_dict)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
