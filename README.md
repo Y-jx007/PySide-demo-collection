@@ -1,7 +1,6 @@
 # PySide 绘图工具集 — 数学与物理可视化
 
-一个基于 PySide6 + Taichi + OpenGL 的交互式数学/物理可视化工具集，包含 20+ 个独立应用，涵盖分形、反应扩散、流体模拟、准晶、细胞自动机等领域。
-
+一个基于 PySide6 + Taichi + OpenGL 的交互式数学/物理可视化工具集
 ## 界面预览
 
 ![界面预览](https://github.com/user-attachments/assets/4924e525-92ad-408e-a09b-b2df42a8b20b)
@@ -11,44 +10,36 @@
 ### 分形与复数
 | 应用 | 说明 |
 |------|------|
-| **Mandelbrot / Julia 集** | 双精度 GPU 渲染，支持 12 种预设函数 + 自定义 Taichi 函数，鼠标选取 c 值，轨道绘制 |
-| **Newton / Nova 分形** | 牛顿法求根可视化，7 种预设函数 + 自定义函数，支持 Nova 变体 |
-| **自定义函数分形** | 动态编译用户输入的 Taichi 复数表达式 |
+| **Mandelbrot / Julia 集** |  
+| **Newton / Nova 分形** | 牛顿分形 |
+| **2D IFS** | 迭代函数系统分形 |
+| **L-System** | 林氏系统分形 |
 
 ### 反应扩散与物理模拟
 | 应用 | 说明 |
 |------|------|
-| **Belousov-Zhabotinsky** | BZ 化学波（螺旋波/靶波/混沌），Taichi GPU 加速 |
-| **Turing 斑图** | 图灵失稳生成的周期与准周期斑图 |
-| **RD Lenia** | 反应扩散与 Lenia 连续细胞自动机结合 |
-| **Navier-Stokes** | 2D 不可压流体，涡量-流函数法，鼠标交互扰动 |
-| **Schrodinger** | 2D 量子力学波包演化，复数场时间传播 |
-| **Maxwell** | 2D 电磁波 FDTD 模拟，TE 模式 |
-
-### 准晶与波动
-| 应用 | 说明 |
-|------|------|
-| **Quasicrystal** | N 重对称平面波准晶，可调波矢/缩放/旋转，OpenGL 实时渲染 |
-| **Fourier 合成** | 用户自定义 2D 傅里叶级数可视化 |
-| **2D IFS** | 迭代函数系统分形（蕨类、谢尔宾斯基、龙形曲线等），Numba JIT 加速，numpy 批量渲染 |
+| **Ising 模型** | 2D 伊辛模型 |
+| **Belousov-Zhabotinsky** | 化学波 |
+| **Turing 斑图** | 图灵斑 |
+| **Navier-Stokes** | 2D 不可压流体 |
+| **Schrodinger** | 2D 量子力学波包演化 |
+| **Maxwell** | 2D 麦克斯韦-玻尔兹曼分布 |
 
 ### 细胞自动机与群体
 | 应用 | 说明 |
 |------|------|
-| **Conway Game of Life** | 生命游戏，可编辑初始状态 |
+| **Conway Game of Life** | 生命游戏 |
 | **Lenia** | 连续细胞自动机 |
-| **Boids** | 群体智能（鸟群模拟） |
-| **Ising 模型** | 2D 伊辛模型蒙特卡洛模拟，OpenGL 显示 |
-| **Lloyd 松弛** | 沃罗诺伊图 + 劳埃德松弛 |
+| **Distill** | 神经元胞自动机 |
 
 ### 其他
 | 应用 | 说明 |
 |------|------|
-| **3D Lorenz** | 洛伦兹吸引子 3D 渲染，OrbitCamera 交互控制 |
-| **L-System** | 林德梅耶系统分形生成 |
-| **Cplot** | 复变函数色度图 |
-| **Arnold 猫映射** | 经典混沌图像置乱 |
-| **Distill** | 知识蒸馏可视化（PyTorch） |
+| **Lloyd 松弛** | 沃罗诺伊图 + 劳埃德松弛 |
+| **3D Lorenz** | 3D吸引子可视化|
+| **Cplot** | 复变函数幅角图 |
+| **Fourier 合成** | 2D 傅里叶变换 |
+| **Arnold** | 猫变换 |
 
 ## 快速开始
 
