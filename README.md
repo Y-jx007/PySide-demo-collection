@@ -3,8 +3,7 @@
 一个基于 PySide6 + Taichi + OpenGL 的交互式数学/物理可视化工具集
 ## 界面预览
 
-![界面预览](<img width="1312" height="660" alt="image" src="https://github.com/user-attachments/assets/fb616f96-f595-4a8b-a39e-0ad719691986" />
-)
+<img width="1312" height="660" alt="image" src="https://github.com/user-attachments/assets/ff9e75e9-4eb0-4258-8a69-0d75faad1c13" />
 
 ## 功能列表
 
@@ -13,15 +12,14 @@
 |------|------|
 | **Mandelbrot / Julia 集** |  |
 | **Newton / Nova 分形** | 牛顿分形 |
-| **2D IFS** | 迭代函数系统分形 |
+| **IFS** | 迭代函数系统分形 |
 | **L-System** | 林氏系统分形 |
 
 ### 反应扩散与物理模拟
 | 应用 | 说明 |
 |------|------|
-| **Ising 模型** | 2D 伊辛模型，参考项目[Ising.js by matthbierbaum](https://mattbierbaum.github.io/ising.js/)|
-| **Belousov-Zhabotinsky** | 化学波 |
-| **Turing 斑图** | 图灵斑 |
+| **Ising** | 2D 伊辛模型，参考项目[Ising.js by matthbierbaum](https://mattbierbaum.github.io/ising.js/)|
+| **Turing** | 图灵斑 |
 | **Navier-Stokes** | 2D 不可压流体，参考项目[LBM_Taichi by hietwll](https://github.com/hietwll/LBM_Taichi) |
 | **Schrodinger** | 2D 量子力学波包演化，参考项目[Schrodinger equation by davidar](https://www.shadertoy.com/view/lsKGRW) |
 | **Maxwell** | 2D 麦克斯韦-玻尔兹曼分布 |
