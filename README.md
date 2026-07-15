@@ -10,7 +10,7 @@
 ### 分形与复数
 | 应用 | 说明 |
 |------|------|
-| **Mandelbrot / Julia 集** |  
+| **Mandelbrot / Julia 集** |  |
 | **Newton / Nova 分形** | 牛顿分形 |
 | **2D IFS** | 迭代函数系统分形 |
 | **L-System** | 林氏系统分形 |
@@ -18,26 +18,26 @@
 ### 反应扩散与物理模拟
 | 应用 | 说明 |
 |------|------|
-| **Ising 模型** | 2D 伊辛模型 |
+| **Ising 模型** | 2D 伊辛模型，参考项目[Ising.js by matthbierbaum](https://mattbierbaum.github.io/ising.js/)|
 | **Belousov-Zhabotinsky** | 化学波 |
 | **Turing 斑图** | 图灵斑 |
-| **Navier-Stokes** | 2D 不可压流体 |
-| **Schrodinger** | 2D 量子力学波包演化 |
+| **Navier-Stokes** | 2D 不可压流体，参考项目[LBM_Taichi by hietwll](https://github.com/hietwll/LBM_Taichi) |
+| **Schrodinger** | 2D 量子力学波包演化，参考项目[Schrodinger equation by davidar](https://www.shadertoy.com/view/lsKGRW) |
 | **Maxwell** | 2D 麦克斯韦-玻尔兹曼分布 |
 
 ### 细胞自动机与群体
 | 应用 | 说明 |
 |------|------|
 | **Conway Game of Life** | 生命游戏 |
-| **Lenia** | 连续细胞自动机 |
-| **Distill** | 神经元胞自动机 |
+| **Lenia** | 连续细胞自动机，参考项目[Lenia by Chakazul](https://chakazul.github.io/Lenia/JavaScript/Lenia.html)|
+| **Distill** | 神经元胞自动机，参考项目[Growing Neural Cellular Automata by Distill](https://distill.pub/2020/growing-ca/) |
 
 ### 其他
 | 应用 | 说明 |
 |------|------|
-| **Lloyd 松弛** | 沃罗诺伊图 + 劳埃德松弛 |
+| **Lloyd 松弛** | |
 | **3D Lorenz** | 3D吸引子可视化|
-| **Cplot** | 复变函数幅角图 |
+| **Cplot** | 复变函数幅角图，使用工具[Cplot by nschloe](https://github.com/nschloe/cplot) |
 | **Fourier 合成** | 2D 傅里叶变换 |
 | **Arnold** | 猫变换 |
 
