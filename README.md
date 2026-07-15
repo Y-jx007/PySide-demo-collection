@@ -3,7 +3,8 @@
 一个基于 PySide6 + Taichi + OpenGL 的交互式数学/物理可视化工具集
 ## 界面预览
 
-![界面预览](https://github.com/user-attachments/assets/4924e525-92ad-408e-a09b-b2df42a8b20b)
+![界面预览](<img width="1312" height="660" alt="image" src="https://github.com/user-attachments/assets/fb616f96-f595-4a8b-a39e-0ad719691986" />
+)
 
 ## 功能列表
 
