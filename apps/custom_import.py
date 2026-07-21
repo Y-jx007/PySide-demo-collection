@@ -25,11 +25,11 @@ from numba import jit, njit, prange
 
 # ── PySide6 ──
 from PySide6.QtCore import (
-    Qt, QTimer, QRect, QSize, QPoint, QThread, Signal, QObject
+    Qt, QTimer, QRect, QRectF, QSize, QPoint, QThread, Signal, QObject
 )
 from PySide6.QtGui import (
     QFont, QPainter, QPixmap, QImage, QColor, QPen, QBrush,
-    QMouseEvent, QSurfaceFormat, QVector3D, QMatrix4x4, QTransform,
+    QMouseEvent, QSurfaceFormat, QVector3D, QMatrix4x4, QQuaternion, QTransform,
     QFontDatabase, QAction
 )
 from PySide6.QtWidgets import (
@@ -59,8 +59,6 @@ from custom_function import (
     vectorize_func, make_safe_expression, integrate_custom_python,
     c64, csqr, cconj, cmul, cdiv, csin, ccos, cexp, clog, cpow, pack_color
 )
-from reaction_diffusion import (
-    setup_gl_format, TextureGLWidget, SimulationBase, SimulationViewer
-)
+
 from dynamic_fractal import BaseFractalWidget
 

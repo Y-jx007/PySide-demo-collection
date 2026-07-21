@@ -1,12 +1,13 @@
 ﻿from custom_import import *
 
+# ========== L-system 核心 ==========
 class LSystem:
-    """L-system 实现类"""
+    """优化后的 L-system，字符串生成使用列表拼接，O(n) 复杂度"""
     def __init__(self):
         self.axiom = ""
         self.rules = {}
-        self.angle = 25
-        self.distance = 10
+        self.angle = 25.0
+        self.distance = 10.0
         self.generations = 4
 
     def set_axiom(self, axiom):
@@ -20,10 +21,11 @@ class LSystem:
             generations = self.generations
         result = self.axiom
         for _ in range(generations):
-            new_result = ""
+            parts = []
+            rules = self.rules  # 本地引用加速
             for char in result:
-                new_result += self.rules.get(char, char)
-            result = new_result
+                parts.append(rules.get(char, char))
+            result = ''.join(parts)
         return result
 
     def set_parameters(self, angle, distance, generations):
@@ -31,45 +33,52 @@ class LSystem:
         self.distance = distance
         self.generations = generations
 
+# ========== 后台生成线程 ==========
+class LSystemGenerator(QThread):
+    """在后台计算 L-system 路径，避免阻塞 GUI"""
+    pathReady = Signal(list, float, float, float, float)  # path, min_x, min_y, max_x, max_y
 
-class LSystemWidget(QWidget):
-    """L-system 绘图部件"""
-    def __init__(self):
-        super().__init__()
-        self.lsystem = LSystem()
-        self.path = []
-        self.start_color = QColor(139, 69, 19)
-        self.end_color = QColor(34, 139, 34)
-        self.bg_color = QColor(240, 240, 240)
-        self.setMinimumSize(400, 400)
-
-    def set_lsystem(self, lsystem):
+    def __init__(self, lsystem, start_x, start_y, parent=None):
+        super().__init__(parent)
         self.lsystem = lsystem
-        self.generate_path()
+        self.start_x = start_x
+        self.start_y = start_y
 
-    def set_colors(self, start_color, end_color, bg_color):
-        self.start_color = start_color
-        self.end_color = end_color
-        self.bg_color = bg_color
-        self.update()
-
-    def generate_path(self):
-        self.path = []
+    def run(self):
         string = self.lsystem.generate()
+        path = []
         stack = []
-        x, y = self.width() / 2, self.height() - 50
-        angle = -90
+        x, y = self.start_x, self.start_y
+        angle = -90.0
         distance = self.lsystem.distance
+        angle_rad = math.radians(self.lsystem.angle)
+
+        cos_a = math.cos
+        sin_a = math.sin
+        append = path.append
+
+        min_x = max_x = x
+        min_y = max_y = y
 
         for char in string:
             if char == 'F':
-                new_x = x + distance * math.cos(math.radians(angle))
-                new_y = y + distance * math.sin(math.radians(angle))
-                self.path.append((QPoint(int(x), int(y)), QPoint(int(new_x), int(new_y))))
+                new_x = x + distance * cos_a(math.radians(angle))
+                new_y = y + distance * sin_a(math.radians(angle))
+                # 更新包围盒
+                if new_x < min_x: min_x = new_x
+                if new_x > max_x: max_x = new_x
+                if new_y < min_y: min_y = new_y
+                if new_y > max_y: max_y = new_y
+                append(( (x, y), (new_x, new_y) ))
                 x, y = new_x, new_y
             elif char == 'f':
-                x += distance * math.cos(math.radians(angle))
-                y += distance * math.sin(math.radians(angle))
+                x += distance * cos_a(math.radians(angle))
+                y += distance * sin_a(math.radians(angle))
+                # 移动也可能影响包围盒（虽然不画线，但影响后续起点，安全起见也更新）
+                if x < min_x: min_x = x
+                if x > max_x: max_x = x
+                if y < min_y: min_y = y
+                if y > max_y: max_y = y
             elif char == '+':
                 angle += self.lsystem.angle
             elif char == '-':
@@ -77,103 +86,139 @@ class LSystemWidget(QWidget):
             elif char == '[':
                 stack.append((x, y, angle))
             elif char == ']':
-                x, y, angle = stack.pop()
+                if stack:
+                    x, y, angle = stack.pop()
+        self.pathReady.emit(path, min_x, min_y, max_x, max_y)
+
+# ========== L-system 绘图部件 ==========
+class LSystemWidget(QWidget):
+    """优化后的绘图部件：缓存路径、包围盒、缩放因子；支持后台生成"""
+    def __init__(self):
+        super().__init__()
+        self.lsystem = None
+        self.path = []              # [( (x1,y1), (x2,y2) ), ...]
+        self.bounding_rect = QRectF()  # 包围盒
+        self.scale = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+
+        self.start_color = QColor(139, 69, 19)
+        self.end_color = QColor(34, 139, 34)
+        self.bg_color = QColor(240, 240, 240)
+
+        self.setMinimumSize(400, 400)
+        self._generator = None          # 当前后台线程
+
+    def set_lsystem(self, lsystem):
+        """设置新的 L-system 并启动后台生成"""
+        # 如果有正在运行的线程，先终止
+        if self._generator and self._generator.isRunning():
+            self._generator.terminate()
+            self._generator.wait()
+        self.lsystem = lsystem
+        self._start_background_generation()
+
+    def _start_background_generation(self):
+        """启动后台线程计算路径"""
+        # 起点设置为画布中心底部（与原始逻辑一致）
+        start_x = self.width() / 2.0
+        start_y = self.height() - 50.0
+        self._generator = LSystemGenerator(self.lsystem, start_x, start_y)
+        self._generator.pathReady.connect(self._on_path_ready)
+        self._generator.start()
+
+    def _on_path_ready(self, path, min_x, min_y, max_x, max_y):
+        """后台计算完成，更新路径并重绘"""
+        self.path = path
+        # 转换为 QRectF 方便计算
+        self.bounding_rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+        self._update_transform()
+        self.update()
+
+    def _update_transform(self):
+        """根据当前包围盒和窗口大小计算缩放和平移"""
+        if not self.path:
+            return
+        rect = self.bounding_rect
+        if rect.width() < 0.01 or rect.height() < 0.01:
+            return
+        margin = 50
+        scale_x = (self.width() - 2 * margin) / rect.width()
+        scale_y = (self.height() - 2 * margin) / rect.height()
+        self.scale = min(scale_x, scale_y)
+        self.offset_x = margin - rect.left() * self.scale
+        self.offset_y = margin - rect.top() * self.scale
+
+    def set_colors(self, start, end, bg):
+        self.start_color = start
+        self.end_color = end
+        self.bg_color = bg
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), self.bg_color)
-
         if not self.path:
             return
+        self._draw_path(painter)
 
-        min_x = min(min(s.x(), e.x()) for s, e in self.path)
-        max_x = max(max(s.x(), e.x()) for s, e in self.path)
-        min_y = min(min(s.y(), e.y()) for s, e in self.path)
-        max_y = max(max(s.y(), e.y()) for s, e in self.path)
-        width = max_x - min_x
-        height = max_y - min_y
-        if width == 0 or height == 0:
+    def _draw_path(self, painter):
+        """公共绘制方法，供 paintEvent 和 save_image 复用"""
+        if not self.path:
             return
+        scale = self.scale
+        off_x = self.offset_x
+        off_y = self.offset_y
+        path_len = len(self.path)
+        # 颜色渐变计算
+        sr, sg, sb = self.start_color.red(), self.start_color.green(), self.start_color.blue()
+        er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
+        dr, dg, db = er - sr, eg - sg, eb - sb
 
-        scale_x = (self.width() - 100) / width
-        scale_y = (self.height() - 100) / height
-        scale = min(scale_x, scale_y)
-        offset_x = (self.width() - width * scale) / 2 - min_x * scale
-        offset_y = (self.height() - height * scale) / 2 - min_y * scale
+        pen = QPen()
+        pen_width = max(1, int(2 * scale))
+        pen.setWidth(pen_width)
 
-        for i, (start, end) in enumerate(self.path):
-            progress = i / len(self.path) if self.path else 0
-            r = int(self.start_color.red() + (self.end_color.red() - self.start_color.red()) * progress)
-            g = int(self.start_color.green() + (self.end_color.green() - self.start_color.green()) * progress)
-            b = int(self.start_color.blue() + (self.end_color.blue() - self.start_color.blue()) * progress)
-            pen = QPen(QColor(r, g, b))
-            pen.setWidth(max(1, int(2 * scale)))
+        for i, ((x1, y1), (x2, y2)) in enumerate(self.path):
+            # 根据进度计算颜色
+            t = i / (path_len - 1) if path_len > 1 else 0
+            r = int(sr + dr * t)
+            g = int(sg + dg * t)
+            b = int(sb + db * t)
+            pen.setColor(QColor(r, g, b))
             painter.setPen(pen)
-            sx = int(start.x() * scale + offset_x)
-            sy = int(start.y() * scale + offset_y)
-            ex = int(end.x() * scale + offset_x)
-            ey = int(end.y() * scale + offset_y)
-            painter.drawLine(sx, sy, ex, ey)
+            painter.drawLine(
+                int(x1 * scale + off_x), int(y1 * scale + off_y),
+                int(x2 * scale + off_x), int(y2 * scale + off_y)
+            )
 
     def save_image(self, filename):
+        """将当前图形保存为图片文件"""
         if not self.path:
-            QMessageBox.warning(self, "警告", "没有可保存的图形")
             return False
         image = QImage(self.size(), QImage.Format_ARGB32)
         image.fill(self.bg_color)
         painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing)
-        # 复用 paint_path 方法
-        self.paint_path(painter)
+        self._draw_path(painter)
         painter.end()
         return image.save(filename)
 
-    def paint_path(self, painter):
-        """在指定 painter 上绘制（用于保存）"""
-        if not self.path:
-            return
-        # 与 paintEvent 相同的坐标计算逻辑
-        min_x = min(min(s.x(), e.x()) for s, e in self.path)
-        max_x = max(max(s.x(), e.x()) for s, e in self.path)
-        min_y = min(min(s.y(), e.y()) for s, e in self.path)
-        max_y = max(max(s.y(), e.y()) for s, e in self.path)
-        width = max_x - min_x
-        height = max_y - min_y
-        if width == 0 or height == 0:
-            return
-        scale_x = (self.width() - 100) / width
-        scale_y = (self.height() - 100) / height
-        scale = min(scale_x, scale_y)
-        offset_x = (self.width() - width * scale) / 2 - min_x * scale
-        offset_y = (self.height() - height * scale) / 2 - min_y * scale
+    def resizeEvent(self, event):
+        """窗口大小变化时重新计算变换"""
+        super().resizeEvent(event)
+        if self.path:
+            self._update_transform()
 
-        for i, (start, end) in enumerate(self.path):
-            progress = i / len(self.path) if self.path else 0
-            r = int(self.start_color.red() + (self.end_color.red() - self.start_color.red()) * progress)
-            g = int(self.start_color.green() + (self.end_color.green() - self.start_color.green()) * progress)
-            b = int(self.start_color.blue() + (self.end_color.blue() - self.start_color.blue()) * progress)
-            pen = QPen(QColor(r, g, b))
-            pen.setWidth(max(1, int(2 * scale)))
-            painter.setPen(pen)
-            sx = int(start.x() * scale + offset_x)
-            sy = int(start.y() * scale + offset_y)
-            ex = int(end.x() * scale + offset_x)
-            ey = int(end.y() * scale + offset_y)
-            painter.drawLine(sx, sy, ex, ey)
-
-
+# ========== 主窗口 ==========
 class LSystemWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("L-system 分形生成器")
+        self.setWindowTitle("L-system 分形生成器 (优化版)")
         self.setGeometry(100, 100, 900, 600)
 
-        # 初始化画布
         self.canvas = LSystemWidget()
-
-        # 初始化 UI
         self.init_ui()
         self.setup_default_systems()
 
@@ -201,7 +246,6 @@ class LSystemWindow(QMainWindow):
     def create_system_selection(self, layout):
         group = QGroupBox("预设系统")
         vbox = QVBoxLayout(group)
-        vbox.addWidget(QLabel("选择预设系统:"))
         self.system_combo = QComboBox()
         self.system_combo.currentTextChanged.connect(self.on_system_changed)
         vbox.addWidget(self.system_combo)
@@ -211,14 +255,12 @@ class LSystemWindow(QMainWindow):
         container = QWidget()
         hbox = QHBoxLayout(container)
         hbox.setContentsMargins(0, 0, 0, 0)
-        hbox.setSpacing(10)
 
         # 参数组
         params_group = QGroupBox("参数设置")
         params_layout = QVBoxLayout(params_group)
         params_layout.setSpacing(6)
 
-        # 迭代次数
         iter_row = QHBoxLayout()
         iter_row.addWidget(QLabel("迭代:"))
         self.iterations_spin = QSpinBox()
@@ -227,7 +269,6 @@ class LSystemWindow(QMainWindow):
         iter_row.addWidget(self.iterations_spin)
         params_layout.addLayout(iter_row)
 
-        # 角度
         ang_row = QHBoxLayout()
         ang_row.addWidget(QLabel("角度:"))
         self.angle_spin = QDoubleSpinBox()
@@ -237,7 +278,6 @@ class LSystemWindow(QMainWindow):
         ang_row.addWidget(self.angle_spin)
         params_layout.addLayout(ang_row)
 
-        # 步长
         dist_row = QHBoxLayout()
         dist_row.addWidget(QLabel("步长:"))
         self.distance_spin = QDoubleSpinBox()
@@ -253,7 +293,6 @@ class LSystemWindow(QMainWindow):
         colors_layout = QVBoxLayout(colors_group)
         colors_layout.setSpacing(6)
 
-        # 起始颜色
         start_row = QHBoxLayout()
         start_row.addWidget(QLabel("起始:"))
         self.start_color_btn = ColorButton(self.canvas.start_color)
@@ -261,7 +300,6 @@ class LSystemWindow(QMainWindow):
         start_row.addWidget(self.start_color_btn)
         colors_layout.addLayout(start_row)
 
-        # 结束颜色
         end_row = QHBoxLayout()
         end_row.addWidget(QLabel("结束:"))
         self.end_color_btn = ColorButton(self.canvas.end_color)
@@ -269,7 +307,6 @@ class LSystemWindow(QMainWindow):
         end_row.addWidget(self.end_color_btn)
         colors_layout.addLayout(end_row)
 
-        # 背景颜色
         bg_row = QHBoxLayout()
         bg_row.addWidget(QLabel("背景:"))
         self.bg_color_btn = ColorButton(self.canvas.bg_color)
@@ -281,16 +318,17 @@ class LSystemWindow(QMainWindow):
         layout.addWidget(container)
 
     def create_rules_section(self, layout):
-        group = QGroupBox("L-system规则")
+        group = QGroupBox("L-system 规则")
         vbox = QVBoxLayout(group)
         vbox.setSpacing(6)
+
         vbox.addWidget(QLabel("公理:"))
         self.axiom_edit = QTextEdit()
         self.axiom_edit.setMaximumHeight(35)
-        self.axiom_edit.setPlaceholderText("输入初始字符串，如: F")
+        self.axiom_edit.setPlaceholderText("例如: F")
         vbox.addWidget(self.axiom_edit)
 
-        vbox.addWidget(QLabel("规则 (每行一个，格式: 前驱->后继):"))
+        vbox.addWidget(QLabel("规则 (每行一条，格式: 前驱->后继):"))
         self.rules_edit = QTextEdit()
         self.rules_edit.setMaximumHeight(120)
         self.rules_edit.setPlaceholderText("例如: F->F+F-F-F+F")
@@ -319,9 +357,9 @@ class LSystemWindow(QMainWindow):
             "Koch曲线": {"axiom": "F", "rules": "F->F+F-F-F+F", "angle": 90, "distance": 10, "iterations": 4},
             "分形树1": {"axiom": "F", "rules": "F->F[+F]F[-F]F", "angle": 25.7, "distance": 10, "iterations": 4},
             "分形树2": {"axiom": "F", "rules": "F->F[+F]F[-F][F]", "angle": 20, "distance": 10, "iterations": 5},
-            "Sierpinski三角": {"axiom": "F", "rules": "F->G-F-G\nG->F+G+F", "angle": 60, "distance": 10, "iterations": 10},
-            "分形植物": {"axiom": "X", "rules": "X->F+[[X]-X]-F[-FX]+X\nF->FF", "angle": 25, "distance": 5, "iterations": 6},
-            "龙形曲线": {"axiom": "FX", "rules": "X->X+YF+\nY->-FX-Y", "angle": 90, "distance": 5, "iterations": 10},
+            "Sierpinski三角": {"axiom": "F", "rules": "F->G-F-G\nG->F+G+F", "angle": 60, "distance": 10, "iterations": 6},
+            "分形植物": {"axiom": "X", "rules": "X->F+[[X]-X]-F[-FX]+X\nF->FF", "angle": 25, "distance": 5, "iterations": 5},
+            "龙形曲线": {"axiom": "FX", "rules": "X->X+YF+\nY->-FX-Y", "angle": 90, "distance": 5, "iterations": 8},
             "Hilbert曲线": {"axiom": "A", "rules": "A->-BF+AFA+FB-\nB->+AF-BFB-FA+", "angle": 90, "distance": 10, "iterations": 4}
         }
         for name in self.systems:
@@ -340,9 +378,11 @@ class LSystemWindow(QMainWindow):
         self.generate_system()
 
     def generate_system(self):
+        """构建 L-system 并传递给绘图部件（后台生成）"""
         lsys = LSystem()
-        lsys.set_axiom(self.axiom_edit.toPlainText())
-        for line in self.rules_edit.toPlainText().split('\n'):
+        lsys.set_axiom(self.axiom_edit.toPlainText().strip())
+        rules_text = self.rules_edit.toPlainText().strip()
+        for line in rules_text.split('\n'):
             if '->' in line:
                 pred, succ = line.split('->', 1)
                 lsys.add_rule(pred.strip(), succ.strip())
@@ -359,10 +399,9 @@ class LSystemWindow(QMainWindow):
         self.angle_spin.setValue(25)
         self.distance_spin.setValue(10)
         self.iterations_spin.setValue(4)
-        self.canvas.path = []
+        self.canvas.path.clear()
         self.canvas.update()
 
-    # 颜色改变槽
     def on_start_color_changed(self, color):
         self.canvas.start_color = color
         self.canvas.update()

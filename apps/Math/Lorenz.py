@@ -3,143 +3,105 @@ from custom_import import *
 # ---------- Taichi 初始化 ----------
 ti.init(arch=ti.cpu, debug=False)
 
-# ---------- 预设积分内核（RK4）----------
+# ---------- 通用 RK4 步进器与泛型积分内核 ----------
+@ti.func
+def rk4_step(x: ti.f64, y: ti.f64, z: ti.f64,
+             dt: ti.f64,
+             deriv: ti.template(),
+             p0: ti.f64, p1: ti.f64, p2: ti.f64,
+             p3: ti.f64, p4: ti.f64, p5: ti.f64):
+    """执行一步 RK4 积分，返回新的 (x, y, z) 三个标量"""
+    # k1
+    k1 = deriv(x, y, z, p0, p1, p2, p3, p4, p5)
+    # k2
+    k2 = deriv(x + 0.5 * dt * k1[0],
+               y + 0.5 * dt * k1[1],
+               z + 0.5 * dt * k1[2],
+               p0, p1, p2, p3, p4, p5)
+    # k3
+    k3 = deriv(x + 0.5 * dt * k2[0],
+               y + 0.5 * dt * k2[1],
+               z + 0.5 * dt * k2[2],
+               p0, p1, p2, p3, p4, p5)
+    # k4
+    k4 = deriv(x + dt * k3[0],
+               y + dt * k3[1],
+               z + dt * k3[2],
+               p0, p1, p2, p3, p4, p5)
+
+    x_new = x + dt / 6.0 * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0])
+    y_new = y + dt / 6.0 * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1])
+    z_new = z + dt / 6.0 * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2])
+    return x_new, y_new, z_new
+
+
 @ti.kernel
-def lorenz_integrate(
+def generic_integrate(
     x_in: ti.f64, y_in: ti.f64, z_in: ti.f64,
     p0: ti.f64, p1: ti.f64, p2: ti.f64,
     p3: ti.f64, p4: ti.f64, p5: ti.f64,
     dt: ti.f64, n: ti.i32,
     out: ti.types.ndarray(dtype=ti.f64, ndim=2),
-    start: ti.i32
+    start: ti.i32,
+    deriv: ti.template()
 ):
+    """泛型积分内核，通过模板参数 deriv 指定导数函数"""
     x, y, z = x_in, y_in, z_in
-    sigma, rho, beta = p0, p1, p2
     for i in range(n):
-        dx1 = sigma * (y - x)
-        dy1 = x * (rho - z) - y
-        dz1 = x * y - beta * z
-        x2 = x + 0.5 * dt * dx1
-        y2 = y + 0.5 * dt * dy1
-        z2 = z + 0.5 * dt * dz1
-        dx2 = sigma * (y2 - x2)
-        dy2 = x2 * (rho - z2) - y2
-        dz2 = x2 * y2 - beta * z2
-        x3 = x + 0.5 * dt * dx2
-        y3 = y + 0.5 * dt * dy2
-        z3 = z + 0.5 * dt * dz2
-        dx3 = sigma * (y3 - x3)
-        dy3 = x3 * (rho - z3) - y3
-        dz3 = x3 * y3 - beta * z3
-        x4 = x + dt * dx3
-        y4 = y + dt * dy3
-        z4 = z + dt * dz3
-        dx4 = sigma * (y4 - x4)
-        dy4 = x4 * (rho - z4) - y4
-        dz4 = x4 * y4 - beta * z4
-        x += dt / 6.0 * (dx1 + 2*dx2 + 2*dx3 + dx4)
-        y += dt / 6.0 * (dy1 + 2*dy2 + 2*dy3 + dy4)
-        z += dt / 6.0 * (dz1 + 2*dz2 + 2*dz3 + dz4)
+        x, y, z = rk4_step(x, y, z, dt, deriv, p0, p1, p2, p3, p4, p5)
         out[start + i, 0] = x
         out[start + i, 1] = y
         out[start + i, 2] = z
 
-@ti.kernel
-def rossler_integrate(
-    x_in: ti.f64, y_in: ti.f64, z_in: ti.f64,
-    p0: ti.f64, p1: ti.f64, p2: ti.f64,
-    p3: ti.f64, p4: ti.f64, p5: ti.f64,
-    dt: ti.f64, n: ti.i32,
-    out: ti.types.ndarray(dtype=ti.f64, ndim=2),
-    start: ti.i32
-):
-    x, y, z = x_in, y_in, z_in
-    a, b, c = p0, p1, p2
-    for i in range(n):
-        dx1 = -y - z
-        dy1 = x + a * y
-        dz1 = b + z * (x - c)
-        x2 = x + 0.5*dt*dx1; y2 = y + 0.5*dt*dy1; z2 = z + 0.5*dt*dz1
-        dx2 = -y2 - z2
-        dy2 = x2 + a * y2
-        dz2 = b + z2 * (x2 - c)
-        x3 = x + 0.5*dt*dx2; y3 = y + 0.5*dt*dy2; z3 = z + 0.5*dt*dz2
-        dx3 = -y3 - z3
-        dy3 = x3 + a * y3
-        dz3 = b + z3 * (x3 - c)
-        x4 = x + dt*dx3; y4 = y + dt*dy3; z4 = z + dt*dz3
-        dx4 = -y4 - z4
-        dy4 = x4 + a * y4
-        dz4 = b + z4 * (x4 - c)
-        x += dt/6.0 * (dx1 + 2*dx2 + 2*dx3 + dx4)
-        y += dt/6.0 * (dy1 + 2*dy2 + 2*dy3 + dy4)
-        z += dt/6.0 * (dz1 + 2*dz2 + 2*dz3 + dz4)
-        out[start+i,0]=x; out[start+i,1]=y; out[start+i,2]=z
 
-@ti.kernel
-def chen_integrate(
-    x_in: ti.f64, y_in: ti.f64, z_in: ti.f64,
-    p0: ti.f64, p1: ti.f64, p2: ti.f64,
-    p3: ti.f64, p4: ti.f64, p5: ti.f64,
-    dt: ti.f64, n: ti.i32,
-    out: ti.types.ndarray(dtype=ti.f64, ndim=2),
-    start: ti.i32
-):
-    x, y, z = x_in, y_in, z_in
-    a, b, c = p0, p1, p2
-    for i in range(n):
-        dx1 = a*(y - x)
-        dy1 = (c - a)*x - x*z + c*y
-        dz1 = x*y - b*z
-        x2=x+0.5*dt*dx1; y2=y+0.5*dt*dy1; z2=z+0.5*dt*dz1
-        dx2=a*(y2-x2); dy2=(c-a)*x2 - x2*z2 + c*y2; dz2=x2*y2 - b*z2
-        x3=x+0.5*dt*dx2; y3=y+0.5*dt*dy2; z3=z+0.5*dt*dz2
-        dx3=a*(y3-x3); dy3=(c-a)*x3 - x3*z3 + c*y3; dz3=x3*y3 - b*z3
-        x4=x+dt*dx3; y4=y+dt*dy3; z4=z+dt*dz3
-        dx4=a*(y4-x4); dy4=(c-a)*x4 - x4*z4 + c*y4; dz4=x4*y4 - b*z4
-        x += dt/6.0*(dx1+2*dx2+2*dx3+dx4)
-        y += dt/6.0*(dy1+2*dy2+2*dy3+dy4)
-        z += dt/6.0*(dz1+2*dz2+2*dz3+dz4)
-        out[start+i,0]=x; out[start+i,1]=y; out[start+i,2]=z
+# ---------- 各吸引子的导数函数（统一的 6 参数接口）----------
+@ti.func
+def deriv_lorenz(x, y, z, p0, p1, p2, p3, p4, p5):
+    sigma, rho, beta = p0, p1, p2
+    dx = sigma * (y - x)
+    dy = x * (rho - z) - y
+    dz = x * y - beta * z
+    return ti.math.vec3(dx, dy, dz)
 
-@ti.kernel
-def aizawa_integrate(
-    x_in: ti.f64, y_in: ti.f64, z_in: ti.f64,
-    p0: ti.f64, p1: ti.f64, p2: ti.f64, p3: ti.f64, p4: ti.f64, p5: ti.f64,
-    dt: ti.f64, n: ti.i32,
-    out: ti.types.ndarray(dtype=ti.f64, ndim=2),
-    start: ti.i32
-):
-    x, y, z = x_in, y_in, z_in
+
+@ti.func
+def deriv_rossler(x, y, z, p0, p1, p2, p3, p4, p5):
+    a, b, c = p0, p1, p2
+    dx = -y - z
+    dy = x + a * y
+    dz = b + z * (x - c)
+    return ti.math.vec3(dx, dy, dz)
+
+
+@ti.func
+def deriv_chen(x, y, z, p0, p1, p2, p3, p4, p5):
+    a, b, c = p0, p1, p2
+    dx = a * (y - x)
+    dy = (c - a) * x - x * z + c * y
+    dz = x * y - b * z
+    return ti.math.vec3(dx, dy, dz)
+
+
+@ti.func
+def deriv_aizawa(x, y, z, p0, p1, p2, p3, p4, p5):
     a, b, c, d, e, f = p0, p1, p2, p3, p4, p5
-    for i in range(n):
-        dx1 = (z - b)*x - d*y
-        dy1 = d*x + (z - b)*y
-        dz1 = c + a*z - (z**3)/3.0 - (x**2 + y**2)*(1.0 + e*z) + f*z*x**3
-        x2=x+0.5*dt*dx1; y2=y+0.5*dt*dy1; z2=z+0.5*dt*dz1
-        dx2=(z2-b)*x2 - d*y2
-        dy2=d*x2 + (z2-b)*y2
-        dz2=c + a*z2 - (z2**3)/3.0 - (x2**2+y2**2)*(1.0+e*z2) + f*z2*x2**3
-        x3=x+0.5*dt*dx2; y3=y+0.5*dt*dy2; z3=z+0.5*dt*dz2
-        dx3=(z3-b)*x3 - d*y3
-        dy3=d*x3 + (z3-b)*y3
-        dz3=c + a*z3 - (z3**3)/3.0 - (x3**2+y3**2)*(1.0+e*z3) + f*z3*x3**3
-        x4=x+dt*dx3; y4=y+dt*dy3; z4=z+dt*dz3
-        dx4=(z4-b)*x4 - d*y4
-        dy4=d*x4 + (z4-b)*y4
-        dz4=c + a*z4 - (z4**3)/3.0 - (x4**2+y4**2)*(1.0+e*z4) + f*z4*x4**3
-        x += dt/6.0*(dx1+2*dx2+2*dx3+dx4)
-        y += dt/6.0*(dy1+2*dy2+2*dy3+dy4)
-        z += dt/6.0*(dz1+2*dz2+2*dz3+dz4)
-        out[start+i,0]=x; out[start+i,1]=y; out[start+i,2]=z
+    dx = (z - b) * x - d * y
+    dy = d * x + (z - b) * y
+    dz = c + a * z - (z ** 3) / 3.0 - (x ** 2 + y ** 2) * (1.0 + e * z) + f * z * x ** 3
+    return ti.math.vec3(dx, dy, dz)
 
+
+# ---------- 预设配置 ----------
 PRESETS = {
-    "Lorenz": (lorenz_integrate, ["σ", "ρ", "β", "", "", ""], [10.0, 28.0, 8.0/3, 0, 0, 0]),
-    "Rössler": (rossler_integrate, ["a", "b", "c", "", "", ""], [0.2, 0.2, 5.7, 0, 0, 0]),
-    "Chen": (chen_integrate, ["a", "b", "c", "", "", ""], [35.0, 3.0, 28.0, 0, 0, 0]),
-    "Aizawa": (aizawa_integrate, ["a", "b", "c", "d", "e", "f"],
-              [0.95, 0.7, 0.6, 3.5, 0.25, 0.1]),
-    "Custom": (None, ["p0", "p1", "p2", "p3", "p4", "p5"], [1.0]*6)
+    "Lorenz": (deriv_lorenz, ["σ", "ρ", "β", "", "", ""],
+               [10.0, 28.0, 8.0 / 3, 0, 0, 0]),
+    "Rössler": (deriv_rossler, ["a", "b", "c", "", "", ""],
+                [0.2, 0.2, 5.7, 0, 0, 0]),
+    "Chen": (deriv_chen, ["a", "b", "c", "", "", ""],
+             [35.0, 3.0, 28.0, 0, 0, 0]),
+    "Aizawa": (deriv_aizawa, ["a", "b", "c", "d", "e", "f"],
+               [0.95, 0.7, 0.6, 3.5, 0.25, 0.1]),
+    "Custom": (None, ["p0", "p1", "p2", "p3", "p4", "p5"], [1.0] * 6)
 }
 
 FORMULAS = {
@@ -149,6 +111,7 @@ FORMULAS = {
     "Aizawa": "dx/dt = (z - b)x - dy\ndy/dt = dx + (z - b)y\ndz/dt = c + az - z³/3 - (x²+y²)(1+ez) + fzx³",
     "Custom": "自定义方程：在下方输入 dx/dt, dy/dt, dz/dt"
 }
+
 
 # ---------- 3D 渲染组件 ----------
 class AttractorGLWidget(QOpenGLWidget):
@@ -223,7 +186,7 @@ class AttractorGLWidget(QOpenGLWidget):
         self.camera.zoom(event.angleDelta().y() * 0.05)
         self.update()
 
-# ---------- 正方形容器（新增）----------
+
 class SquareGLContainer(QWidget):
     """强制内部 AttractorGLWidget 保持正方形，并居中显示"""
     def __init__(self, camera, parent=None):
@@ -232,14 +195,13 @@ class SquareGLContainer(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.gl_widget, 0, Qt.AlignCenter)
-
-        # 可选：设置容器背景色以凸显边框
         self.setStyleSheet("background-color: #cccccc; border: 2px solid black;")
 
     def resizeEvent(self, event):
         size = min(self.width(), self.height())
         self.gl_widget.setFixedSize(size, size)
         super().resizeEvent(event)
+
 
 # ---------- 主窗口 ----------
 class MainWindow(QMainWindow):
@@ -250,8 +212,8 @@ class MainWindow(QMainWindow):
 
         self.running = False
         self.current_preset = "Lorenz"
-        self.integrate_kernel = PRESETS["Lorenz"][0]
-        self.custom_code = [None, None, None]  # dx, dy, dz
+        self.deriv_func = PRESETS["Lorenz"][0]          # 当前导数函数
+        self.custom_code = [None, None, None]
         self.x, self.y, self.z = 0.1, 0.0, 0.0
         self.params = list(PRESETS["Lorenz"][2])
         self.dt = 0.005
@@ -262,7 +224,7 @@ class MainWindow(QMainWindow):
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_simulation)
-        self.timer.start(16)  # ~60 FPS
+        self.timer.start(16)
 
         self.on_preset_changed("Lorenz")
         self.reset_sim()
@@ -399,14 +361,11 @@ class MainWindow(QMainWindow):
 
         central.addWidget(panel)
 
-        # 右侧正方形 OpenGL 画布（修改点）
+        # 右侧正方形 OpenGL 画布
         self.right_container = SquareGLContainer(self.camera)
         central.addWidget(self.right_container)
 
-        # 调整分割比例：左侧变窄，右侧保持足够空间
         central.setSizes([280, 700])
-
-        # 保持外部代码兼容性
         self.gl_widget = self.right_container.gl_widget
 
     def _create_slider_pair(self, min_val, max_val, init, label_text, callback):
@@ -432,7 +391,7 @@ class MainWindow(QMainWindow):
             label_text = labels[i] if labels[i] else f"p{i}"
             self.param_labels[i].setText(label_text)
             spin.setValue(def_val)
-        self.integrate_kernel = PRESETS[name][0]
+        self.deriv_func = PRESETS[name][0]
         self.custom_group.setVisible(name == "Custom")
         self.formula_label.setText(FORMULAS.get(name, ""))
         if name != "Custom":
@@ -465,7 +424,6 @@ class MainWindow(QMainWindow):
         self.x, self.y, self.z = self.x0_spin.value(), self.y0_spin.value(), self.z0_spin.value()
         self.gl_widget.clear_trail()
         self.camera.reset()
-        # 重置所有滑块
         self.zoom_slider.setValue(100)
         for slider in [self.rot_x_slider, self.rot_y_slider, self.rot_z_slider,
                        self.pan_x_slider, self.pan_y_slider, self.pan_z_slider]:
@@ -489,7 +447,9 @@ class MainWindow(QMainWindow):
             )
         else:
             out = np.zeros((n, 3), dtype=np.float64)
-            self.integrate_kernel(self.x, self.y, self.z, *params, dt, n, out, 0)
+            # 调用泛型 Taichi 内核，传入当前导数函数
+            generic_integrate(self.x, self.y, self.z, *params,
+                              dt, n, out, 0, self.deriv_func)
             self.x, self.y, self.z = out[-1, 0], out[-1, 1], out[-1, 2]
 
         self.gl_widget.update_trail(out, self.trail_len_spin.value())
@@ -499,7 +459,6 @@ class MainWindow(QMainWindow):
         self.running = False
         self.timer.stop()
         event.accept()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
