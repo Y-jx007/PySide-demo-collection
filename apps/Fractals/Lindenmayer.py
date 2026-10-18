@@ -1,4 +1,4 @@
-﻿from custom_import import *
+from custom_import import *
 
 # ========== L-system 核心 ==========
 class LSystem:
@@ -43,9 +43,15 @@ class LSystemGenerator(QThread):
         self.lsystem = lsystem
         self.start_x = start_x
         self.start_y = start_y
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
 
     def run(self):
         string = self.lsystem.generate()
+        if self._cancelled:
+            return
         path = []
         stack = []
         x, y = self.start_x, self.start_y
@@ -60,7 +66,9 @@ class LSystemGenerator(QThread):
         min_x = max_x = x
         min_y = max_y = y
 
-        for char in string:
+        for index, char in enumerate(string):
+            if index % 4096 == 0 and self._cancelled:
+                return
             if char == 'F':
                 new_x = x + distance * cos_a(math.radians(angle))
                 new_y = y + distance * sin_a(math.radians(angle))
@@ -111,12 +119,17 @@ class LSystemWidget(QWidget):
 
     def set_lsystem(self, lsystem):
         """设置新的 L-system 并启动后台生成"""
-        # 如果有正在运行的线程，先终止
         if self._generator and self._generator.isRunning():
-            self._generator.terminate()
-            self._generator.wait()
+            self._generator.cancel()
+            self._generator.wait(2000)
         self.lsystem = lsystem
         self._start_background_generation()
+
+    def shutdown(self):
+        """窗口关闭时停止后台生成线程。"""
+        if self._generator and self._generator.isRunning():
+            self._generator.cancel()
+            self._generator.wait(2000)
 
     def _start_background_generation(self):
         """启动后台线程计算路径"""
@@ -413,6 +426,10 @@ class LSystemWindow(QMainWindow):
     def on_bg_color_changed(self, color):
         self.canvas.bg_color = color
         self.canvas.update()
+
+    def closeEvent(self, event):
+        self.canvas.shutdown()
+        super().closeEvent(event)
 
     def save_image(self):
         if not self.canvas.path:

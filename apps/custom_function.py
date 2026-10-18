@@ -1,4 +1,4 @@
-﻿import math
+import math
 import re
 import numpy as np
 import taichi_forge as ti
@@ -27,10 +27,11 @@ def make_safe_expression(expr: str) -> str:
     return expr
 
 def integrate_custom_python(x0, y0, z0, params, dt, n, dx_code, dy_code, dz_code):
-    """使用预编译的表达式进行 RK4 积分
+    """用 RK4 积分由字符串给出的微分方程。
 
-    安全提示：eval 在限制命名空间 {x,y,z,p0-p5,math} 中执行，
-    不包含 __builtins__，可以防止任意代码执行。
+    表达式在受限命名空间 {x,y,z,p0-p5,math} 中 eval。这只是减少误用，
+    并不是安全沙箱；Python 的 eval 无法可靠地隔离不可信代码。
+    仅用于用户自己输入的本地表达式，不要加载他人提供的表达式。
     """
     out = np.zeros((n, 3), dtype=np.float64)
     x, y, z = x0, y0, z0

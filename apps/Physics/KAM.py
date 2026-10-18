@@ -407,6 +407,18 @@ class MainWindow(QMainWindow):
             self.thread_std.stop()
             self.stdmap_finished()
 
+    def closeEvent(self, event):
+        threads = (self.thread_crtbp, self.thread_std)
+        for thread in threads:
+            if thread and thread.isRunning():
+                thread.stop()
+        for thread in threads:
+            if thread and thread.isRunning():
+                if not thread.wait(2000):
+                    thread.terminate()
+                    thread.wait(1000)
+        super().closeEvent(event)
+
     def stdmap_finished(self):
         self.btn_run_std.setEnabled(True)
         self.btn_stop_std.setEnabled(False)

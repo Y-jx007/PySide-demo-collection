@@ -1,5 +1,6 @@
-﻿import sys
+import sys
 import math
+import logging
 import numpy as np
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QLineEdit,
@@ -11,7 +12,7 @@ from PySide6.QtGui import QPainter, QPen, QColor, QImage
 import time
 from numba import jit, prange
 
-print("使用CPU计算")
+logging.debug("Lyapunov 分形使用 CPU/Numba 计算")
 
 # =============================================================================
 # 映射函数定义
@@ -121,7 +122,7 @@ class CustomFunctionHandler:
             try:
                 x = eval(self.function_str, {"x": x, "r": r, "np": np, "sin": math.sin, "cos": math.cos,
                                             "exp": math.exp, "log": math.log, "abs": abs})
-            except:
+            except Exception:
                 x = 0.5
         return x
 
@@ -129,7 +130,7 @@ class CustomFunctionHandler:
         try:
             return eval(self.derivative_str, {"x": x, "r": r, "np": np, "sin": math.sin, "cos": math.cos,
                                              "exp": math.exp, "log": math.log, "abs": abs})
-        except:
+        except Exception:
             return 1.0
 
 class LyapunovCalculator:
@@ -926,6 +927,18 @@ class LyapunovFractalApp(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.progress_bar.setValue(0)
+
+    def closeEvent(self, event):
+        threads = (self.calculation_thread, self.bifurcation_thread)
+        for thread in threads:
+            if thread and thread.isRunning():
+                thread.cancel()
+        for thread in threads:
+            if thread and thread.isRunning():
+                if not thread.wait(3000):
+                    thread.terminate()
+                    thread.wait(1000)
+        super().closeEvent(event)
 
     def reset_bifurcation_ui(self):
         self.calculate_bifurcation_btn.setEnabled(True)

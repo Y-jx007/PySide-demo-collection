@@ -1,21 +1,22 @@
 import os
 import sys
-import importlib
+import time
+import subprocess
 import importlib.util
-import inspect
 import logging
 import io
-import hashlib
 
 from PIL import Image, ImageOps
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QCursor, QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QMessageBox,
     QSizePolicy, QGraphicsDropShadowEffect
 )
+
+from apps_manifest import APPS, CATEGORY_ORDER, INSTALL_HINTS
 
 # ===================== 全局常量 =====================
 CARD_WIDTH = 150
@@ -41,7 +42,7 @@ CARD_TEXT_LAYOUT_MARGINS = (6, 4, 6, 4)
 
 CARD_BORDER_WIDTH = 2
 
-CATEGORY_HEIGHT = 170  # 增加高度避免阴影裁剪
+CATEGORY_HEIGHT = 188  # 留出横向滚动条与阴影的空间
 CATEGORY_LABEL_WIDTH = 95
 CATEGORY_LAYOUT_MARGINS = (12, 4, 10, 4)
 CATEGORY_LAYOUT_SPACING = 12
@@ -57,9 +58,30 @@ LAUNCHER_DEFAULT_HEIGHT = 800
 LAUNCHER_MAIN_MARGINS = (24, 4, 24, 4)
 
 INFO_FONT_SIZE = 8
+INFO_DEFAULT = "选择工具开始使用 | 绘图工具集 v1.1"
+
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+APPS_DIR = os.path.join(PROJECT_DIR, "apps")
 
 FAMILY_TITLE = "Segoe UI"
 FAMILY_DEFAULT = "Microsoft YaHei"
+
+
+class HScrollArea(QScrollArea):
+    """横向滚动区域：窗口变窄时用滚轮/滚动条仍可访问全部卡片。"""
+
+    def wheelEvent(self, event):
+        bar = self.horizontalScrollBar()
+        wants_horizontal = bool(event.modifiers() & Qt.ShiftModifier) or (
+            abs(event.angleDelta().x()) > abs(event.angleDelta().y())
+        )
+        if wants_horizontal and bar.maximum() > bar.minimum():
+            delta = event.angleDelta().y() or event.angleDelta().x()
+            if delta:
+                bar.setValue(bar.value() - delta)
+                event.accept()
+                return
+        super().wheelEvent(event)
 
 
 # ===================== 应用卡片 =====================
@@ -282,9 +304,9 @@ class CategoryWidget(QFrame):
         title_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         main_layout.addWidget(title_label, 0, Qt.AlignVCenter)
 
-        self.scroll_area = QScrollArea()
+        self.scroll_area = HScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setFixedHeight(CATEGORY_HEIGHT)
         self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
@@ -308,19 +330,18 @@ class CategoryWidget(QFrame):
 
 # ===================== 主窗口 =====================
 class ApplicationLauncher(QMainWindow):
-    error_occurred = Signal(str)
-    app_launched = Signal(object)
-
     def __init__(self):
         super().__init__()
-        self.active_windows = []
+        self.active_processes = []   # 每个 app 一个独立子进程
         self.cards = []
-        self._module_class_cache = {}   # 缓存已加载的类
-
-        self.error_occurred.connect(self.show_error)
-        self.app_launched.connect(self.handle_app_launch)
+        self._closing = False
 
         logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(500)
+        self._poll_timer.timeout.connect(self._poll_processes)
+        self._poll_timer.start()
 
         self.setup_ui()
         self.setup_apps()
@@ -355,148 +376,193 @@ class ApplicationLauncher(QMainWindow):
         self.outer_scroll.setWidget(self.scroll_content)
         main_layout.addWidget(self.outer_scroll)
 
-        info = QLabel("选择工具开始使用 | 绘图工具集 v1.0")
+        info = QLabel(INFO_DEFAULT)
         info.setFont(QFont(FAMILY_TITLE, INFO_FONT_SIZE))
         info.setStyleSheet("color: #888;")
         info.setAlignment(Qt.AlignCenter)
+        self.info_label = info
         main_layout.addWidget(info)
 
     def _make_launcher(self, module_subpath, friendly_name):
-        apps_dir = os.path.join(os.path.dirname(__file__), 'apps')
-        module_path = os.path.join(apps_dir, module_subpath.replace('/', os.sep))
-        return lambda: self.load_app_module(module_path, friendly_name)
+        module_path = os.path.join(APPS_DIR, module_subpath.replace('/', os.sep))
+        return lambda: self.launch_app(module_path, friendly_name)
 
     def _create_category(self, category_name, items):
         """创建分类槽并添加卡片"""
         cat_widget = CategoryWidget(category_name)
         self.categories_layout.addWidget(cat_widget)
 
-        for title, desc, subpath, friendly in items:
-            command = self._make_launcher(subpath, friendly)
-            module_filename = os.path.basename(subpath)
+        for app in items:
+            command = self._make_launcher(app["path"], app["friendly"])
+            module_filename = os.path.basename(app["path"])
             image_name = os.path.splitext(module_filename)[0] + ".png"
-            image_path = os.path.join(os.path.dirname(__file__), "images", image_name)
-            card = AppCard(title, desc, command, bg_image_path=image_path)
+            image_path = os.path.join(PROJECT_DIR, "images", image_name)
+            card = AppCard(app["title"], app["description"], command, bg_image_path=image_path)
             self.cards.append(card)
             cat_widget.add_card(card)
 
     def setup_apps(self):
-        app_definitions = [
-            ("Fourier",      "绘制图形并查看其傅里叶变换",              "Math/Fourier.py", "二维傅里叶变换"),
-            ("Arnold",       "可视化图像猫变换",                       "Math/Arnold.py", "猫变换"),
-            ("Lloyd",        "用Voronoi图的Lloyd松弛过程模拟蜂巢结构的形成", "Math/Lloyd.py", "Lloyd松弛"),
-            ("幅角图",       "在复平面上可视化复变函数",                "Math/Cplot.py", "辐角图"),
-            ("旅商问题",     "使用遗传算法解决旅行商问题",              "Math/Traveler.py", "旅行商问题遗传算法"),
-            ("Lorenz",       "三维奇异吸引子可视化",                    "Math/Lorenz.py", "洛伦兹吸引子"),
-            ("Schrödinger",  "Runge-Kutta模拟二维量子波包演化过程",      "Physics/Schrödinger.py", "薛定谔方程"),
-            ("Turing",       "反应扩散系统模拟",            "Physics/Turing.py", "反应扩散模型"),
-            ("Ising",        "模拟二维伊辛模型",                       "Physics/Ising.py", "二维伊辛模型"),
-            ("Maxwell",      "模拟气体分子速率分布",                    "Physics/Maxwell.py", "麦克斯韦分布律"),
-            ("Navier-Stokes", "2DQ9格子Boltzmann模拟Karmen涡街",       "Physics/Navier-Stokes.py", "Navier-Stokes方程"),
-            ("Quaternion Julia",     "三维Julia集可视化",              "Fractals/Quaternion Julia.py", "三维Julia集"),
-            ("Mandelbrot-Julia", "复动力系统生成分形",                 "Fractals/Mandelbrot.py", "复动力系统"),
-            ("Newton",       "牛顿迭代法生成分形",                     "Fractals/Newton.py", "牛顿迭代法分形"),
-            ("Lindenmayer",  "林氏系统分形",                          "Fractals/Lindenmayer.py", "林氏系统"),
-            ("IFS分形",      "迭代函数系统生成分形图案",                "Fractals/IFS.py", "IFS分形"),
-            ("Logistic分形", "逻辑映射生成分形图案",                    "Fractals/Logistic.py", "逻辑映射分形"),
-            ("Lenia",       "连续化元胞自动机",                         "Cellular Automata/Lenia.py", "连续生命游戏"),
-            ("Conway",       "模拟和可视化生命游戏",                    "Cellular Automata/Conway.py", "元胞自动机"),
-            ("Distill",    "神经网络元胞自动机",                        "Cellular Automata/Distill.py", "神经网络元胞自动机"),
-        ]
-
         categories = {}
-        for title, desc, subpath, friendly in app_definitions:
-            category = subpath.split('/')[0]
-            categories.setdefault(category, []).append((title, desc, subpath, friendly))
+        for app in APPS:
+            categories.setdefault(app["category"], []).append(app)
 
         # 优先按指定顺序显示
-        category_order = ["Math", "Physics", "Fractals", "Cellular Automata"]
-        for cat in category_order:
+        for cat in CATEGORY_ORDER:
             if cat in categories:
                 self._create_category(cat, categories[cat])
 
-        # 其余分类按字母顺序排列
+        # 其余分类按名称排序
         for cat in sorted(categories.keys()):
-            if cat not in category_order:
+            if cat not in CATEGORY_ORDER:
                 self._create_category(cat, categories[cat])
 
         self.categories_layout.addStretch()
 
-    def load_app_module(self, module_path, friendly_name):
-        # 检查缓存
-        if module_path in self._module_class_cache:
-            self.app_launched.emit(self._module_class_cache[module_path])
+    def _manifest_for_path(self, module_path):
+        target = os.path.normcase(os.path.abspath(module_path))
+        for app in APPS:
+            candidate = os.path.normcase(os.path.abspath(
+                os.path.join(APPS_DIR, app["path"].replace("/", os.sep))))
+            if candidate == target:
+                return app
+        return None
+
+    def _missing_dependencies(self, app):
+        missing = []
+        for dep in app.get("requires", []):
+            try:
+                if importlib.util.find_spec(dep) is None:
+                    missing.append(dep)
+            except (ImportError, ValueError):
+                missing.append(dep)
+        return missing
+
+    def launch_app(self, module_path, friendly_name):
+        if not os.path.exists(module_path):
+            self.show_error(f"找不到应用文件:\n{module_path}")
             return
 
-        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        app = self._manifest_for_path(module_path)
+        missing = self._missing_dependencies(app) if app else []
+        if missing:
+            hints = "\n".join(f"{dep}: {INSTALL_HINTS.get(dep, 'pip install ' + dep)}" for dep in missing)
+            QMessageBox.warning(
+                self, "缺少依赖",
+                f"{friendly_name} 需要以下依赖：\n{hints}\n\n安装后再启动。"
+            )
+            return
+
+        for entry in self.active_processes:
+            if entry["path"] == module_path and entry["process"].poll() is None:
+                QMessageBox.information(self, "已在运行", f"{friendly_name} 已经在运行。")
+                return
+
+        runner = os.path.join(PROJECT_DIR, "app_runner.py")
+        if not os.path.exists(runner):
+            self.show_error(f"找不到启动器入口:\n{runner}")
+            return
+
+        # 子进程输出写入 logs/：比管道更稳（打包后无控制台时也能查错）
+        log_dir = os.path.join(PROJECT_DIR, "logs")
+        base = os.path.splitext(os.path.basename(module_path))[0]
+        safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in base)
+        out_log = os.path.join(log_dir, f"{safe}.out.log")
+        error_log = os.path.join(log_dir, f"{safe}.err.log")
+        handles = []
         try:
-            if not os.path.exists(module_path):
-                raise FileNotFoundError(f"找不到文件: {module_path}")
+            os.makedirs(log_dir, exist_ok=True)
+            out_handle = open(out_log, "w", encoding="utf-8", errors="replace")
+            handles.append(out_handle)
+            err_handle = open(error_log, "w", encoding="utf-8", errors="replace")
+            handles.append(err_handle)
+        except OSError:
+            for handle in handles:
+                handle.close()
+            handles = []
+            out_handle = err_handle = subprocess.DEVNULL
+            out_log = error_log = None
 
-            # 生成安全的模块名
-            module_hash = hashlib.md5(module_path.encode()).hexdigest()[:8]
-            module_name = f"launcher_{module_hash}"
-
-            spec = importlib.util.spec_from_file_location(module_name, module_path)
-            if spec is None or spec.loader is None:
-                raise ImportError("无法创建模块规格")
-
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-
-            # 查找属于该模块的 QMainWindow 子类
-            app_class = None
-            for _, obj in inspect.getmembers(module, inspect.isclass):
-                if (issubclass(obj, QMainWindow) and
-                    obj is not QMainWindow and
-                    obj.__module__ == module.__name__):
-                    app_class = obj
-                    break
-
-            if app_class is None:
-                raise ImportError("模块中未找到 QMainWindow 子类")
-
-            self._module_class_cache[module_path] = app_class
-            self.app_launched.emit(app_class)
-        except Exception as e:
-            logging.exception(f"加载模块失败: {friendly_name}")
-            self.error_occurred.emit(f"无法启动 {friendly_name}: {str(e)}")
+        creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, runner, module_path],
+                cwd=PROJECT_DIR,
+                stdout=out_handle,
+                stderr=err_handle,
+                creationflags=creationflags,
+            )
+        except OSError as exc:
+            self.show_error(f"无法启动 {friendly_name}:\n{exc}")
+            return
         finally:
-            QApplication.restoreOverrideCursor()
+            for handle in handles:
+                handle.close()
 
-    def handle_app_launch(self, app_class):
-        try:
-            window = app_class()
-            window.show()
-            self.active_windows.append(window)
-            window.destroyed.connect(lambda w=window: self._remove_active_window(w))
-        except Exception as e:
-            logging.exception("创建应用窗口出错")
-            self.show_error(f"创建应用窗口时出错: {str(e)}")
+        self.active_processes.append({
+            "process": proc,
+            "path": module_path,
+            "friendly": friendly_name,
+            "error_log": error_log,
+        })
+        self.info_label.setText(f"正在启动 {friendly_name}…（首次启动可能需要几秒）")
+        QTimer.singleShot(6000, self._restore_info)
 
-    def _remove_active_window(self, window):
-        if window in self.active_windows:
-            self.active_windows.remove(window)
+    def _poll_processes(self):
+        changed = False
+        for entry in list(self.active_processes):
+            code = entry["process"].poll()
+            if code is None:
+                continue
+            self.active_processes.remove(entry)
+            changed = True
+            if self._closing:
+                continue
+            if code != 0:
+                hint = f"\n\n错误日志:\n{entry['error_log']}" if entry.get("error_log") else ""
+                self.show_error(f"{entry['friendly']} 异常退出（代码 {code}）。{hint}")
+        if changed:
+            self._restore_info()
+
+    def _restore_info(self):
+        if self._closing:
+            return
+        if self.active_processes:
+            self.info_label.setText(
+                f"已启动 {len(self.active_processes)} 个工具 | 关闭启动器会一并关闭它们"
+            )
+        else:
+            self.info_label.setText(INFO_DEFAULT)
 
     def show_error(self, message):
         QMessageBox.critical(self, "错误", message)
 
     def closeEvent(self, event):
-        for win in self.active_windows[:]:
-            win.close()
+        self._closing = True
+        self._poll_timer.stop()
+        entries = list(self.active_processes)
+        for entry in entries:
+            proc = entry["process"]
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+
+        deadline = time.monotonic() + 3.0
+        for entry in entries:
+            proc = entry["process"]
+            try:
+                proc.wait(timeout=max(0.05, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        self.active_processes.clear()
         event.accept()
 
 
 if __name__ == "__main__":
-    apps_dir = os.path.join(os.path.dirname(__file__), 'apps')
-    if apps_dir not in sys.path:
-        sys.path.append(apps_dir)
-    for root, dirs, files in os.walk(apps_dir):
-        for d in dirs:
-            full_path = os.path.join(root, d)
-            if full_path not in sys.path:
-                sys.path.append(full_path)
-
     app = QApplication(sys.argv)
     app.setFont(QFont(FAMILY_DEFAULT, 9))
     launcher = ApplicationLauncher()

@@ -1,0 +1,4 @@
+# Distill（神经网络元胞自动机）额外依赖
+# 安装：pip install -r requirements-distill.txt
+-r requirements.txt
+torch>=2.0

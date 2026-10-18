@@ -6,28 +6,29 @@ import unittest
 # 添加项目路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'apps'))
 
+from PySide6.QtWidgets import QWidget
+
 
 class TestAppImports(unittest.TestCase):
     """测试各 app 文件的导入是否正常"""
 
     def test_custom_import_clean(self):
         """custom_import.py 应无循环导入错误"""
-        # 清除可能存在的模块缓存
-        for mod in list(sys.modules.keys()):
-            if 'apps.' in mod or mod in sys.modules:
-                if mod.startswith('apps.') or mod in ('apps',):
-                    del sys.modules[mod]
         from custom_import import (
             np, ti, QApplication, QMainWindow, QTimer,
             jit, njit, mp, ABC, abstractmethod,
             OrbitCamera, ColorButton,
             c64, csqr, cmul,
-            SimulationBase, BaseFractalWidget
+            BaseFractalWidget
         )
+        from reaction_diffusion import SimulationBase, SimulationViewer
+
         # 验证导入成功
         self.assertIsNotNone(np)
         self.assertIsNotNone(ti)
         self.assertIsNotNone(QApplication)
+        self.assertTrue(issubclass(SimulationViewer, QWidget))
+        self.assertTrue(hasattr(SimulationBase, "step"))
 
     def test_utils_import(self):
         """utils.py 应独立可导入"""

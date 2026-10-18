@@ -1,6 +1,7 @@
 import sys
 import os
 import glob
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -254,7 +255,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Neural CA - 自生长修复 (OpenGL)")
         self.setMinimumSize(1000, 700)
 
-        self.model_dir = "models"
+        self.model_dir = str(Path(__file__).resolve().parents[2] / "models")
         os.makedirs(self.model_dir, exist_ok=True)
 
         # 恢复默认网格大小为60，训练更稳定
@@ -558,7 +559,7 @@ class MainWindow(QMainWindow):
         path = os.path.join(self.model_dir, name)
         try:
             self.model = CAModel(self.channel_n, self.fire_rate, self.device).to(self.device)
-            state_dict = torch.load(path, map_location=self.device)
+            state_dict = torch.load(path, map_location=self.device, weights_only=True)
             self.model.load_state_dict(state_dict, strict=False)
             QMessageBox.information(self, "提示", f"模型已从 {name} 加载")
             self.reset_state()
@@ -814,6 +815,15 @@ class MainWindow(QMainWindow):
         if self.train_thread:
             self.train_thread.stop()
             self.btn_stop_train.setEnabled(False)
+
+    def closeEvent(self, event):
+        self.sim_timer.stop()
+        if self.train_thread and self.train_thread.isRunning():
+            self.train_thread.stop()
+            if not self.train_thread.wait(5000):
+                self.train_thread.terminate()
+                self.train_thread.wait(1000)
+        super().closeEvent(event)
 
     def on_loss(self, loss):
         self.loss_label.setText(f"Loss: {loss:.4f}")

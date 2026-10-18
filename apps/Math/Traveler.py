@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import numpy as np
 import random
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -706,8 +706,14 @@ class MainWindow(QMainWindow):
     def stop_algorithm(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait()
-            
+            if not self.worker.wait(3000):
+                self.worker.terminate()
+                self.worker.wait(1000)
+
+    def closeEvent(self, event):
+        self.stop_algorithm()
+        super().closeEvent(event)
+
     def on_algorithm_update(self, cities, solution, distance, generation):
         self.tsp_canvas.update_solution(cities, solution, distance, generation)
         self.progress_bar.setValue(generation)

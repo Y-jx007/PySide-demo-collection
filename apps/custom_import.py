@@ -15,7 +15,6 @@ import numpy as np
 import taichi_forge as ti
 import taichi_forge.math as tm
 from mpmath import mp
-import matplotlib.pyplot as plt
 
 # ── 图像处理 ──
 from PIL import Image, ImageDraw

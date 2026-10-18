@@ -1,4 +1,4 @@
-﻿from custom_import import *
+from custom_import import *
 
 # 经典 IFS 分形数据
 IFS_FRACTALS = {
@@ -43,7 +43,7 @@ IFS_FRACTALS = {
 
 
 @jit(nopython=True)
-def generate_ifs_points(transforms, probabilities, iterations):
+def generate_ifs_points(transforms, probabilities, iterations, cancel_flag):
     points = np.zeros((iterations, 2), dtype=np.float64)
     x, y = 0.0, 0.0
     cum_probs = np.zeros(len(probabilities) + 1, dtype=np.float64)
@@ -51,6 +51,8 @@ def generate_ifs_points(transforms, probabilities, iterations):
         cum_probs[i+1] = cum_probs[i] + probabilities[i]
 
     for i in range(iterations):
+        if i % 2048 == 0 and cancel_flag[0]:
+            break
         r = np.random.random()          # 修复点：使用 NumPy 随机数
         idx = 0
         for j in range(len(probabilities)):
@@ -74,12 +76,17 @@ class FractalWorker(QThread):
         self.transforms = transforms
         self.probabilities = probabilities
         self.iterations = iterations
+        self._cancel = np.zeros(1, dtype=np.int32)
+
+    def cancel(self):
+        self._cancel[0] = 1
 
     def run(self):
         transforms_np = np.array(self.transforms, dtype=np.float64)
         probs_np = np.array(self.probabilities, dtype=np.float64)
-        points = generate_ifs_points(transforms_np, probs_np, self.iterations)
-        self.finished.emit(points)
+        points = generate_ifs_points(transforms_np, probs_np, self.iterations, self._cancel)
+        if not self._cancel[0]:
+            self.finished.emit(points)
 
 
 class FractalWidget(QWidget):
@@ -330,6 +337,12 @@ class MainWindow(QMainWindow):
         self.fractal_widget.set_points(points)
         self.fractal_widget.set_colors(self.color_start, self.color_end)
         self.generate_btn.setEnabled(True)
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+            self.worker.wait(3000)
+        super().closeEvent(event)
 
     def save_fractal(self):
         if self.fractal_widget.points is None:

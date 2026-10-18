@@ -1,5 +1,6 @@
-﻿from custom_import import *
+from custom_import import *
 import cplot
+import matplotlib.pyplot as plt
 mp.dps = 15  # 设置mpmath的精度
 
 class CodeTextEdit(QTextEdit):
@@ -366,7 +367,7 @@ class CPlotController(QMainWindow):
                 return None
             contours = eval(f"[{arg_str}]", {"pi": np.pi, "np": np})
             return tuple(contours)
-        except:
+        except Exception:
             return None
     
     def parse_value(self, value_str, default=None):
@@ -375,7 +376,7 @@ class CPlotController(QMainWindow):
             if value_str.strip().lower() == 'none':
                 return None
             return eval(value_str, {"pi": np.pi, "np": np})
-        except:
+        except Exception:
             return default
     
     def create_function(self, func_str):

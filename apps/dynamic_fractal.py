@@ -19,12 +19,17 @@ class BaseFractalWidget(QWidget):
         self.needs_recompute = True
 
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update)
+        self.timer.timeout.connect(self._on_timer)
         self.timer.start(30)
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.setMinimumSize(300, 300)
+
+    def _on_timer(self):
+        # 只有画面确实需要更新时才重绘，避免空闲时持续占用 CPU/GPU。
+        if self.needs_recompute:
+            self.update()
 
     # ---------- 子类必须实现的方法 ----------
     def compute_image(self):

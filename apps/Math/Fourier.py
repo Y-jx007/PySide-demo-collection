@@ -1,4 +1,5 @@
-﻿from custom_import import *
+from custom_import import *
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 # ── 数学辅助 ────────────────────────

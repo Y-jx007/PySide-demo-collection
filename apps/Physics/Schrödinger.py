@@ -1,4 +1,4 @@
-﻿from custom_import import *
+from custom_import import *
 
 ti.init(arch=ti.gpu, default_fp=ti.f32, kernel_profiler=False, offline_cache=True)
 
@@ -65,7 +65,7 @@ def potential_func(x, y, width={width}, height={height}):
                 for j in range(height):
                     try:
                         potential_values[i, j] = float(potential_func(X[i, j], Y[i, j]))
-                    except:
+                    except Exception:
                         potential_values[i, j] = 0.0
             return potential_values, None
         except Exception as e:

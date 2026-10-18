@@ -1,4 +1,4 @@
-﻿from custom_import import *
+from custom_import import *
 
 # ========== 核心变换（不变）==========
 @njit(parallel=True, nogil=True, cache=True)
@@ -420,7 +420,9 @@ class CatMapWidget(QMainWindow):
     def stop_transformation(self):
         if self.worker:
             self.worker.stop()
-            self.worker.wait()
+            if not self.worker.wait(2000):
+                self.worker.terminate()
+                self.worker.wait(1000)
             self.worker = None
         self._set_controls_enabled(False)
         self.status_label.setText("变换已停止")
@@ -470,6 +472,10 @@ class CatMapWidget(QMainWindow):
             except Exception as e:
                 self.status_label.setText(f"保存失败: {e}")
 
+    def closeEvent(self, event):
+        self.stop_transformation()
+        super().closeEvent(event)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self.original_image is not None:
@@ -485,7 +491,7 @@ class CatMapWidget(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     import os
-    qss_path = os.path.join(os.path.dirname(__file__), "style.qss")
+    qss_path = os.path.join(os.path.dirname(__file__), "..", "style.qss")
     if os.path.exists(qss_path):
         with open(qss_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())

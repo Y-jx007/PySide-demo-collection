@@ -1,0 +1,20 @@
+[project]
+name = "pyside-visualization"
+version = "0.1.0"
+description = "PySide6 + Taichi 的交互式数学/物理可视化工具集"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Y-jx007" }]
+
+[project.optional-dependencies]
+distill = ["torch>=2.0"]
+dev = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"

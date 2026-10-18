@@ -400,7 +400,7 @@ class ParticleLifeApp(QMainWindow):
             v = int(input_widget.text())
             v = max(slider.minimum(), min(slider.maximum(), v))
             slider.setValue(v)
-        except:
+        except Exception:
             input_widget.setText(str(slider.value()))
         getattr(self, f"on_{key}")()
 
@@ -415,7 +415,7 @@ class ParticleLifeApp(QMainWindow):
         try:
             v = float(input_widget.text())
             slider.setValue(int(round(v / scale)))
-        except:
+        except Exception:
             self._on_float_slider(slider, key, scale, prec)
         self.on_physics()
 
