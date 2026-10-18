@@ -163,19 +163,25 @@ python tools/search_lenia_presets.py --trials 300 --dry-run
 python tools/search_lenia_presets.py --trials 300 --save
 ```
 
-默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 133 个。
+默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 331 个。
 
 ### 经典 Lenia 形态
 
-85 个“经典-…”预设解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT），包括 Orbium、Scutium、Gyrorbium、Synorbium 等：
+283 个“经典-…”预设全部解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT）的 `Lenia-LifeForms.js`，覆盖文件里 13 个科中的 283/315 个形态：
 
-- 30 个单环形态；
-- 15 个多环形态（2–4 环，名称带“-2环/-3环/-4环”），用本项目的 Gaussian 生长函数验证（原版 `quad4` 仅参数照搬）；
-- 21 个齿形科（Dentidae，六齒虫–十三齒虫）形态，2–4 环、6–13 个齿，全部通过 3000 步复核（其中 11 个的 `omega`/`dt` 按本项目核重新调过；3 个最终退化成环状/丝状，仍是稳定的有界形态）；
-- 19 个輪形科 / 方形科 / 雙子科形态（乙/丙輪虫、方虫、氣/水/棘/旋/環雙子虫），同样通过 3000 步复核；`V2 乙輪虫` 在所有 `omega`/`dt` 组合下都会膨胀，未收录；
-- 21 个多环条目中 6 个在高斯近似下膨胀/死亡，未加入；大盾形 S14/S24 等也未加入。
+| 科 | 数量 | 科 | 数量 |
+|---|---|---|---|
+| P 有翼科 Pterifera | 63 | R 放射科 Radidae | 22 |
+| K 冠形科 Kronidae | 32 | D 齒形科 Dentidae | 21 |
+| C 環形科 Circidae | 29 | F 瓣形科 Folidae | 17 |
+| S 盾形科 Scutidae | 28 | A 星形科 Astridae | 15 |
+| H 卷形科 Helicidae | 28 | G 雙子科 Geminidae | 12 |
+| O 球形科 Orbidae | 9 | Q 方形科 Quadridae | 4 |
+| V 輪形科 Volvidae | 3 | | |
 
-注：`quad4` 核与本项目的 Gaussian 核形状不同，部分形态只保留了“稳定有界”，形状会退化（例如旋鋸雙子虫退化成圆环）。要完全还原原版形态需要给应用加 `growth type`/`kernel type` 选项。
+筛选标准：350 步粗筛 + 3000 步复核（`mass>5`、`area<0.15`、`bbox<160`），失败的形态会再按 `omega`×`dt` 网格重调后重新复核。剩余 32 个形态在高斯近似下始终膨胀/死亡，未收录，例如 `V2 乙輪虫`、`S14/S24 大盾形`、`H8 辛卷虫`、`K16 庚冠虫`、`4F13 十三瓣虫` 等。
+
+注：`quad4` 核与本项目的 Gaussian 核形状不同，部分形态只保留了“稳定有界”，形状会退化（例如旋鋸雙子虫变成圆环、大翼虫长成树枝状）。要完全还原原版形态需要给应用加 `kernel type` 选项。
 
 第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
