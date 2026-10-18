@@ -163,16 +163,19 @@ python tools/search_lenia_presets.py --trials 300 --dry-run
 python tools/search_lenia_presets.py --trials 300 --save
 ```
 
-默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 114 个。
+默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 133 个。
 
 ### 经典 Lenia 形态
 
-66 个“经典-…”预设解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT），包括 Orbium、Scutium、Gyrorbium、Synorbium 等：
+85 个“经典-…”预设解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT），包括 Orbium、Scutium、Gyrorbium、Synorbium 等：
 
 - 30 个单环形态；
 - 15 个多环形态（2–4 环，名称带“-2环/-3环/-4环”），用本项目的 Gaussian 生长函数验证（原版 `quad4` 仅参数照搬）；
 - 21 个齿形科（Dentidae，六齒虫–十三齒虫）形态，2–4 环、6–13 个齿，全部通过 3000 步复核（其中 11 个的 `omega`/`dt` 按本项目核重新调过；3 个最终退化成环状/丝状，仍是稳定的有界形态）；
+- 19 个輪形科 / 方形科 / 雙子科形态（乙/丙輪虫、方虫、氣/水/棘/旋/環雙子虫），同样通过 3000 步复核；`V2 乙輪虫` 在所有 `omega`/`dt` 组合下都会膨胀，未收录；
 - 21 个多环条目中 6 个在高斯近似下膨胀/死亡，未加入；大盾形 S14/S24 等也未加入。
+
+注：`quad4` 核与本项目的 Gaussian 核形状不同，部分形态只保留了“稳定有界”，形状会退化（例如旋鋸雙子虫退化成圆环）。要完全还原原版形态需要给应用加 `growth type`/`kernel type` 选项。
 
 第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
