@@ -872,24 +872,33 @@ class PresetGallery(QWidget):
                     cy = np.arctan2(np.mean(np.sin(2*np.pi*ys/fs)), np.mean(np.cos(2*np.pi*ys/fs))) / (2*np.pi) * fs
                     cx = np.arctan2(np.mean(np.sin(2*np.pi*xs/fs)), np.mean(np.cos(2*np.pi*xs/fs))) / (2*np.pi) * fs
                     arr = np.roll(arr, shift=(int(round(fs/2 - cy)), int(round(fs/2 - cx))), axis=(0, 1))
-                    # 按内容裁切，小形态也能填满格子
-                    inner = arr > 0.05
-                    if inner.any():
-                        ys, xs = np.nonzero(inner)
-                        hh = ys.max() - ys.min() + 1
-                        ww = xs.max() - xs.min() + 1
-                        pad = int(max(hh, ww) * 0.12) + 2
-                        arr = arr[max(0, ys.min() - pad):min(fs, ys.max() + pad + 1),
-                                  max(0, xs.min() - pad):min(fs, xs.max() + pad + 1)]
+                # 正方形裁切：以内容外接框为准，短边用黑边补齐，保证格子里是正方形快照
+                inner = arr > 0.05
+                if inner.any():
+                    ys, xs = np.nonzero(inner)
+                    y0, y1 = int(ys.min()), int(ys.max()) + 1
+                    x0, x1 = int(xs.min()), int(xs.max()) + 1
+                    side = int(max(y1 - y0, x1 - x0) * 1.18) + 2
+                    side = min(side, fs)
+                    cyi, cxi = (y0 + y1) // 2, (x0 + x1) // 2
+                    sy0, sx0 = cyi - side // 2, cxi - side // 2
+                    canvas = np.zeros((side, side), dtype=arr.dtype)
+                    dy = max(0, -sy0)
+                    dx = max(0, -sx0)
+                    sy0c, sx0c = max(0, sy0), max(0, sx0)
+                    sy1c, sx1c = min(fs, sy0 + side), min(fs, sx0 + side)
+                    canvas[dy:dy + (sy1c - sy0c), dx:dx + (sx1c - sx0c)] = arr[sy0c:sy1c, sx0c:sx1c]
+                    arr = canvas
                 arr_clip = np.clip(arr * 255, 0, 255).astype(np.uint8)
                 h, w = arr_clip.shape
                 qimg = QImage(arr_clip.tobytes(), w, h, w, QImage.Format_Grayscale8)
-                self._cached_scaled = qimg.scaled(s-4, s-4, Qt.KeepAspectRatio,
+                self._cached_scaled = qimg.scaled(s, s, Qt.IgnoreAspectRatio,
                                                   Qt.SmoothTransformation)
                 self._cached_s = s
             painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.drawImage((s - self._cached_scaled.width())//2, (s - self._cached_scaled.height())//2, self._cached_scaled)
+            painter.drawImage(0, 0, self._cached_scaled)
+            painter.setPen(QPen(QColor(0x55, 0x55, 0x55), 1))
+            painter.drawRect(0, 0, s - 1, s - 1)
             if self._selected:
                 painter.setPen(QPen(QColor(0xFF, 0xD7, 0x00), 2))
                 painter.drawRect(1, 1, s - 3, s - 3)
@@ -916,10 +925,16 @@ class PresetGallery(QWidget):
             self.cols = 1
             self._thumbnails = []
 
-        def set_layout_data(self, cols, thumb_data):
+        def set_layout_data(self, cols, thumb_data, cell_size=None, reuse=False):
+            if cell_size:
+                self.cell_size = cell_size
             self.cols = cols
-            for w, _, _ in self._thumbnails:
-                w.setParent(None)
+            if not reuse:
+                for w, _, _ in self._thumbnails:
+                    # 先隐藏再断开父子关系，否则 setParent(None) 会把它变成独立窗口
+                    w.hide()
+                    w.setParent(None)
+                    w.deleteLater()
             self._thumbnails = thumb_data
             for w, r, c in self._thumbnails:
                 w.setParent(self)
@@ -932,17 +947,8 @@ class PresetGallery(QWidget):
 
         def paintEvent(self, event):
             super().paintEvent(event)
-            if self.cell_size <= 0 or not self._thumbnails:
-                return
-            painter = QPainter(self)
-            painter.setPen(QPen(QColor(0x55, 0x55, 0x55), 1))
-            rows = max(1, (len(self._thumbnails) + self.cols - 1) // self.cols)
-            w = self.cols * self.cell_size
-            h = rows * self.cell_size
-            for col in range(self.cols + 1):
-                painter.drawLine(col * self.cell_size, 0, col * self.cell_size, h)
-            for row in range(rows + 1):
-                painter.drawLine(0, row * self.cell_size, w, row * self.cell_size)
+            # 网格线由每个缩略图自己画边框，避免最后一行出现多余的空格子
+            return
 
     FAMILIES = [("O", "球形科 Orbidae"), ("S", "盾形科 Scutidae"), ("P", "有翼科 Pterifera"),
                 ("H", "卷形科 Helicidae"), ("G", "雙子科 Geminidae"), ("K", "冠形科 Kronidae"),
@@ -974,6 +980,7 @@ class PresetGallery(QWidget):
         self._cell_size = 100
         self._grids = []
         self._family_filter = None
+        self._rings_filter = None
 
         self.resize(760, 560)
 
@@ -997,12 +1004,17 @@ class PresetGallery(QWidget):
 
         self._refresh_content()
 
-    def _cols(self):
-        # 留出左右边距和竖直滚动条，避免滚动条压住缩略图
-        w = self.width() - 2 * 8 - 20
-        return max(2, int(w // self._cell_size))
+    MAX_COLS = 6
 
-    def _make_page(self, items, combo_items=None, current=None):
+    def _grid_metrics(self):
+        """返回 (列数, 格子边长)：每行最多 6 个，格子随宽度放大或缩小。"""
+        avail = max(240, self.width() - 2 * 8 - 22)
+        cell = max(74, min(168, avail // self.MAX_COLS))
+        cols = max(2, min(self.MAX_COLS, int(avail // cell)))
+        return cols, cell
+
+    def _make_page(self, items, combo_items=None, current=None, group_key=None,
+                   group_label="科：", filter_attr="_family_filter"):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1011,11 +1023,11 @@ class PresetGallery(QWidget):
         if combo_items:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
-            row.addWidget(QLabel("科："))
+            row.addWidget(QLabel(group_label))
             combo = QComboBox()
-            for text, fam in combo_items:
-                combo.addItem(text, fam)
-            if current:
+            for text, key in combo_items:
+                combo.addItem(text, key)
+            if current is not None:
                 idx = combo.findData(current)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
@@ -1030,25 +1042,32 @@ class PresetGallery(QWidget):
         lay.addWidget(sc, 1)
 
         entry = {"page": page, "scroll": sc, "grid": grid, "combo": combo,
-                 "items": list(items), "shown": list(items)}
+                 "items": list(items), "shown": list(items), "group_key": group_key,
+                 "filter_attr": filter_attr}
         self._grids.append(entry)
         if combo is not None:
-            combo.currentIndexChanged.connect(lambda _i, e=entry: self._on_family_changed(e))
-            self._on_family_changed(entry)
+            combo.currentIndexChanged.connect(lambda _i, e=entry: self._on_group_changed(e))
+            self._on_group_changed(entry)
         else:
             self._fill_grid(entry, entry["items"])
         return page
 
-    def _on_family_changed(self, entry):
-        fam = entry["combo"].currentData()
-        self._family_filter = fam
-        items = entry["items"] if fam is None else [
-            it for it in entry["items"] if PresetGallery.family_of(it[0]) == fam]
+    def _on_group_changed(self, entry):
+        key = entry["combo"].currentData()
+        setattr(self, entry.get("filter_attr") or "_family_filter", key)
+        if entry["group_key"] is not None:
+            if key is None:
+                items = entry["items"]
+            else:
+                items = [it for it in entry["items"] if entry["group_key"](*it) == key]
+        else:
+            items = entry["items"]
         self._fill_grid(entry, items)
 
     def _fill_grid(self, entry, items):
         entry["shown"] = list(items)
-        cols = self._cols()
+        cols, cell = self._grid_metrics()
+        self._cell_size = cell
         thumbs = []
         for i, (n, d) in enumerate(items):
             t = self.Thumbnail(n, d['state'])
@@ -1056,7 +1075,7 @@ class PresetGallery(QWidget):
             if self._selected == n:
                 t._selected = True
             thumbs.append((t, i // cols, i % cols))
-        entry["grid"].set_layout_data(cols, thumbs)
+        entry["grid"].set_layout_data(cols, thumbs, cell)
 
     def _refresh_content(self):
         keep_tab = self.tabs.currentIndex() if self.tabs.count() else 0
@@ -1069,19 +1088,34 @@ class PresetGallery(QWidget):
         custom.sort(key=lambda x: x[0])
         classics.sort(key=lambda x: x[0])
 
+        # 自定义：按环数分组
+        by_rings = {}
+        for n, d in custom:
+            by_rings.setdefault(int(d['params'][1]), []).append((n, d))
+        custom_combo = [(f"全部 ({len(custom)})", None)]
+        for rings in sorted(by_rings):
+            custom_combo.append((f"{rings} 环 ({len(by_rings[rings])})", rings))
+
+        # 经典：按科分组
         fams = {}
         for n, d in classics:
             fams.setdefault(self.family_of(n), []).append((n, d))
         names = dict(self.FAMILIES)
-        combo_items = [(f"全部 ({len(classics)})", None)]
+        classic_combo = [(f"全部 ({len(classics)})", None)]
         for fam, _label in self.FAMILIES:
             if fam in fams:
-                combo_items.append((f"{fam} {names[fam]} ({len(fams[fam])})", fam))
+                classic_combo.append((f"{fam} {names[fam]} ({len(fams[fam])})", fam))
         if "?" in fams:
-            combo_items.append((f"? 未归类 ({len(fams['?'])})", "?"))
+            classic_combo.append((f"? 未归类 ({len(fams['?'])})", "?"))
 
-        self.tabs.addTab(self._make_page(custom), f"自定义 ({len(custom)})")
-        self.tabs.addTab(self._make_page(classics, combo_items, self._family_filter),
+        rings_key = lambda n, d: int(d['params'][1])
+        self.tabs.addTab(self._make_page(custom, custom_combo, self._rings_filter,
+                                         rings_key, group_label="环数：",
+                                         filter_attr="_rings_filter"),
+                         f"自定义 ({len(custom)})")
+        self.tabs.addTab(self._make_page(classics, classic_combo, self._family_filter,
+                                         lambda n, d: self.family_of(n), group_label="科：",
+                                         filter_attr="_family_filter"),
                          f"经典 ({len(classics)})")
         if not self._presets:
             lab = QLabel("暂无预设，请先保存")
@@ -1095,9 +1129,10 @@ class PresetGallery(QWidget):
         thumbs = entry["grid"]._thumbnails
         if not thumbs:
             return
-        cols = self._cols()
+        cols, cell = self._grid_metrics()
+        self._cell_size = cell
         data = [(w, i // cols, i % cols) for i, (w, _, _) in enumerate(thumbs)]
-        entry["grid"].set_layout_data(cols, data)
+        entry["grid"].set_layout_data(cols, data, cell, reuse=True)
 
     def showEvent(self, e):
         super().showEvent(e)
