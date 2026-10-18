@@ -22,11 +22,72 @@ PARAM_META = {
 }
 BETA_META = {'display': '振幅 β', 'slider_range': (0, 100), 'scale': 0.01, 'decimals': 2, 'default': 1.0, 'count': 6}
 
+# 生长函数 / 核函数类型（与 Bert Chan 的 Lenia 原版一致；0 = 本项目早期的高斯环近似，用于兼容旧预设）
+GROWTH_NAMES = ["gaus", "quad4", "trap", "stpz"]
+KERNEL_NAMES = ["bell(旧·高斯环)", "bump4", "quad4", "stpz1/4", "trap1/5", "life"]
+KERNEL_ALPHA = 4.0  # 原版 kernel_A
+
+
+def core_profile(r, kernel_type):
+    """原版 CoreFunc：把归一化半径 r∈[0,1] 映射到核的截面值。"""
+    if kernel_type == 1:      # bump4
+        if r <= 1e-6 or r >= 1.0 - 1e-6:
+            return 0.0
+        return float(np.exp(KERNEL_ALPHA - KERNEL_ALPHA / (4.0 * r * (1.0 - r))))
+    if kernel_type == 2:      # quad4
+        if r > 1.0:
+            return 0.0
+        return float((4.0 * r * (1.0 - r)) ** KERNEL_ALPHA)
+    if kernel_type == 3:      # stpz1/4
+        return 1.0 if 0.25 <= r <= 0.75 else 0.0
+    if kernel_type == 4:      # trap1/5
+        q = 0.2
+        if r < q or r > 1.0 - q:
+            return 0.0
+        if r < 2 * q:
+            return (r - q) / q
+        if r > 1.0 - 2 * q:
+            return (1.0 - q - r) / q
+        return 1.0
+    if kernel_type == 5:      # life
+        q = 0.25
+        if r < q:
+            return 0.5
+        if r > 1.0 - q:
+            return 0.0
+        return 1.0
+    return 0.0
+
 # ================== 模块级 Taichi 核心（接收字段作为参数） ==================
 @ti.func
-def growth_func(u: ti.f32, mu: ti.f32, sigma: ti.f32) -> ti.f32:
+def growth_func(u: ti.f32, mu: ti.f32, sigma: ti.f32, gtype: ti.i32) -> ti.f32:
     diff = u - mu
-    return 2.0 * ti.exp(-diff * diff / (2.0 * sigma * sigma)) - 1.0
+    r = ti.abs(diff)
+    res = 0.0
+    if gtype == 0:                       # gaus
+        res = 2.0 * ti.exp(-diff * diff / (2.0 * sigma * sigma)) - 1.0
+    elif gtype == 1:                     # quad4: 2*(1-(r/(3σ))²)^4 - 1
+        k2 = 9.0 * sigma * sigma
+        if r * r <= k2:
+            v = 1.0 - (r * r) / k2
+            res = 2.0 * (v * v) * (v * v) - 1.0
+        else:
+            res = -1.0
+    elif gtype == 2:                     # trap
+        p = 0.5 * sigma
+        q = 2.0 * sigma
+        if r <= p:
+            res = 1.0
+        elif r <= q:
+            res = 2.0 * (q - r) / (q - p) - 1.0
+        else:
+            res = -1.0
+    else:                                # stpz
+        if r <= sigma:
+            res = 1.0
+        else:
+            res = -1.0
+    return res
 
 @ti.kernel
 def _clear_state_kernel(state: ti.template()):
@@ -57,7 +118,7 @@ def _draw_points_batch_kernel(state: ti.template(),
 def _step_kernel(state: ti.template(), new_state: ti.template(),
                  kernel_vals: ti.template(), kernel_dx: ti.template(),
                  kernel_dy: ti.template(), kernel_count: ti.template(),
-                 mu: ti.f32, sigma: ti.f32, dt: ti.f32):
+                 mu: ti.f32, sigma: ti.f32, dt: ti.f32, gtype: ti.i32):
     cnt = kernel_count[None]
     field_size = state.shape[0]
     for i, j in state:
@@ -68,7 +129,7 @@ def _step_kernel(state: ti.template(), new_state: ti.template(),
             si = (i + dx) % field_size
             sj = (j + dy) % field_size
             conv += kernel_vals[k] * state[si, sj]
-        new_state[i, j] = state[i, j] + dt * growth_func(conv, mu, sigma)
+        new_state[i, j] = state[i, j] + dt * growth_func(conv, mu, sigma, gtype)
         if new_state[i, j] < 0.0:
             new_state[i, j] = 0.0
         if new_state[i, j] > 1.0:
@@ -103,15 +164,21 @@ class LeniaSimulation:
         # points: (N, 3) float32 array
         _draw_points_batch_kernel(self.state, points, brush_size)
 
-    def step(self, mu: float, sigma: float, dt: float):
+    def step(self, mu: float, sigma: float, dt: float, growth_type: int = 0):
         _step_kernel(self.state, self.new_state,
                      self.kernel_vals, self.kernel_dx, self.kernel_dy,
-                     self.kernel_count, mu, sigma, dt)
+                     self.kernel_count, mu, sigma, dt, int(growth_type))
 
-    def update_kernel(self, R: int, num_rings: int, rho: float, omega: float, betas: list):
-        """根据参数构建核并更新 Taichi 字段"""
+    def update_kernel(self, R: int, num_rings: int, rho: float, omega: float, betas: list,
+                      kernel_type: int = 0):
+        """根据参数构建核并更新 Taichi 字段
+
+        kernel_type=0 用本项目早期的高斯环（ρ/ω 有含义）；
+        1..5 用原版 Lenia 的 CoreFunc（bump4/quad4/stpz1/4/trap1/5/life），此时 ρ/ω 不参与。
+        """
         R = int(R)
         num_rings = int(num_rings)
+        kernel_type = int(kernel_type)
         center = MAX_KERNEL_RADIUS
         dy, dx = np.ogrid[-center:center+1, -center:center+1]
         r = np.sqrt(dx*dx + dy*dy) / R
@@ -119,10 +186,23 @@ class LeniaSimulation:
         ring_idx = np.floor(r * num_rings).astype(int)
         frac = r * num_rings - ring_idx
         K = np.zeros((KERNEL_WINDOW, KERNEL_WINDOW), dtype=np.float32)
-        for i in range(num_rings):
-            mask = valid & (ring_idx == i)
-            if mask.any():
-                K[mask] = betas[i] * np.exp(-(frac[mask] - rho)**2 / (2.0 * omega**2))
+        if kernel_type == 0:
+            for i in range(num_rings):
+                mask = valid & (ring_idx == i)
+                if mask.any():
+                    K[mask] = betas[i] * np.exp(-(frac[mask] - rho)**2 / (2.0 * omega**2))
+        else:
+            prof = np.array([core_profile(float(f), kernel_type) for f in frac.ravel()],
+                            dtype=np.float32).reshape(frac.shape)
+            if num_rings <= 1:
+                K = np.where(valid, prof, 0.0).astype(np.float32)
+            else:
+                idx = np.clip(ring_idx, 0, num_rings - 1)
+                amp = np.zeros(num_rings, dtype=np.float32)
+                for i in range(num_rings):
+                    amp[i] = betas[i] if i < len(betas) else 0.0
+                K = (prof * amp[idx]).astype(np.float32)
+                K[~valid] = 0.0
         total = K.sum()
         if total < 1e-6:
             total = 1.0
@@ -330,6 +410,8 @@ class LeniaApp(QMainWindow):
         self.mu = PARAM_META['mu']['default']
         self.sigma = PARAM_META['sigma']['default']
         self.dt = PARAM_META['dt']['default']
+        self.growth_type = 0   # GROWTH_NAMES 下标
+        self.kernel_type = 0   # KERNEL_NAMES 下标
 
         self._batch_update = False
         self.sliders = {}
@@ -446,6 +528,12 @@ class LeniaApp(QMainWindow):
         beta_container = self._create_beta_controls()
         kf.addRow("振幅 β₁-β₆:", beta_container)
 
+        self.kernel_combo = QComboBox()
+        self.kernel_combo.addItems(KERNEL_NAMES)
+        self.kernel_combo.setCurrentIndex(self.kernel_type)
+        self.kernel_combo.currentIndexChanged.connect(self.on_param)
+        kf.addRow("核函数:", self.kernel_combo)
+
         self.kernel_preview = KernelPreview()
         kf.addRow("核预览:", self.kernel_preview)
         left_layout.addWidget(kernel_group)
@@ -465,6 +553,12 @@ class LeniaApp(QMainWindow):
             self.inputs[key] = input_widget
             gf.addRow(row)
 
+        self.growth_combo = QComboBox()
+        self.growth_combo.addItems(GROWTH_NAMES)
+        self.growth_combo.setCurrentIndex(self.growth_type)
+        self.growth_combo.currentIndexChanged.connect(self.on_growth)
+        gf.addRow("生长函数:", self.growth_combo)
+
         left_layout.addWidget(growth_group)
 
         # 公式
@@ -473,9 +567,11 @@ class LeniaApp(QMainWindow):
         fl.setContentsMargins(4, 4, 4, 4)
         fl.addWidget(QLabel(
             "<b>卷积：</b> U(x) = Σ K(y-x) A(y) / Σ K(y-x)<br>"
-            "<b>生长：</b> G(u) = 2·exp(-(u-μ)²/(2σ²)) - 1<br>"
+            "<b>生长 gaus：</b> G(u) = 2·exp(-(u-μ)²/(2σ²)) - 1<br>"
+            "<b>生长 quad4：</b> G(u) = 2·(1-(u-μ)²/(9σ²))⁴ - 1<br>"
             "<b>更新：</b> A<sub>t+Δt</sub>(x) = clamp(A<sub>t</sub>(x)+Δt·G(U<sub>t</sub>), 0,1)<br>"
-            "<b>核：</b> bell<sub>i</sub> = β<sub>i</sub> · exp(-(frac-ρ)²/(2ω²))"
+            "<b>核 bell(旧)：</b> β<sub>i</sub>·exp(-(frac-ρ)²/(2ω²))<br>"
+            "<b>核 bump4/quad4：</b> 原版 CoreFunc(frac)·β<sub>i</sub>"
         ))
         left_layout.addWidget(formula_group)
 
@@ -602,7 +698,7 @@ class LeniaApp(QMainWindow):
         self.canvas.update_display()
 
     def run_simulation(self):
-        self.sim.step(self.mu, self.sigma, self.dt)
+        self.sim.step(self.mu, self.sigma, self.dt, self.growth_type)
         self.canvas.update_display()
 
     def center_view(self):
@@ -628,12 +724,14 @@ class LeniaApp(QMainWindow):
             self.sim_timer.start(30)
 
     def update_kernel(self):
-        self.sim.update_kernel(self.R, self.num_rings, self.rho, self.omega, self.betas)
+        self.sim.update_kernel(self.R, self.num_rings, self.rho, self.omega, self.betas,
+                               self.kernel_type)
         self.kernel_preview.update_preview(self.sim.get_kernel_preview())
 
     def update_beta_visibility(self):
         n = self.num_rings
         for i in range(BETA_META['count']):
+            # 原版核用 betas 做环振幅，旧的高斯环用 ρ/ω；两者都显示 β
             self.beta_rows[i].setVisible(i < n)
 
     def _read_all_params(self):
@@ -643,6 +741,8 @@ class LeniaApp(QMainWindow):
             setattr(self, key, self.sliders[key].value() * meta['scale'])
         for i in range(BETA_META['count']):
             self.betas[i] = self.beta_sliders[i].value() * BETA_META['scale']
+        self.kernel_type = self.kernel_combo.currentIndex()
+        self.growth_type = self.growth_combo.currentIndex()
 
     def on_param(self):
         if self._batch_update:
@@ -685,14 +785,15 @@ class LeniaApp(QMainWindow):
                     PARAM_META['rho']['default'], PARAM_META['omega']['default']] + \
                    [BETA_META['default']]*6 + \
                    [PARAM_META['mu']['default'], PARAM_META['sigma']['default'],
-                    PARAM_META['dt']['default'], 256]
-        if len(params) < 14:
+                    PARAM_META['dt']['default'], 256, 0, 0]
+        if len(params) < 16:
             params = list(params) + defaults[len(params):]
         else:
-            params = list(params[:14])
+            params = list(params[:16])
         R, rings, rho, omega, *rest = params
         betas = rest[:6]
         mu, sigma, dt, field_size = rest[6], rest[7], rest[8], int(rest[9])
+        growth_type, kernel_type = int(rest[10]), int(rest[11])
 
         was_running = self.running
         if self.running:
@@ -715,6 +816,8 @@ class LeniaApp(QMainWindow):
         self.mu = float(mu)
         self.sigma = float(sigma)
         self.dt = float(dt)
+        self.growth_type = max(0, min(growth_type, len(GROWTH_NAMES) - 1))
+        self.kernel_type = max(0, min(kernel_type, len(KERNEL_NAMES) - 1))
 
         self._batch_update = True
         for key in PARAM_META:
@@ -722,6 +825,8 @@ class LeniaApp(QMainWindow):
             self.sliders[key].setValue(int(round(getattr(self, key) / meta['scale'])))
         for i in range(BETA_META['count']):
             self.beta_sliders[i].setValue(int(round(self.betas[i] / BETA_META['scale'])))
+        self.kernel_combo.setCurrentIndex(self.kernel_type)
+        self.growth_combo.setCurrentIndex(self.growth_type)
         self._batch_update = False
 
         self._refresh_labels()
@@ -939,7 +1044,8 @@ class PresetGallery(QWidget):
                 self.app.rho, self.app.omega,
                 *self.app.betas,
                 self.app.mu, self.app.sigma,
-                self.app.dt, self.app.sim.field_size
+                self.app.dt, self.app.sim.field_size,
+                self.app.growth_type, self.app.kernel_type
             ], dtype=np.float32)
         }
         PresetGallery.save_preset_dict(ps)

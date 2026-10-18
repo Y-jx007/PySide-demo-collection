@@ -163,25 +163,39 @@ python tools/search_lenia_presets.py --trials 300 --dry-run
 python tools/search_lenia_presets.py --trials 300 --save
 ```
 
-默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 331 个。
+默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 340 个。
+
+### 核函数与生长函数（原版兼容）
+
+`Lenia.py` 现在实现了 Bert Chan 原版的核与生长函数，可在界面里选择：
+
+| 类型 | 选项 | 公式 |
+|---|---|---|
+| 生长 | `gaus` | G(u) = 2·exp(-(u-μ)²/(2σ²)) - 1 |
+| 生长 | `quad4` | G(u) = 2·(1-(u-μ)²/(9σ²))⁴ - 1，|u-μ|>3σ 时 -1 |
+| 生长 | `trap` / `stpz` | 梯形 / 阶跃 |
+| 核 | `bump4` | exp(α - α/(4r(1-r)))，α=4 |
+| 核 | `quad4` | (4r(1-r))⁴ |
+| 核 | `stpz1/4` / `trap1/5` / `life` | 阶跃 / 梯形 / Life 型 |
+| 核 | `bell(旧)` | 本项目早期的高斯环 β·exp(-(frac-ρ)²/(2ω²))，保留用于兼容旧预设 |
+
+多环形态按原版的 `KernelFunc` 叠加：`K(r) = CoreFunc(frac)·β[ring]`。预设格式扩展为 16 个参数（末尾追加 `growth_type`、`kernel_type`），旧的 14 参数预设加载时自动补 0（即高斯环 + gaus，行为不变）。
 
 ### 经典 Lenia 形态
 
-283 个“经典-…”预设全部解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT）的 `Lenia-LifeForms.js`，覆盖文件里 13 个科中的 283/315 个形态：
+292 个“经典-…”预设全部解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT）的 `Lenia-LifeForms.js`（已归档在 `tools/`）：
 
 | 科 | 数量 | 科 | 数量 |
 |---|---|---|---|
-| P 有翼科 Pterifera | 63 | R 放射科 Radidae | 22 |
-| K 冠形科 Kronidae | 32 | D 齒形科 Dentidae | 21 |
-| C 環形科 Circidae | 29 | F 瓣形科 Folidae | 17 |
-| S 盾形科 Scutidae | 28 | A 星形科 Astridae | 15 |
-| H 卷形科 Helicidae | 28 | G 雙子科 Geminidae | 12 |
+| P 有翼科 Pterifera | 65 | R 放射科 Radidae | 22 |
+| K 冠形科 Kronidae | 35 | D 齒形科 Dentidae | 21 |
+| C 環形科 Circidae | 29 | F 瓣形科 Folidae | 18 |
+| H 卷形科 Helicidae | 29 | A 星形科 Astridae | 15 |
+| S 盾形科 Scutidae | 29 | G 雙子科 Geminidae | 12 |
 | O 球形科 Orbidae | 9 | Q 方形科 Quadridae | 4 |
-| V 輪形科 Volvidae | 3 | | |
+| V 輪形科 Volvidae | 4 | | |
 
-筛选标准：350 步粗筛 + 3000 步复核（`mass>5`、`area<0.15`、`bbox<160`），失败的形态会再按 `omega`×`dt` 网格重调后重新复核。剩余 32 个形态在高斯近似下始终膨胀/死亡，未收录，例如 `V2 乙輪虫`、`S14/S24 大盾形`、`H8 辛卷虫`、`K16 庚冠虫`、`4F13 十三瓣虫` 等。
-
-注：`quad4` 核与本项目的 Gaussian 核形状不同，部分形态只保留了“稳定有界”，形状会退化（例如旋鋸雙子虫变成圆环、大翼虫长成树枝状）。要完全还原原版形态需要给应用加 `kernel type` 选项。
+其中 **263 个用原版 `quad4`/`bump4` 核跑通 3000 步**（形状与原版一致）；剩余形态在原版核下仍会膨胀/死亡，保留此前用高斯环核验证过的稳定版本作为兜底，界面上可以切换核类型观察差异。
 
 第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
