@@ -1,9 +1,14 @@
 """Search stable Lenia creatures and append them to the preset gallery.
 
+Default mode samples **random parameters** and draws a new initial state with a
+simulated round brush (dots, strokes, arcs, random walks, crosses), then lets it
+evolve and scores the result.  It does not start from an existing preset.
+
 Usage (from the project root):
 
     python tools/search_lenia_presets.py --trials 300 --save
     python tools/search_lenia_presets.py --trials 300 --dry-run
+    python tools/search_lenia_presets.py --mode mutate --trials 200 --dry-run
 
 The script uses the same ``LeniaSimulation`` as the app, so saved presets load
 without any format changes.  A backup of the existing ``.npz`` is created
@@ -221,20 +226,113 @@ def mutate_params(base: np.ndarray, rng: np.random.Generator) -> np.ndarray:
 
 
 def random_params(rng: np.random.Generator) -> np.ndarray:
-    rings = int(rng.integers(1, 5))
-    betas = rng.uniform(0.05, 1.20, 6)
+    """Sample the whole plausible parameter box, not a neighbour of a preset."""
     p = np.array([
-        rng.integers(10, 51),
-        rings,
-        rng.uniform(0.30, 0.75),
-        rng.uniform(0.07, 0.22),
-        *betas,
-        rng.uniform(0.12, 0.28),
-        rng.uniform(0.012, 0.045),
-        rng.uniform(0.08, 0.22),
+        rng.integers(6, 51),
+        rng.integers(1, 7),
+        rng.uniform(0.10, 0.90),
+        rng.uniform(0.03, 0.40),
+        *rng.uniform(0.0, 1.30, 6),
+        rng.uniform(0.08, 0.32),
+        rng.uniform(0.008, 0.060),
+        rng.uniform(0.05, 0.40),
         SIZE,
     ], dtype=np.float32)
     return clamp_params(p)
+
+
+def _stamp_disc(arr: np.ndarray, cy: int, cx: int, radius: int, value: float) -> None:
+    y0, y1 = max(0, cy - radius), min(SIZE, cy + radius + 1)
+    x0, x1 = max(0, cx - radius), min(SIZE, cx + radius + 1)
+    if y0 >= y1 or x0 >= x1:
+        return
+    yy, xx = np.ogrid[y0:y1, x0:x1]
+    mask = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius * radius
+    sub = arr[y0:y1, x0:x1]
+    np.maximum(sub, value, out=sub, where=mask)
+
+
+def _stroke(arr: np.ndarray, p0: tuple[int, int], p1: tuple[int, int],
+            radius: int, value: float) -> None:
+    y0, x0 = p0
+    y1, x1 = p1
+    steps = max(2, int(np.hypot(y1 - y0, x1 - x0)))
+    for t in np.linspace(0.0, 1.0, steps):
+        _stamp_disc(arr, int(round(y0 + (y1 - y0) * t)),
+                    int(round(x0 + (x1 - x0) * t)), radius, value)
+
+
+def brush_state(rng: np.random.Generator) -> np.ndarray:
+    """Simulate a user drawing with the app's round brush.
+
+    Randomly combines dots, straight strokes, arcs, random walks and crosses
+    on an empty 256x256 canvas.  No preset state is used.
+    """
+    arr = np.zeros((SIZE, SIZE), dtype=np.float32)
+    margin = 36
+    lo, hi = margin, SIZE - margin
+
+    for _ in range(int(rng.integers(1, 5))):
+        kind = int(rng.integers(0, 6))
+        radius = int(rng.integers(2, 11))
+        value = float(rng.uniform(0.65, 1.0))
+
+        if kind == 0:  # dots
+            for _ in range(int(rng.integers(1, 4))):
+                cy, cx = rng.integers(lo, hi, 2)
+                _stamp_disc(arr, int(cy), int(cx), radius, value)
+
+        elif kind == 1:  # straight stroke
+            y0, x0 = rng.integers(lo, hi, 2)
+            angle = rng.uniform(0, 2 * np.pi)
+            length = rng.uniform(10, 80)
+            _stroke(arr, (int(y0), int(x0)),
+                    (int(y0 + length * np.sin(angle)), int(x0 + length * np.cos(angle))),
+                    radius, value)
+
+        elif kind == 2:  # arc / circle
+            cy, cx = rng.integers(lo + 12, hi - 12, 2)
+            rr = float(rng.uniform(10, min(42, hi - max(cy, cx))))
+            start = rng.uniform(0, 2 * np.pi)
+            span = rng.uniform(np.pi / 2, 2 * np.pi)
+            steps = max(10, int(rr * span))
+            for t in np.linspace(0.0, 1.0, steps):
+                a = start + span * t
+                _stamp_disc(arr, int(round(cy + rr * np.sin(a))),
+                            int(round(cx + rr * np.cos(a))), radius, value)
+
+        elif kind == 3:  # random walk
+            y, x = rng.integers(lo, hi, 2).astype(float)
+            angle = rng.uniform(0, 2 * np.pi)
+            for _ in range(int(rng.integers(12, 40))):
+                angle += rng.normal(0, 0.6)
+                length = float(rng.uniform(4, 12))
+                y = float(np.clip(y + length * np.sin(angle), lo, hi - 1))
+                x = float(np.clip(x + length * np.cos(angle), lo, hi - 1))
+                _stamp_disc(arr, int(round(y)), int(round(x)), radius, value)
+
+        elif kind == 4:  # cross / star
+            cy, cx = rng.integers(lo + 12, hi - 12, 2)
+            base = rng.uniform(0, np.pi)
+            for k in range(int(rng.integers(2, 4))):
+                a = base + k * np.pi / 2
+                half = rng.uniform(12, 50)
+                _stroke(arr, (int(cy - half * np.sin(a)), int(cx - half * np.cos(a))),
+                        (int(cy + half * np.sin(a)), int(cx + half * np.cos(a))),
+                        radius, value)
+
+        else:  # several short strokes
+            for _ in range(int(rng.integers(2, 5))):
+                y0, x0 = rng.integers(lo, hi, 2)
+                a = rng.uniform(0, 2 * np.pi)
+                length = rng.uniform(8, 30)
+                _stroke(arr, (int(y0), int(x0)),
+                        (int(y0 + length * np.sin(a)), int(x0 + length * np.cos(a))),
+                        radius, value)
+
+    if float(arr.sum()) < 30:
+        _stamp_disc(arr, SIZE // 2, SIZE // 2, 8, 1.0)
+    return np.clip(arr, 0.0, 1.0).astype(np.float32)
 
 
 def blob_state(rng: np.random.Generator) -> np.ndarray:
@@ -263,10 +361,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trials", type=int, default=300)
     parser.add_argument("--top", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument("--burn", type=int, default=80)
-    parser.add_argument("--observe", type=int, default=120)
-    parser.add_argument("--validate-steps", type=int, default=600,
+    parser.add_argument("--seed", type=int, default=2027)
+    parser.add_argument("--mode", choices=("random", "mutate", "mixed"), default="random",
+                        help="random: random params + brush drawing (default); "
+                             "mutate: small changes around existing presets; "
+                             "mixed: 50/50")
+    parser.add_argument("--burn", type=int, default=150)
+    parser.add_argument("--observe", type=int, default=200)
+    parser.add_argument("--validate-steps", type=int, default=1200,
                         help="long-run recheck before saving; 0 disables")
     parser.add_argument("--min-distance", type=float, default=0.02,
                         help="reject candidates too similar to existing/found states")
@@ -288,13 +390,17 @@ def main() -> None:
     t0 = time.perf_counter()
 
     for trial in range(1, args.trials + 1):
-        if base_items and rng.random() < 0.75:
+        use_base = bool(base_items) and (
+            args.mode == "mutate" or (args.mode == "mixed" and rng.random() < 0.5)
+        )
+        if use_base:
             base = base_items[int(rng.integers(0, len(base_items)))]
             params = mutate_params(base["params"], rng)
             state = perturb_state(base["state"], rng)
         else:
+            # explore new parameter regions and new drawn shapes, not preset neighbours
             params = random_params(rng)
-            state = blob_state(rng)
+            state = brush_state(rng)
 
         m = evaluate(sim, state, params, args.burn, args.observe, 2)
         if m is None or not is_stable(m):
@@ -394,9 +500,10 @@ def main() -> None:
         return
 
     used = set(presets.keys())
+    prefix = "自动" if args.mode == "mutate" else "随机"
     for index, item in enumerate(selected, 1):
         kind = item["kind"]
-        name = f"自动{item['params'][1]:.0f}环{kind}{index:02d}"
+        name = f"{prefix}{item['params'][1]:.0f}环{kind}{index:02d}"
         while name in used:
             name += "x"
         used.add(name)

@@ -153,7 +153,7 @@ CI 见 `.github/workflows/ci.yml`：静态编译 + manifest 测试，以及在 W
 
 ### Lenia 预设自动搜索
 
-`tools/search_lenia_presets.py` 会随机/变异搜索稳定的 Lenia 形态，做 600 步长程复核后追加到 `apps/Lenia presets.npz`：
+`tools/search_lenia_presets.py` 默认使用**随机参数 + 模拟画笔随机作画**：每次独立采样参数，随机画点/直线/圆弧/随机游走/十字，再演化筛选；不会从现有预设做小扰动（需要变体时用 `--mode mutate`）。
 
 ```bash
 # 只看看结果，不写文件
@@ -163,7 +163,7 @@ python tools/search_lenia_presets.py --trials 300 --dry-run
 python tools/search_lenia_presets.py --trials 300 --save
 ```
 
-当前预设库包含 35 个手工预设 + 8 个自动搜索并通过 2000 步复核的“自动…”预设。
+默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 48 个。
 
 ## 已知限制
 
