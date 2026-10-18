@@ -982,7 +982,7 @@ class PresetGallery(QWidget):
         self._family_filter = None
         self._rings_filter = None
 
-        self.resize(760, 560)
+        self.resize(662, 560)
 
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(0)
@@ -1005,13 +1005,13 @@ class PresetGallery(QWidget):
         self._refresh_content()
 
     MAX_COLS = 6
+    CELL_SIZE = 100
 
     def _grid_metrics(self):
-        """返回 (列数, 格子边长)：每行最多 6 个，格子随宽度放大或缩小。"""
+        """返回 (列数, 格子边长)：格子固定 100px，每行最多 6 个。"""
         avail = max(240, self.width() - 2 * 8 - 22)
-        cell = max(74, min(168, avail // self.MAX_COLS))
-        cols = max(2, min(self.MAX_COLS, int(avail // cell)))
-        return cols, cell
+        cols = max(2, min(self.MAX_COLS, int(avail // self.CELL_SIZE)))
+        return cols, self.CELL_SIZE
 
     def _make_page(self, items, combo_items=None, current=None, group_key=None,
                    group_label="科：", filter_attr="_family_filter"):
@@ -1136,11 +1136,11 @@ class PresetGallery(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        # 跟随主窗口宽度，尽量多放几列
+        # 宽度按「六列 × 100px + 边距与滚动条」给足，窗口再大也不拉伸格子
         parent = self.app
         if parent is not None:
-            w = max(480, min(parent.width() - 60, 1200))
-            h = max(380, min(parent.height() - 110, 860))
+            w = max(480, min(parent.width() - 60, self.MAX_COLS * self.CELL_SIZE + 62))
+            h = max(380, min(parent.height() - 110, 720))
             if (self.width(), self.height()) != (w, h):
                 self.resize(w, h)
 
