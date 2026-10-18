@@ -21,3 +21,6 @@ logs/
 output/
 imgui.ini
 *.log
+
+# Lenia preset backups
+apps/preset_backups/

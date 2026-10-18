@@ -151,6 +151,20 @@ python -m unittest discover -s tests -v
 
 CI 见 `.github/workflows/ci.yml`：静态编译 + manifest 测试，以及在 Windows 上安装依赖后的导入冒烟测试。
 
+### Lenia 预设自动搜索
+
+`tools/search_lenia_presets.py` 会随机/变异搜索稳定的 Lenia 形态，做 600 步长程复核后追加到 `apps/Lenia presets.npz`：
+
+```bash
+# 只看看结果，不写文件
+python tools/search_lenia_presets.py --trials 300 --dry-run
+
+# 找到并保存（自动备份到 apps/preset_backups/）
+python tools/search_lenia_presets.py --trials 300 --save
+```
+
+当前预设库包含 35 个手工预设 + 8 个自动搜索并通过 2000 步复核的“自动…”预设。
+
 ## 已知限制
 
 - 实验分类中的应用没有缩略图，界面与稳定性未完全打磨。
