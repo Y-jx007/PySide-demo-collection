@@ -42,7 +42,7 @@ CARD_TEXT_LAYOUT_MARGINS = (6, 4, 6, 4)
 
 CARD_BORDER_WIDTH = 2
 
-CATEGORY_HEIGHT = 188  # 留出横向滚动条与阴影的空间
+CATEGORY_HEIGHT = CARD_HEIGHT + 8  # 卡片 + 上下 4px 内边距；滚动条高度另算
 CATEGORY_LABEL_WIDTH = 95
 CATEGORY_LAYOUT_MARGINS = (12, 4, 10, 4)
 CATEGORY_LAYOUT_SPACING = 12
@@ -308,6 +308,7 @@ class CategoryWidget(QFrame):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setFixedHeight(CATEGORY_HEIGHT)
         self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
@@ -324,8 +325,25 @@ class CategoryWidget(QFrame):
         self.scroll_area.setWidget(self.cards_container)
         main_layout.addWidget(self.scroll_area, 1)
 
+    def _content_height(self):
+        """分类行只占卡片实际高度；有横向滚动条时再补上滚动条高度。"""
+        height = CARD_HEIGHT + CATEGORY_CARDS_MARGINS[1] + CATEGORY_CARDS_MARGINS[3]
+        bar = self.scroll_area.horizontalScrollBar()
+        if bar.maximum() > bar.minimum():
+            height += max(bar.sizeHint().height(), 16)
+        return height
+
+    def _update_height(self):
+        self.scroll_area.setFixedHeight(self._content_height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_height()
+
     def add_card(self, card: AppCard):
-        self.cards_layout.insertWidget(self.cards_layout.count() - 1, card)
+        # 顶部对齐，避免 QHBoxLayout 把 150px 卡片在 188px 行里垂直居中
+        self.cards_layout.insertWidget(self.cards_layout.count() - 1, card, 0, Qt.AlignTop)
+        QTimer.singleShot(0, self._update_height)
 
 
 # ===================== 主窗口 =====================
