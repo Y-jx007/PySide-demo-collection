@@ -1,5 +1,6 @@
 from custom_import import *
 import re
+from PySide6.QtCore import QSettings
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib import cm
@@ -981,6 +982,11 @@ class PresetGallery(QWidget):
         self._grids = []
         self._family_filter = None
         self._rings_filter = None
+        # 记住上次关闭时的标签页 / 筛选 / 滚动位置 / 选中项
+        self._settings = QSettings("PySideTools", "LeniaPresets")
+        self._saved_tab = 0
+        self._pending_scroll = []
+        self._restore_state()
 
         self.resize(662, 560)
 
@@ -1006,6 +1012,53 @@ class PresetGallery(QWidget):
 
     MAX_COLS = 6
     CELL_SIZE = 100
+
+    def _restore_state(self):
+        s = self._settings
+        try:
+            self._saved_tab = max(0, int(s.value("gallery/tab", 0)))
+        except (TypeError, ValueError):
+            self._saved_tab = 0
+        rings = s.value("gallery/rings", "all")
+        try:
+            self._rings_filter = None if rings in (None, "", "all") else int(rings)
+        except (TypeError, ValueError):
+            self._rings_filter = None
+        fam = s.value("gallery/family", "all")
+        self._family_filter = None if fam in (None, "", "all") else str(fam)
+        sel = s.value("gallery/selected", "")
+        self._selected = str(sel) if sel else None
+        self._pending_scroll = [int(s.value("gallery/scroll0", 0) or 0),
+                                int(s.value("gallery/scroll1", 0) or 0)]
+
+    def _save_state(self):
+        s = self._settings
+        tab = self.tabs.currentIndex()
+        s.setValue("gallery/tab", tab if tab >= 0 else 0)
+        s.setValue("gallery/rings", "all" if self._rings_filter is None else str(self._rings_filter))
+        s.setValue("gallery/family", "all" if self._family_filter is None else str(self._family_filter))
+        for i, entry in enumerate(self._grids):
+            s.setValue(f"gallery/scroll{i}", entry["scroll"].verticalScrollBar().value())
+        s.setValue("gallery/selected", self._selected or "")
+        s.sync()
+
+    def _restore_scroll(self):
+        """滚动条范围要等布局算完才准，分几次补设置。"""
+        for i, entry in enumerate(self._grids):
+            v = self._pending_scroll[i] if i < len(self._pending_scroll) else 0
+            if v <= 0:
+                continue
+            sb = entry["scroll"].verticalScrollBar()
+            for delay in (0, 30, 150):
+                QTimer.singleShot(delay, lambda s=sb, val=v: s.setValue(val))
+
+    def hideEvent(self, e):
+        self._save_state()
+        super().hideEvent(e)
+
+    def closeEvent(self, e):
+        self._save_state()
+        super().closeEvent(e)
 
     def _grid_metrics(self):
         """返回 (列数, 格子边长)：格子固定 100px，每行最多 6 个。"""
@@ -1078,7 +1131,9 @@ class PresetGallery(QWidget):
         entry["grid"].set_layout_data(cols, thumbs, cell)
 
     def _refresh_content(self):
-        keep_tab = self.tabs.currentIndex() if self.tabs.count() else 0
+        keep_tab = self.tabs.currentIndex() if self.tabs.count() else self._saved_tab
+        if self._grids:
+            self._pending_scroll = [e["scroll"].verticalScrollBar().value() for e in self._grids]
         self.tabs.clear()
         self._grids = []
         self._presets = PresetGallery.load_preset_dict()
@@ -1124,6 +1179,7 @@ class PresetGallery(QWidget):
             self.tabs.addTab(lab, "空")
         elif 0 <= keep_tab < self.tabs.count():
             self.tabs.setCurrentIndex(keep_tab)
+        self._restore_scroll()
 
     def _relayout(self, entry):
         thumbs = entry["grid"]._thumbnails
@@ -1143,6 +1199,7 @@ class PresetGallery(QWidget):
             h = max(380, min(parent.height() - 110, 720))
             if (self.width(), self.height()) != (w, h):
                 self.resize(w, h)
+        self._restore_scroll()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
