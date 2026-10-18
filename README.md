@@ -163,14 +163,15 @@ python tools/search_lenia_presets.py --trials 300 --dry-run
 python tools/search_lenia_presets.py --trials 300 --save
 ```
 
-默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 93 个。
+默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 114 个。
 
 ### 经典 Lenia 形态
 
-45 个“经典-…”预设解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT），包括 Orbium、Scutium、Gyrorbium、Synorbium 等：
+66 个“经典-…”预设解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT），包括 Orbium、Scutium、Gyrorbium、Synorbium 等：
 
 - 30 个单环形态；
 - 15 个多环形态（2–4 环，名称带“-2环/-3环/-4环”），用本项目的 Gaussian 生长函数验证（原版 `quad4` 仅参数照搬）；
+- 21 个齿形科（Dentidae，六齒虫–十三齒虫）形态，2–4 环、6–13 个齿，全部通过 3000 步复核（其中 11 个的 `omega`/`dt` 按本项目核重新调过；3 个最终退化成环状/丝状，仍是稳定的有界形态）；
 - 21 个多环条目中 6 个在高斯近似下膨胀/死亡，未加入；大盾形 S14/S24 等也未加入。
 
 第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
