@@ -163,7 +163,11 @@ python tools/search_lenia_presets.py --trials 300 --dry-run
 python tools/search_lenia_presets.py --trials 300 --save
 ```
 
-默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 48 个。
+默认做 1200 步长程复核；本轮随机搜索另做了 3000 步复核，保存了 7 个“随机…”预设。当前预设库共 78 个。
+
+### 经典 Lenia 形态
+
+30 个“经典-…”预设解码自 Bert Chan 的 [Chakazul/Lenia](https://github.com/Chakazul/Lenia)（MIT），包括 Orbium、Scutium、Gyrorbium、Synorbium 等。原始数据使用 `bump4` / 多层核，本项目用高斯环核近似，因此只保留在本内核下通过 3000 步复核的形态；未通过的大盾形（S14/S24 等）没有加入。第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 已知限制
 
