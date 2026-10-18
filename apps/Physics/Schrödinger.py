@@ -502,7 +502,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.timer.stop()
-        ti.reset()
         event.accept()
 
 def main():

@@ -430,7 +430,7 @@ class MainWindow(QMainWindow):
         self._reset()
 
     def closeEvent(self, e):
-        ti.reset(); e.accept()
+        e.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

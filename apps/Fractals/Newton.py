@@ -533,10 +533,9 @@ class NewtonNovaApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"编译失败:\n{str(e)}")
 
-        def closeEvent(self, event):
+    def closeEvent(self, event):
             self.left_widget._render_deferred.stop()
             self.right_widget._render_deferred.stop()
-            ti.reset()
             event.accept()
 
 if __name__ == "__main__":

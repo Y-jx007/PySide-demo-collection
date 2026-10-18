@@ -483,9 +483,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.viewer.timer.stop()
-        ti.reset()
         event.accept()
-
 
 if __name__ == "__main__":
     setup_gl_format()

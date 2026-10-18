@@ -388,7 +388,6 @@ class ComplexDynamicsApp(QMainWindow):
     def closeEvent(self, event):
         self.left_widget.timer.stop()
         self.right_widget.timer.stop()
-        ti.reset()
         event.accept()
 
 if __name__ == "__main__":

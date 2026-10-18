@@ -687,7 +687,7 @@ class MainWindow(QMainWindow):
             self.vort_display.update(); self.speed_display.update()
 
     def closeEvent(self, event):
-        self.timer.stop(); ti.reset(); event.accept()
+        self.timer.stop(); event.accept()
 
 def main():
     app = QApplication(sys.argv); window = MainWindow(); window.show(); sys.exit(app.exec())

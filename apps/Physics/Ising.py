@@ -493,7 +493,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.gl_widget.timer.stop()
-        ti.reset()
         event.accept()
 
 if __name__ == "__main__":

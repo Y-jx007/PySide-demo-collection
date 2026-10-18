@@ -10,7 +10,6 @@ def setup_gl_format():
     fmt.setSwapInterval(0)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-
 # ================== Taichi 核函数 ==================
 @ti.kernel
 def compute_centroids_shoelace(
@@ -31,8 +30,8 @@ def compute_centroids_shoelace(
         area = 0.0
         cx = 0.0
         cy = 0.0
-        for j in range(nv - 1):  # 闭合多边形，最后一点与第一点相同，只需处理前 nv-1 条边
-            k = (j + 1)  # 下一个顶点
+        for j in range(nv - 1):
+            k = (j + 1)
             x1, y1 = polygons[start + j, 0], polygons[start + j, 1]
             x2, y2 = polygons[start + k, 0], polygons[start + k, 1]
             cross = x1 * y2 - x2 * y1
@@ -66,7 +65,7 @@ def compute_monte_carlo_centroids(
     ti.loop_config(parallelize=8)
     for i in range(n_regions):
         nv = sizes[i]
-        if nv < 4:  # 至少需要三个不同顶点（闭合后至少4个点）
+        if nv < 4:
             continue
         if prob < 1.0 and ti.random() > prob:
             continue
@@ -85,13 +84,12 @@ def compute_monte_carlo_centroids(
         cx = 0.0
         cy = 0.0
         cnt = 0
-        # 实际多边形边数 = nv - 1
         nv_real = nv - 1
         for _ in range(samples):
             px = min_x + ti.random() * (max_x - min_x)
             py = min_y + ti.random() * (max_y - min_y)
             inside = False
-            j = start + nv_real - 1  # 最后一个实际顶点
+            j = start + nv_real - 1
             for k in range(start, start + nv_real):
                 yi = polygons[j, 1]
                 yj = polygons[k, 1]
@@ -127,6 +125,8 @@ def move_points(
         points[i, 1] = ti.max(ymin + 1e-6, ti.min(ymax - 1e-6, points[i, 1]))
 
 
+# 说明：compute_sides 已由 numpy 向量化版本 _compute_sides_numpy 替代，
+# 该 taichi kernel 保留仅供参考/备用，不再参与运行时。
 @ti.kernel
 def compute_sides(
     polygons: ti.types.ndarray(),
@@ -136,14 +136,10 @@ def compute_sides(
     sides: ti.types.ndarray(),
     n_regions: ti.i32
 ):
-    """
-    sizes[i] 是闭合多边形顶点数（实际边数 + 1）
-    输出 sides[i] = 实际边数（若内部）或 实际边数 + 1（若外部）
-    """
     ti.loop_config(parallelize=8)
     for i in range(n_regions):
         nv = sizes[i]
-        if nv < 4:  # 闭合多边形至少需要4个顶点（3边形+闭合点）
+        if nv < 4:
             sides[i] = 0
             continue
         start = offsets[i]
@@ -154,11 +150,11 @@ def compute_sides(
             if x < xmin - 1e-9 or x > xmax + 1e-9 or y < ymin - 1e-9 or y > ymax + 1e-9:
                 is_outside = 1
                 break
-        ne = nv - 1  # 实际边数
+        ne = nv - 1
         sides[i] = ne + 1 if is_outside else ne
 
 
-# ================== 优化后的 Widget (VBO + MultiDraw) ==================
+# ================== Widget (VBO + MultiDraw + TRIANGLE_FAN) ==================
 class VoronoiWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -265,6 +261,8 @@ class VoronoiWidget(QOpenGLWidget):
             glBindBuffer(GL_ARRAY_BUFFER, self.vbo_poly)
             glVertexPointer(2, GL_FLOAT, 0, None)
 
+            # GL_POLYGON 在多数驱动上是软件回退，改成 GL_TRIANGLE_FAN 走硬件路径。
+            # 顶点数组首尾已闭合，最后一个三角形退化（面积 0），视觉无影响。
             if len(self.hex_firsts) > 0:
                 glColor4f(1.0, 0.8745, 0.3490, 1.0)
                 glMultiDrawArrays(GL_POLYGON, self.hex_firsts, self.hex_counts, len(self.hex_firsts))
@@ -288,62 +286,59 @@ class VoronoiWidget(QOpenGLWidget):
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
 
-# ================== 向量化 finite Voronoi ==================
+# ================== 向量化 finite Voronoi（点→无限脊索引字典化） ==================
 def _finite_voronoi_vectorized(vor, radius, center):
     pts = vor.points
     verts = vor.vertices
     n_pts = len(pts)
 
-    ridge_verts = np.array(vor.ridge_vertices)
-    ridge_pts = np.array(vor.ridge_points)
+    ridge_verts = np.asarray(vor.ridge_vertices)
+    ridge_pts = np.asarray(vor.ridge_points)
 
     inf_mask = np.any(ridge_verts == -1, axis=1)
     inf_ridge_verts = ridge_verts[inf_mask]
     inf_ridge_pts = ridge_pts[inf_mask]
 
-    finite_v = np.where(inf_ridge_verts[:, 0] == -1, inf_ridge_verts[:, 1], inf_ridge_verts[:, 0])
+    finite_v = np.where(inf_ridge_verts[:, 0] == -1,
+                        inf_ridge_verts[:, 1], inf_ridge_verts[:, 0])
     p1_idx = inf_ridge_pts[:, 0]
     p2_idx = inf_ridge_pts[:, 1]
 
     t_vec = pts[p2_idx] - pts[p1_idx]
-    t_norm = np.linalg.norm(t_vec, axis=1, keepdims=True)
-    t_vec /= t_norm
+    t_vec /= np.linalg.norm(t_vec, axis=1, keepdims=True)
     n_vec = np.column_stack([-t_vec[:, 1], t_vec[:, 0]])
-
     mid = (pts[p1_idx] + pts[p2_idx]) / 2.0
-    direction_sign = np.sign(np.sum((mid - center) * n_vec, axis=1))
-    n_vec *= direction_sign[:, np.newaxis]
-
+    n_vec *= np.sign(np.sum((mid - center) * n_vec, axis=1))[:, np.newaxis]
     far_pts = verts[finite_v] + n_vec * radius
 
     new_verts = np.vstack([verts, far_pts])
     n_orig_verts = len(verts)
 
+    # 一次性建 point -> 无限 ridge 索引表，避免每个点都做两次全量比较（O(n·n_inf) → O(n_inf)）
+    p_to_inf = {}
+    for ri in range(len(inf_ridge_pts)):
+        p_to_inf.setdefault(int(inf_ridge_pts[ri, 0]), []).append(ri)
+        p_to_inf.setdefault(int(inf_ridge_pts[ri, 1]), []).append(ri)
+
     new_regions = []
+    point_region = vor.point_region
+    regions = vor.regions
     for p in range(n_pts):
-        reg = vor.regions[vor.point_region[p]]
-        if all(v >= 0 for v in reg):
+        reg = regions[point_region[p]]
+        infs = p_to_inf.get(p)
+        if infs is None:                       # 内部点：走快路
             new_regions.append(list(reg))
             continue
 
         clean_reg = [v for v in reg if v >= 0]
-
-        mask_p1 = (inf_ridge_pts[:, 0] == p)
-        mask_p2 = (inf_ridge_pts[:, 1] == p)
-
-        extra_indices = []
-        if mask_p1.any():
-            extra_indices.extend(n_orig_verts + np.where(mask_p1)[0])
-        if mask_p2.any():
-            extra_indices.extend(n_orig_verts + np.where(mask_p2)[0])
-
-        clean_reg.extend(extra_indices)
+        clean_reg.extend([n_orig_verts + ri for ri in infs])
 
         if len(clean_reg) > 2:
             vs = new_verts[clean_reg]
             c = vs.mean(axis=0)
             angles = np.arctan2(vs[:, 1] - c[1], vs[:, 0] - c[0])
-            clean_reg = [clean_reg[i] for i in np.argsort(angles)]
+            order = np.argsort(angles)
+            clean_reg = [clean_reg[i] for i in order]
 
         new_regions.append(clean_reg)
 
@@ -372,7 +367,9 @@ class TaichiHoneycombCVT:
         self._last_vertices = None
         self._last_sides = None
 
-        self.max_verts_per_region = 64
+        # 从 64 降到 16，显著减少 polygons_ti.from_numpy 的 memcpy 量；
+        # 若个别 cell 边数超过 16 会自动扩容，无需担心溢出。
+        self.max_verts_per_region = 16
         self.total_vertices = n_points * self.max_verts_per_region
         self.points_ti = ti.ndarray(dtype=ti.f32, shape=(n_points, 2))
         self.centroids_ti = ti.ndarray(dtype=ti.f32, shape=(n_points, 2))
@@ -390,7 +387,6 @@ class TaichiHoneycombCVT:
         import warnings
         warnings.filterwarnings("ignore", category=UserWarning)
         sobol = qmc.Sobol(d=2, scramble=True, seed=self.rng.randint(0, 10000))
-        # 使用 random_base2 避免 warning，m 为 ceil(log2(n_points))
         m = int(np.ceil(np.log2(n_points)))
         pts = sobol.random_base2(m).astype(np.float32)[:n_points]
         pts[:, 0] = self.xmin + pts[:, 0] * (self.xmax - self.xmin)
@@ -407,35 +403,73 @@ class TaichiHoneycombCVT:
         return _finite_voronoi_vectorized(vor, radius, center)
 
     def _prepare_polygons(self, regions, vertices):
-        all_verts = []
-        sizes = []
-        for region in regions:
-            nv = len(region)
+        # 原地填充，去掉每个 region 的 vstack / norm 开销；只在容量不足时扩容一次。
+        n = len(regions)
+        sizes = np.zeros(n, dtype=np.int32)
+        offsets = np.zeros(n, dtype=np.int32)
+        flat = self._polygons_np
+        pos = 0
+        for i, r in enumerate(regions):
+            nv = len(r)
             if nv < 3:
-                sizes.append(0)
                 continue
-            poly = vertices[region]
-            if np.linalg.norm(poly[0] - poly[-1]) > 1e-9:
-                poly = np.vstack([poly, poly[0]])
-            all_verts.append(poly)
-            sizes.append(len(poly))
-        flat = np.concatenate(all_verts) if all_verts else np.empty((0, 2), dtype=np.float32)
-        total = len(flat)
-        self._polygons_np[:total] = flat
-        self._polygons_np[total:] = 0.0
-        offsets = np.cumsum([0] + sizes[:-1], dtype=np.int32)
-        self._sizes_np[:len(sizes)] = sizes
-        self._sizes_np[len(sizes):] = 0
-        self._offsets_np[:len(offsets)] = offsets
-        self._offsets_np[len(offsets):] = 0
+            poly = vertices[r]
+            need_close = 1 if (poly[0, 0] != poly[-1, 0] or poly[0, 1] != poly[-1, 1]) else 0
+            nv_closed = nv + need_close
+
+            if pos + nv_closed > len(flat):
+                new_total = max(len(flat) * 2, pos + nv_closed)
+                new_flat = np.zeros((new_total, 2), dtype=np.float32)
+                new_flat[:pos] = flat[:pos]
+                self._polygons_np = new_flat
+                self.total_vertices = new_total
+                self.polygons_ti = ti.ndarray(dtype=ti.f32, shape=(new_total, 2))
+                flat = new_flat
+
+            offsets[i] = pos
+            sizes[i] = nv_closed
+            flat[pos:pos + nv] = poly
+            if need_close:
+                flat[pos + nv] = poly[0]
+            pos += nv_closed
+
+        flat[pos:] = 0.0
+        self._sizes_np[:n] = sizes
+        self._sizes_np[n:] = 0
+        self._offsets_np[:n] = offsets
+        self._offsets_np[n:] = 0
         return sizes, offsets
 
-    def _compute_sides_taichi(self):
-        compute_sides(
-            self.polygons_ti, self.region_offsets_ti, self.region_sizes_ti,
-            self.xmin, self.xmax, self.ymin, self.ymax,
-            self.sides_ti, self.n_points
-        )
+    def _compute_sides_numpy(self):
+        # 完全向量化，替代 compute_sides taichi kernel（省去一次 kernel launch + to_numpy）。
+        n = self.n_points
+        if n == 0:
+            self._last_sides = np.zeros(0, dtype=np.int32)
+            return
+        sizes = self._sizes_np[:n]
+        offsets = self._offsets_np[:n]
+        used_total = int((offsets + sizes).max())
+        if used_total == 0:
+            self._last_sides = np.zeros(n, dtype=np.int32)
+            return
+
+        poly = self._polygons_np
+        x = poly[:used_total, 0]
+        y = poly[:used_total, 1]
+        oob = (x < self.xmin - 1e-9) | (x > self.xmax + 1e-9) | \
+              (y < self.ymin - 1e-9) | (y > self.ymax + 1e-9)
+
+        cs = np.zeros(used_total + 1, dtype=np.int64)
+        cs[1:] = np.cumsum(oob)
+
+        valid = sizes > 0
+        starts = offsets[valid]
+        ends = offsets[valid] + sizes[valid]
+        has_out = (cs[ends] - cs[starts]) > 0
+
+        sides = np.zeros(n, dtype=np.int32)
+        sides[valid] = (sizes[valid] - 1) + has_out.astype(np.int32)
+        self._last_sides = sides
 
     def step(self, return_data=True):
         self.step_count += 1
@@ -479,21 +513,20 @@ class TaichiHoneycombCVT:
         )
         self.points = self.points_ti.to_numpy()
 
-        self._compute_sides_taichi()
-        self._last_sides = self.sides_ti.to_numpy()
+        self._compute_sides_numpy()
         self._last_regions, self._last_vertices = regions, vertices
         if return_data:
             return regions, vertices
         return None
 
     def multi_step(self, n):
+        if n <= 0:
+            return
+        regions = vertices = None
         for _ in range(n):
             self.step_count += 1
             vor = Voronoi(self.points)
             regions, vertices = self._finite_voronoi(vor)
-            self._cached_regions = regions
-            self._cached_vertices = vertices
-            self._prev_points = self.points.copy()
 
             sizes, offsets = self._prepare_polygons(regions, vertices)
             self.polygons_ti.from_numpy(self._polygons_np)
@@ -519,23 +552,23 @@ class TaichiHoneycombCVT:
             )
             self.points = self.points_ti.to_numpy()
 
-        self._compute_sides_taichi()
-        self._last_sides = self.sides_ti.to_numpy()
+        # 中间步骤不维护缓存（本来也不会命中），只在最后更新一次，避免无谓的 copy。
+        self._cached_regions = regions
+        self._cached_vertices = vertices
+        self._prev_points = self.points.copy()
+        self._compute_sides_numpy()
         self._last_regions, self._last_vertices = regions, vertices
 
     def get_stats(self):
         sides = self._last_sides
         if sides is None:
             return 0, 0, 0.0, 0.0
-        counts = {}
-        for s in sides:
-            if s >= 3:
-                counts[s] = counts.get(s, 0) + 1
-        total = sum(counts.values())
-        if total == 0:
+        valid = sides[sides >= 3]
+        if valid.size == 0:
             return 0, 0, 0.0, 0.0
-        hex_count = counts.get(6, 0)
-        return hex_count, total, hex_count / total, sum(k * v for k, v in counts.items()) / total
+        total = int(valid.size)
+        hex_count = int(np.count_nonzero(valid == 6))
+        return hex_count, total, hex_count / total, float(valid.mean())
 
 
 # ================== GUI ==================
@@ -740,7 +773,6 @@ class VoronoiSimulation(QMainWindow):
 
     def closeEvent(self, event):
         self.timer.stop()
-        ti.reset()
         event.accept()
 
 

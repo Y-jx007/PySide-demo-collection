@@ -665,8 +665,6 @@ class LeniaApp(QMainWindow):
 
     def closeEvent(self, event):
         self.sim_timer.stop()
-        # 清理 Taichi 资源（全局）
-        ti.reset()
         event.accept()
 
     # ================== 预设画廊 ==================

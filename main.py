@@ -1,8 +1,11 @@
 import os
 import sys
 import importlib
+import importlib.util
+import inspect
 import logging
 import io
+import hashlib
 
 from PIL import Image, ImageOps
 
@@ -11,11 +14,10 @@ from PySide6.QtGui import QFont, QCursor, QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QMessageBox,
-    QScroller, QSizePolicy, QGraphicsDropShadowEffect
+    QSizePolicy, QGraphicsDropShadowEffect
 )
 
 # ===================== 全局常量 =====================
-# ---------- AppCard ----------
 CARD_WIDTH = 150
 CARD_HEIGHT = 150
 CARD_BUTTON_WIDTH = 100
@@ -33,32 +35,29 @@ CARD_CONTAINER_RADIUS = 6
 CARD_BUTTON_RADIUS = 4
 
 CARD_LAYOUT_SPACING = 6
-CARD_LAYOUT_MARGINS = (12, 12, 12, 12)      # 左 上 右 下
+CARD_LAYOUT_MARGINS = (12, 12, 12, 12)
 CARD_TEXT_LAYOUT_SPACING = 2
-CARD_TEXT_LAYOUT_MARGINS = (6, 4, 6, 4)     # 左 上 右 下
+CARD_TEXT_LAYOUT_MARGINS = (6, 4, 6, 4)
 
 CARD_BORDER_WIDTH = 2
 
-# ---------- CategoryWidget ----------
-CATEGORY_HEIGHT = 158
+CATEGORY_HEIGHT = 170  # 增加高度避免阴影裁剪
 CATEGORY_LABEL_WIDTH = 95
-CATEGORY_LAYOUT_MARGINS = (12, 4, 10, 4)    # 左 上 右 下
+CATEGORY_LAYOUT_MARGINS = (12, 4, 10, 4)
 CATEGORY_LAYOUT_SPACING = 12
 CATEGORY_CARDS_SPACING = 16
-CATEGORY_CARDS_MARGINS = (4, 4, 4, 4)       # 左 上 右 下
+CATEGORY_CARDS_MARGINS = (4, 4, 4, 4)
 CATEGORY_TITLE_FONT_SIZE = 12
 CATEGORY_RADIUS = 8
 
-# ---------- ApplicationLauncher ----------
 LAUNCHER_MIN_WIDTH = 640
 LAUNCHER_MIN_HEIGHT = 480
 LAUNCHER_DEFAULT_WIDTH = 1200
 LAUNCHER_DEFAULT_HEIGHT = 800
-LAUNCHER_MAIN_MARGINS = (24, 4, 24, 4)      # 左 上 右 下
+LAUNCHER_MAIN_MARGINS = (24, 4, 24, 4)
 
 INFO_FONT_SIZE = 8
 
-# ---------- 字体名称（可按需修改）----------
 FAMILY_TITLE = "Segoe UI"
 FAMILY_DEFAULT = "Microsoft YaHei"
 
@@ -80,15 +79,19 @@ class AppCard(QFrame):
         self._apply_styles(hovered=False)
 
     def _load_background(self, image_path):
+        inner_w = CARD_WIDTH - 2 * CARD_BORDER_WIDTH
+        inner_h = CARD_HEIGHT - 2 * CARD_BORDER_WIDTH
+
         if image_path and os.path.exists(image_path):
             try:
                 img = Image.open(image_path)
-                img = ImageOps.fit(img, (CARD_WIDTH, CARD_HEIGHT),
+                img = ImageOps.fit(img, (inner_w, inner_h),
                                    Image.Resampling.LANCZOS, centering=(0.5, 0.5))
                 buffer_color = io.BytesIO()
                 img.save(buffer_color, format='PNG')
                 self._color_pixmap = QPixmap()
                 self._color_pixmap.loadFromData(buffer_color.getvalue())
+
                 gray_img = img.convert('L').convert('RGB')
                 buffer_gray = io.BytesIO()
                 gray_img.save(buffer_gray, format='PNG')
@@ -96,20 +99,21 @@ class AppCard(QFrame):
                 self._gray_pixmap.loadFromData(buffer_gray.getvalue())
             except Exception as e:
                 logging.warning(f"无法加载背景图片 {image_path}: {e}")
-                self._color_pixmap = None
-                self._gray_pixmap = None
-        else:
-            self._color_pixmap = None
-            self._gray_pixmap = None
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        if self._hover and self._color_pixmap and not self._color_pixmap.isNull():
-            painter.drawPixmap(0, 0, self._color_pixmap)
-        elif self._gray_pixmap and not self._gray_pixmap.isNull():
-            painter.drawPixmap(0, 0, self._gray_pixmap)
-        painter.end()
+        # 先绘制样式表背景和边框
         super().paintEvent(event)
+
+        # 再绘制图片，不覆盖边框
+        painter = QPainter(self)
+        inner_rect = self.rect().adjusted(
+            CARD_BORDER_WIDTH, CARD_BORDER_WIDTH,
+            -CARD_BORDER_WIDTH, -CARD_BORDER_WIDTH
+        )
+        pix = self._color_pixmap if self._hover else self._gray_pixmap
+        if pix and not pix.isNull():
+            painter.drawPixmap(inner_rect, pix)
+        painter.end()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -285,10 +289,8 @@ class CategoryWidget(QFrame):
         self.scroll_area.setFixedHeight(CATEGORY_HEIGHT)
         self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
-        QScroller.grabGesture(
-            self.scroll_area.viewport(),
-            QScroller.LeftMouseButtonGesture
-        )
+        # 移除触摸手势，避免桌面端按钮点击冲突
+        # QScroller.grabGesture(...)
 
         self.cards_container = QWidget()
         self.cards_layout = QHBoxLayout(self.cards_container)
@@ -313,6 +315,7 @@ class ApplicationLauncher(QMainWindow):
         super().__init__()
         self.active_windows = []
         self.cards = []
+        self._module_class_cache = {}   # 缓存已加载的类
 
         self.error_occurred.connect(self.show_error)
         self.app_launched.connect(self.handle_app_launch)
@@ -363,6 +366,20 @@ class ApplicationLauncher(QMainWindow):
         module_path = os.path.join(apps_dir, module_subpath.replace('/', os.sep))
         return lambda: self.load_app_module(module_path, friendly_name)
 
+    def _create_category(self, category_name, items):
+        """创建分类槽并添加卡片"""
+        cat_widget = CategoryWidget(category_name)
+        self.categories_layout.addWidget(cat_widget)
+
+        for title, desc, subpath, friendly in items:
+            command = self._make_launcher(subpath, friendly)
+            module_filename = os.path.basename(subpath)
+            image_name = os.path.splitext(module_filename)[0] + ".png"
+            image_path = os.path.join(os.path.dirname(__file__), "images", image_name)
+            card = AppCard(title, desc, command, bg_image_path=image_path)
+            self.cards.append(card)
+            cat_widget.add_card(card)
+
     def setup_apps(self):
         app_definitions = [
             ("Fourier",      "绘制图形并查看其傅里叶变换",              "Math/Fourier.py", "二维傅里叶变换"),
@@ -387,54 +404,38 @@ class ApplicationLauncher(QMainWindow):
             ("Distill",    "神经网络元胞自动机",                        "Cellular Automata/Distill.py", "神经网络元胞自动机"),
         ]
 
-        base_dir = os.path.dirname(__file__)
-
         categories = {}
         for title, desc, subpath, friendly in app_definitions:
             category = subpath.split('/')[0]
-            if category not in categories:
-                categories[category] = []
-            categories[category].append((title, desc, subpath, friendly))
+            categories.setdefault(category, []).append((title, desc, subpath, friendly))
 
+        # 优先按指定顺序显示
         category_order = ["Math", "Physics", "Fractals", "Cellular Automata"]
         for cat in category_order:
-            if cat not in categories:
-                continue
-            cat_widget = CategoryWidget(cat)
-            self.categories_layout.addWidget(cat_widget)
+            if cat in categories:
+                self._create_category(cat, categories[cat])
 
-            for title, desc, subpath, friendly in categories[cat]:
-                command = self._make_launcher(subpath, friendly)
-                module_filename = os.path.basename(subpath)
-                image_name = os.path.splitext(module_filename)[0] + ".png"
-                image_path = os.path.join(base_dir, "images", image_name)
-                card = AppCard(title, desc, command, bg_image_path=image_path)
-                self.cards.append(card)
-                cat_widget.add_card(card)
-
-        for cat in categories:
+        # 其余分类按字母顺序排列
+        for cat in sorted(categories.keys()):
             if cat not in category_order:
-                cat_widget = CategoryWidget(cat)
-                self.categories_layout.addWidget(cat_widget)
-                for title, desc, subpath, friendly in categories[cat]:
-                    command = self._make_launcher(subpath, friendly)
-                    module_filename = os.path.basename(subpath)
-                    image_name = os.path.splitext(module_filename)[0] + ".png"
-                    image_path = os.path.join(base_dir, "images", image_name)
-                    card = AppCard(title, desc, command, bg_image_path=image_path)
-                    self.cards.append(card)
-                    cat_widget.add_card(card)
+                self._create_category(cat, categories[cat])
 
         self.categories_layout.addStretch()
 
     def load_app_module(self, module_path, friendly_name):
+        # 检查缓存
+        if module_path in self._module_class_cache:
+            self.app_launched.emit(self._module_class_cache[module_path])
+            return
+
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             if not os.path.exists(module_path):
                 raise FileNotFoundError(f"找不到文件: {module_path}")
 
-            apps_dir = os.path.join(os.path.dirname(__file__), 'apps')
-            rel_path = os.path.relpath(module_path, apps_dir)
-            module_name = os.path.splitext(rel_path.replace(os.sep, '.'))[0]
+            # 生成安全的模块名
+            module_hash = hashlib.md5(module_path.encode()).hexdigest()[:8]
+            module_name = f"launcher_{module_hash}"
 
             spec = importlib.util.spec_from_file_location(module_name, module_path)
             if spec is None or spec.loader is None:
@@ -443,32 +444,39 @@ class ApplicationLauncher(QMainWindow):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
+            # 查找属于该模块的 QMainWindow 子类
             app_class = None
-            for attr_name in dir(module):
-                attr = getattr(module, attr_name)
-                if (isinstance(attr, type) and
-                    issubclass(attr, QMainWindow) and
-                    attr is not QMainWindow):
-                    app_class = attr
+            for _, obj in inspect.getmembers(module, inspect.isclass):
+                if (issubclass(obj, QMainWindow) and
+                    obj is not QMainWindow and
+                    obj.__module__ == module.__name__):
+                    app_class = obj
                     break
 
             if app_class is None:
                 raise ImportError("模块中未找到 QMainWindow 子类")
 
+            self._module_class_cache[module_path] = app_class
             self.app_launched.emit(app_class)
         except Exception as e:
             logging.exception(f"加载模块失败: {friendly_name}")
             self.error_occurred.emit(f"无法启动 {friendly_name}: {str(e)}")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def handle_app_launch(self, app_class):
         try:
             window = app_class()
             window.show()
             self.active_windows.append(window)
-            window.destroyed.connect(lambda w=window: self.active_windows.remove(w))
+            window.destroyed.connect(lambda w=window: self._remove_active_window(w))
         except Exception as e:
             logging.exception("创建应用窗口出错")
             self.show_error(f"创建应用窗口时出错: {str(e)}")
+
+    def _remove_active_window(self, window):
+        if window in self.active_windows:
+            self.active_windows.remove(window)
 
     def show_error(self, message):
         QMessageBox.critical(self, "错误", message)

@@ -1,275 +1,506 @@
-import sys
+"""
+nephroid_geometric.py — 反射焦散 = 肾形线
+（修复光追密度图不显示的 bug + 视觉强化）
+"""
+
+import sys, math
 import numpy as np
-import taichi_forge as ti
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QSlider, QLabel, QGroupBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QSlider, QPushButton, QSizePolicy
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush
-
-# -------------------- 初始化 Taichi --------------------
-ti.init(arch=ti.gpu, debug=False)
-
-# 图像尺寸 2:1
-W, H = 800, 400
-
-# 三通道图像 [H, W, 3]
-img_field = ti.field(dtype=ti.f32, shape=(H, W, 3))
-
-PI = 3.14159265
-
-# 基础波长 (红、绿、蓝)
-LAMBDA_R = 0.70
-LAMBDA_G = 0.55
-LAMBDA_B = 0.45
-
-# 世界坐标映射：图像水平映射 x ∈ [-1.5, 2.5]，垂直 y ∈ [-1.0, 1.0]
-WORLD_X_MIN = -1.5
-WORLD_X_MAX =  2.5
-WORLD_Y_MIN = -1.0
-WORLD_Y_MAX =  1.0
-WORLD_W = WORLD_X_MAX - WORLD_X_MIN
-WORLD_H = WORLD_Y_MAX - WORLD_Y_MIN
-
-# 圆形焦散物体参数：中心在右半部 (1.0, 0)，半径 1.0
-CIRCLE_CX = 1.0
-CIRCLE_CY = 0.0
-CIRCLE_R  = 1.0
-
-@ti.kernel
-def render_caustics(
-    light_x: ti.f32, light_y: ti.f32,
-    wavelength_scale: ti.f32,
-    n_samples: ti.i32
-):
-    """
-    蒙特卡洛路径积分：对圆内每个像素，在左半圆弧上均匀采样反射点，
-    累加红绿蓝三通道复振幅，得到彩色焦散。
-    """
-    for i, j in ti.ndrange(H, W):
-        # 像素 -> 世界坐标
-        x = ti.cast(j, ti.f32) / ti.cast(W, ti.f32) * WORLD_W + WORLD_X_MIN
-        y = ti.cast(i, ti.f32) / ti.cast(H, ti.f32) * WORLD_H + WORLD_Y_MIN
-
-        dx_c = x - CIRCLE_CX
-        dy_c = y - CIRCLE_CY
-        if dx_c * dx_c + dy_c * dy_c >= CIRCLE_R * CIRCLE_R:
-            img_field[i, j, 0] = 0.0
-            img_field[i, j, 1] = 0.0
-            img_field[i, j, 2] = 0.0
-            continue
-
-        # 复振幅累加器
-        rx, ry = 0.0, 0.0
-        gx, gy = 0.0, 0.0
-        bx, by = 0.0, 0.0
-
-        lam_r = LAMBDA_R * wavelength_scale
-        lam_g = LAMBDA_G * wavelength_scale
-        lam_b = LAMBDA_B * wavelength_scale
-
-        ti.loop_config(serialize=True)  # 串行累加，避免原子操作
-        for k in range(n_samples):
-            # 左半圆弧：θ ∈ [-π/2, π/2]
-            theta = -0.5 * PI + PI * (ti.cast(k, ti.f32) + ti.random()) / ti.cast(n_samples, ti.f32)
-            ct = ti.cos(theta)
-            st = ti.sin(theta)
-
-            # 反射点世界坐标
-            Px = CIRCLE_CX + CIRCLE_R * ct
-            Py = CIRCLE_CY + CIRCLE_R * st
-
-            # 光源到反射点的距离和方向
-            dx1 = Px - light_x
-            dy1 = Py - light_y
-            d1 = ti.sqrt(dx1 * dx1 + dy1 * dy1)
-            if d1 < 1e-6:
-                continue
-            in_dir_x = dx1 / d1
-            in_dir_y = dy1 / d1
-
-            # 内法线（指向圆心）：(-ct, -st)
-            Nx = -ct
-            Ny = -st
-            cos_inc = in_dir_x * Nx + in_dir_y * Ny   # 入射角余弦
-            if cos_inc <= 0.0:   # 背面照射，无贡献
-                continue
-
-            # 反射点到接收点的距离
-            dx2 = x - Px
-            dy2 = y - Py
-            d2 = ti.sqrt(dx2 * dx2 + dy2 * dy2)
-            if d2 < 1e-6:
-                continue
-
-            # 几何因子：入射余弦 / d2（与原始 GLSL 的 cosθ/d 对应）
-            form = cos_inc / d2
-
-            # 总光程
-            path = d1 + d2
-
-            # 三波长相位
-            s_r = 2.0 * PI / lam_r * path
-            s_g = 2.0 * PI / lam_g * path
-            s_b = 2.0 * PI / lam_b * path
-
-            rx += ti.cos(s_r) * form
-            ry += ti.sin(s_r) * form
-            gx += ti.cos(s_g) * form
-            gy += ti.sin(s_g) * form
-            bx += ti.cos(s_b) * form
-            by += ti.sin(s_b) * form
-
-        gain = 2.0
-        norm = 1.0 / ti.cast(n_samples, ti.f32)
-        ir = ti.sqrt(rx * rx + ry * ry) * norm * gain
-        ig = ti.sqrt(gx * gx + gy * gy) * norm * gain
-        ib = ti.sqrt(bx * bx + by * by) * norm * gain
-
-        img_field[i, j, 0] = ir
-        img_field[i, j, 1] = ig
-        img_field[i, j, 2] = ib
+from PySide6.QtGui import (
+    QPainter, QColor, QPen, QBrush, QFont, QImage, QPainterPath
+)
+from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
 
 
-# -------------------- 主窗口 --------------------
-class CausticsWindow(QMainWindow):
+# ==================== 配色 ====================
+BG       = QColor(250, 250, 247)
+PANEL    = QColor(245, 244, 239)
+BORDER   = QColor(222, 221, 214)
+INK_DARK = QColor(45, 50, 65)
+INK_MID  = QColor(120, 125, 140)
+INK_LT   = QColor(205, 206, 212)
+INK_XLT  = QColor(232, 232, 234)
+FOCUS    = QColor(125, 85, 165)
+ARROW_A  = QColor(65, 105, 165)
+ARROW_B  = QColor(175, 100, 95)
+HALO     = QColor(255, 255, 255, 210)
+
+F_TITLE = QFont("Sans Serif", 13, QFont.Bold)
+F_SUB   = QFont("Sans Serif", 9)
+F_LABEL = QFont("Sans Serif", 9, QFont.Bold)
+F_LEG   = QFont("Sans Serif", 9)
+
+# 密度 colormap：白 → 深蓝黑（浅色系）
+CMAP = np.array([
+    [1.00, 1.00, 1.00],
+    [0.94, 0.95, 0.97],
+    [0.80, 0.83, 0.90],
+    [0.55, 0.60, 0.73],
+    [0.28, 0.34, 0.50],
+    [0.10, 0.14, 0.24],
+    [0.04, 0.06, 0.12],
+], dtype=np.float32)
+CMAP_POS = np.linspace(0, 1, len(CMAP))
+
+
+def colorize(v):
+    out = np.empty((*v.shape, 3), dtype=np.float32)
+    for c in range(3):
+        out[..., c] = np.interp(v, CMAP_POS, CMAP[:, c])
+    return out
+
+
+# =====================================================================
+class MainView(QWidget):
+    def __init__(self, state):
+        super().__init__()
+        self.state = state
+        self._density = None
+        self._density_key = None
+        self.setMinimumSize(680, 620)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setStyleSheet(f"background: {BG.name()};")
+
+    def _bounds(self):
+        return 1.9, -1.5, 2.7
+
+    def _transform(self):
+        W, H = self.width(), self.height()
+        wx, wy_min, wy_max = self._bounds()
+        scale = min(W/(2*wx), H/(wy_max-wy_min)) * 0.94
+        return W/2, H/2, scale
+
+    def world_to_screen(self, x, y):
+        cx, cy, scale = self._transform()
+        _, wy_min, wy_max = self._bounds()
+        wy_c = (wy_min + wy_max)/2
+        return QPointF(cx + x*scale, cy - (y - wy_c)*scale)
+
+    def invalidate(self):
+        self._density_key = None
+
+    # ============================================================
+    # 光线追踪渲染
+    # ============================================================
+    def _ensure_density(self):
+        key = (round(self.state['R'], 4), self.state['n_rays'])
+        if self._density_key == key and self._density is not None:
+            return
+        self._density = self._compute_density()
+        self._density_key = key
+
+    def _compute_density(self):
+        R = self.state['R']; n = self.state['n_rays']
+        wx, wy_min, wy_max = self._bounds()
+        iw = 800
+        ih = int(iw * (wy_max - wy_min) / (2 * wx))
+
+        # ---- 追踪所有反射光线 ----
+        th = np.linspace(np.pi + 1e-3, 2*np.pi - 1e-3, n)
+        Px, Py = R * np.cos(th), R * np.sin(th)
+        dx = np.sin(2*th); dy = -np.cos(2*th)
+        t_len = 3.4
+        Ex = Px + t_len * dx
+        Ey = Py + t_len * dy
+
+        # ---- 线段重采样 ----
+        smp = 80
+        tt = np.linspace(0, 1, smp)
+        xs = (Px[:, None] + (Ex - Px)[:, None] * tt).ravel()
+        ys = (Py[:, None] + (Ey - Py)[:, None] * tt).ravel()
+
+        # ---- 世界 → 像素 ----
+        px = (xs + wx) / (2*wx) * iw - 0.5
+        py = (wy_max - ys) / (wy_max - wy_min) * ih - 0.5
+        ix = np.floor(px).astype(np.int64); iy = np.floor(py).astype(np.int64)
+        fx = px - ix; fy = py - iy
+        m = (ix >= 0) & (ix < iw-1) & (iy >= 0) & (iy < ih-1)
+        ix, iy, fx, fy = ix[m], iy[m], fx[m], fy[m]
+
+        # ---- 双线性 splatting ----
+        flat = np.zeros(iw * ih, dtype=np.float64)
+        base = iy * iw + ix
+        for off, w in ((0,    (1-fx)*(1-fy)),
+                       (1,    fx*(1-fy)),
+                       (iw,   (1-fx)*fy),
+                       (iw+1, fx*fy)):
+            flat += np.bincount(base + off, weights=w, minlength=iw*ih)
+
+        d = flat.reshape(ih, iw).astype(np.float32)
+        if d.max() > 0:
+            d /= d.max()
+
+        # ---- 3×3 box blur：让焦散线加粗 1~2 像素 ----
+        d_pad = np.pad(d, 1, mode='edge')
+        d = (d_pad[:-2, 1:-1] + d_pad[2:, 1:-1] +
+             d_pad[1:-1, :-2] + d_pad[1:-1, 2:] +
+             d_pad[:-2, :-2] + d_pad[:-2, 2:] +
+             d_pad[2:, :-2] + d_pad[2:, 2:] + d) / 9.0
+
+        # ---- Bloom ----
+        glow = self._glow(d, factor=8, iters=2)
+        render = d + 0.3 * glow
+        render /= max(render.max(), 1e-12)
+
+        # ---- 色调映射：温和提亮暗部，保留焦散对比 ----
+        render = np.power(render, 0.6)
+
+        rgb = colorize(render)
+        arr = np.ascontiguousarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8))
+
+        # ★ 关键修复：用 tobytes() 而非 memoryview
+        data = arr.tobytes()
+        qimg = QImage(data, iw, ih, 3*iw, QImage.Format_RGB888)
+        if qimg.isNull():
+            return None
+        return qimg.copy()
+
+    def _glow(self, d, factor=8, iters=2):
+        h, w = d.shape
+        sh, sw = h // factor, w // factor
+        if sh < 2 or sw < 2:
+            return d.copy()
+        dh = d[:sh*factor, :sw*factor]
+        ds = dh.reshape(sh, factor, sw, factor).mean(axis=(1, 3))
+        for _ in range(iters):
+            ds = 0.25 * (np.roll(ds, 1, 0) + np.roll(ds, -1, 0) +
+                         np.roll(ds, 1, 1) + np.roll(ds, -1, 1))
+        up = np.repeat(np.repeat(ds, factor, axis=0), factor, axis=1)
+        if up.shape[0] < h:
+            up = np.pad(up, ((0, h-up.shape[0]), (0, 0)), mode='edge')
+        else:
+            up = up[:h]
+        if up.shape[1] < w:
+            up = np.pad(up, ((0, 0), (0, w-up.shape[1])), mode='edge')
+        else:
+            up = up[:, :w]
+        return up
+
+    # ============================================================
+    # 绘制辅助
+    # ============================================================
+    def _arrow(self, p, p0, p1, color, w=2.0):
+        pen = QPen(color, w); pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen); p.drawLine(p0, p1)
+        ddx, ddy = p1.x()-p0.x(), p1.y()-p0.y()
+        L = math.hypot(ddx, ddy)
+        if L < 1e-6: return
+        ux, uy = ddx/L, ddy/L
+        nx, ny = -uy, ux
+        al, aw = 9, 4.5
+        bx, by = p1.x()-ux*al, p1.y()-uy*al
+        tri = QPainterPath()
+        tri.moveTo(p1)
+        tri.lineTo(bx + nx*aw, by + ny*aw)
+        tri.lineTo(bx - nx*aw, by - ny*aw)
+        tri.closeSubpath()
+        p.setBrush(color); p.setPen(Qt.NoPen)
+        p.drawPath(tri)
+
+    def _draw_point(self, p, pos, color, label=None, dx=10, dy=-6):
+        p.setPen(QPen(BG, 1.6))
+        p.setBrush(color)
+        p.drawEllipse(pos, 6, 6)
+        if label:
+            p.setPen(color)
+            p.setFont(F_LABEL)
+            p.drawText(pos + QPointF(dx, dy), label)
+
+    def _halo_line(self, p, p0, p1, color, width=1.8, halo_w=4):
+        p.setPen(QPen(HALO, halo_w))
+        p.drawLine(p0, p1)
+        p.setPen(QPen(color, width))
+        p.drawLine(p0, p1)
+
+    # ============================================================
+    # 主绘制
+    # ============================================================
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), BG)
+
+        W, H = self.width(), self.height()
+        R = self.state['R']; theta = self.state['theta']
+        wx, wy_min, wy_max = self._bounds()
+
+        # ---- 光追密度图（背景）----
+        self._ensure_density()
+        if self._density is not None and not self._density.isNull():
+            tl = self.world_to_screen(-wx, wy_max)
+            br = self.world_to_screen(wx, wy_min)
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawImage(QRectF(tl, br), self._density)
+
+        def S(x, y): return self.world_to_screen(x, y)
+
+        O_screen = S(0, 0)
+        _, _, scale = self._transform()
+        Rp = R * scale
+
+        # 关键量
+        Px, Py = R*math.cos(theta), R*math.sin(theta)
+        dx, dy = math.sin(2*theta), -math.cos(2*theta)
+        Mx, My = Px/2, Py/2
+        t_H = -R*math.sin(theta)
+        Hx, Hy = Px + t_H*dx, Py + t_H*dy
+        Qx, Qy = (Px+Hx)/2, (Py+Hy)/2
+        a_ = R/4.0; rho = R/2.0
+        Cx = (rho + a_)*math.cos(theta)
+        Cy = (rho + a_)*math.sin(theta)
+        y_top = wy_max - 0.10
+
+        # ---- 光线族 ----
+        p.setPen(QPen(QColor(150, 120, 140, 55), 0.5))
+        for ang in np.linspace(np.pi+0.01, 2*np.pi-0.01, 220):
+            px_ = R*math.cos(ang); py_ = R*math.sin(ang)
+            p.drawLine(S(px_, py_),
+                       S(px_ + 2.1*math.sin(2*ang),
+                         py_ - 2.1*math.cos(2*ang)))
+
+        # ---- 圆镜 ----
+        p.setPen(QPen(INK_LT, 1.0, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(O_screen, Rp, Rp)
+        path = QPainterPath()
+        for i, ang in enumerate(np.linspace(np.pi, 2*np.pi, 140)):
+            pt = S(R*math.cos(ang), R*math.sin(ang))
+            path.moveTo(pt) if i == 0 else path.lineTo(pt)
+        p.setPen(QPen(INK_DARK, 2.0))
+        p.drawPath(path)
+
+        # ---- 平行光 ----
+        p.setPen(QPen(INK_XLT, 0.6))
+        for xr in np.linspace(-R*0.97, R*0.97, 30):
+            yb = -math.sqrt(max(R*R - xr*xr, 1e-4))
+            p.drawLine(S(xr, y_top), S(xr, yb))
+
+        # ---- 固定圆（R/2）----
+        p.setPen(QPen(INK_LT, 1.0, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(O_screen, rho*scale, rho*scale)
+
+        # ---- 完整肾形（淡参照）----
+        path = QPainterPath()
+        for i, t_ in enumerate(np.linspace(0, 2*np.pi, 420)):
+            qx = a_*(3*math.cos(t_) + math.cos(3*t_))
+            qy = a_*(3*math.sin(t_) + math.sin(3*t_))
+            path.moveTo(S(qx, qy)) if i == 0 else path.lineTo(S(qx, qy))
+        p.setPen(QPen(QColor(200, 195, 215), 1.0, Qt.DashLine))
+        p.drawPath(path)
+
+        # ---- 已描绘的焦散 ----
+        path = QPainterPath(); first = True
+        for t_ in np.linspace(np.pi, theta, 160):
+            qx = a_*(3*math.cos(t_) + math.cos(3*t_))
+            qy = a_*(3*math.sin(t_) + math.sin(3*t_))
+            if first:
+                path.moveTo(S(qx, qy)); first = False
+            else:
+                path.lineTo(S(qx, qy))
+        p.setPen(QPen(FOCUS, 2.2))
+        p.drawPath(path)
+
+        # ---- OP、OH ----
+        p.setPen(QPen(INK_LT, 1.0, Qt.DashLine))
+        p.drawLine(O_screen, S(Px, Py))
+        p.drawLine(O_screen, S(Hx, Hy))
+
+        # ---- 滚圆（R/4）----
+        C_screen = S(Cx, Cy)
+        p.setPen(QPen(QColor(165, 180, 205), 1.2))
+        p.setBrush(QColor(205, 215, 235, 55))
+        p.drawEllipse(C_screen, a_*scale, a_*scale)
+
+        # ---- 切点 ----
+        tcx = rho*math.cos(theta); tcy = rho*math.sin(theta)
+        p.setPen(QPen(BG, 1.2)); p.setBrush(INK_MID)
+        p.drawEllipse(S(tcx, tcy), 3, 3)
+
+        # ---- 当前入射光线（白描边）----
+        self._halo_line(p, S(Px, y_top), S(Px, Py), INK_DARK, 1.8, 4)
+
+        # ---- 切线 ----
+        tl_x, tl_y = -math.sin(theta), math.cos(theta)
+        p.setPen(QPen(INK_LT, 1.1, Qt.DashLine))
+        p.drawLine(S(Px-0.55*tl_x, Py-0.55*tl_y),
+                   S(Px+0.55*tl_x, Py+0.55*tl_y))
+
+        # ---- 当前反射光线（白描边）----
+        self._halo_line(p, S(Px, Py),
+                        S(Px + 2.3*dx, Py + 2.3*dy), INK_DARK, 1.8, 4)
+
+        # ---- PH ----
+        p.setPen(QPen(INK_DARK, 2.0))
+        p.drawLine(S(Px, Py), S(Hx, Hy))
+
+        # ---- M→Q ----
+        p.setPen(QPen(FOCUS, 1.4, Qt.DashLine))
+        p.drawLine(S(Mx, My), S(Qx, Qy))
+
+        # ---- A、B 箭头 ----
+        self._arrow(p, O_screen, C_screen, ARROW_A, 2.0)
+        self._arrow(p, C_screen, S(Qx, Qy), ARROW_B, 2.0)
+
+        # ---- 点 ----
+        self._draw_point(p, O_screen,  INK_DARK, "O", -20, 4)
+        self._draw_point(p, S(Px, Py), INK_DARK, "P", 10, -6)
+        self._draw_point(p, S(Hx, Hy), INK_DARK, "H", 10, -6)
+        self._draw_point(p, S(Mx, My), INK_DARK, "M", 10, -6)
+        self._draw_point(p, S(Qx, Qy), FOCUS,    "Q", 10, 16)
+
+        # ---- 标题 ----
+        p.setPen(INK_DARK); p.setFont(F_TITLE)
+        p.drawText(24, 32, "反射焦散 = 肾形线")
+        p.setPen(INK_MID); p.setFont(F_SUB)
+        p.drawText(24, 50, "光线追踪渲染 · 周转圆构造")
+
+        self._draw_legend(p, W, H)
+
+    def _draw_legend(self, p, W, H):
+        entries = [
+            (INK_DARK, "O   圆心"),
+            (INK_DARK, "P   入射点"),
+            (INK_DARK, "H   垂足"),
+            (INK_DARK, "M   OP 中点"),
+            (FOCUS,    "Q   焦散点"),
+            (ARROW_A,  "A   公转 θ"),
+            (ARROW_B,  "B   自转 3θ"),
+        ]
+        row_h = 18
+        box_w, box_h = 152, len(entries)*row_h + 20
+        x0 = W - box_w - 24
+        y0 = H - box_h - 24
+
+        rect = QRectF(x0, y0, box_w, box_h)
+        p.setPen(QPen(BORDER, 1.0))
+        p.setBrush(QColor(252, 252, 250, 235))
+        p.drawRoundedRect(rect, 6, 6)
+
+        p.setFont(F_LEG)
+        for i, (color, text) in enumerate(entries):
+            y = y0 + 14 + i*row_h
+            p.setPen(QPen(BG, 1.4))
+            p.setBrush(color)
+            p.drawEllipse(QPointF(x0 + 14, y), 5, 5)
+            p.setPen(INK_MID)
+            p.drawText(QPointF(x0 + 26, y + 4), text)
+
+
+# =====================================================================
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("焦散可视化 - 点光源 · 光线追踪")
-        self.setFixedSize(W + 260, H + 20)
+        self.setWindowTitle("反射焦散 = 肾形线")
+        self.resize(1200, 820)
 
-        # 可调参数默认值
-        self.light_x = -0.5
-        self.light_y = 0.0
-        self.wavelength_scale = 0.03
-        self.n_samples = 1000
+        self.state = {'R': 1.0, 'theta': 4*math.pi/3, 'n_rays': 15000}
 
         central = QWidget()
+        central.setStyleSheet(f"background: {PANEL.name()};")
+        vl = QVBoxLayout(central)
+        vl.setContentsMargins(0, 0, 0, 0); vl.setSpacing(0)
+        vl.addWidget(self._header())
+        self.view = MainView(self.state)
+        vl.addWidget(self.view, 1)
         self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(10, 10, 10, 10)
 
-        # 左侧控制面板
-        panel = QVBoxLayout()
-
-        # ---- 光源位置 ----
-        group_light = QGroupBox("点光源位置")
-        light_layout = QVBoxLayout()
-        light_layout.addWidget(QLabel("X 坐标"))
-        self.slider_lx = QSlider(Qt.Horizontal)
-        self.slider_lx.setRange(-150, 150)
-        self.slider_lx.setValue(int(self.light_x * 100))
-        self.slider_lx.valueChanged.connect(self.on_light_x_changed)
-        light_layout.addWidget(self.slider_lx)
-        self.label_lx = QLabel(f"{self.light_x:.2f}")
-        light_layout.addWidget(self.label_lx)
-
-        light_layout.addWidget(QLabel("Y 坐标"))
-        self.slider_ly = QSlider(Qt.Horizontal)
-        self.slider_ly.setRange(-100, 100)
-        self.slider_ly.setValue(int(self.light_y * 100))
-        self.slider_ly.valueChanged.connect(self.on_light_y_changed)
-        light_layout.addWidget(self.slider_ly)
-        self.label_ly = QLabel(f"{self.light_y:.2f}")
-        light_layout.addWidget(self.label_ly)
-        group_light.setLayout(light_layout)
-        panel.addWidget(group_light)
-
-        # ---- 波长缩放 ----
-        group_wl = QGroupBox("波长缩放")
-        wl_layout = QVBoxLayout()
-        self.slider_wl = QSlider(Qt.Horizontal)
-        self.slider_wl.setRange(1, 100)
-        self.slider_wl.setValue(int(self.wavelength_scale * 1000))
-        self.slider_wl.valueChanged.connect(self.on_wavelength_changed)
-        wl_layout.addWidget(self.slider_wl)
-        self.label_wl = QLabel(f"{self.wavelength_scale:.3f}")
-        wl_layout.addWidget(self.label_wl)
-        group_wl.setLayout(wl_layout)
-        panel.addWidget(group_wl)
-
-        # ---- 采样数 ----
-        group_sp = QGroupBox("采样数")
-        sp_layout = QVBoxLayout()
-        self.slider_sp = QSlider(Qt.Horizontal)
-        self.slider_sp.setRange(50, 2000)
-        self.slider_sp.setValue(self.n_samples)
-        self.slider_sp.valueChanged.connect(self.on_samples_changed)
-        sp_layout.addWidget(self.slider_sp)
-        self.label_sp = QLabel(str(self.n_samples))
-        sp_layout.addWidget(self.label_sp)
-        group_sp.setLayout(sp_layout)
-        panel.addWidget(group_sp)
-
-        panel.addStretch()
-        main_layout.addLayout(panel)
-
-        # 右侧图像显示
-        self.image_label = QLabel()
-        self.image_label.setFixedSize(W, H)
-        main_layout.addWidget(self.image_label)
-
-        # 定时刷新
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update_display)
-        self.timer.start(33)  # ~30 FPS
+        self.timer.timeout.connect(self._tick)
+        self.timer.setInterval(30)
+        self.playing = False
 
-        self.update_display()
+    def _slider_css(self):
+        return """
+            QSlider::groove:horizontal { height: 4px; background: #dcdcd5; border-radius: 2px; }
+            QSlider::sub-page:horizontal { background: #7a94b8; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #5a7aa8; width: 14px; margin: -5px 0; border-radius: 7px; }
+        """
 
-    def on_light_x_changed(self, val):
-        self.light_x = val / 100.0
-        self.label_lx.setText(f"{self.light_x:.2f}")
+    def _header(self):
+        w = QWidget()
+        w.setStyleSheet(f"background: {PANEL.name()}; border-bottom: 1px solid {BORDER.name()};")
+        w.setFixedHeight(58)
+        hl = QHBoxLayout(w); hl.setContentsMargins(24, 10, 24, 10); hl.setSpacing(10)
 
-    def on_light_y_changed(self, val):
-        self.light_y = val / 100.0
-        self.label_ly.setText(f"{self.light_y:.2f}")
+        lbl_t = QLabel("θ")
+        lbl_t.setStyleSheet("color: #3a4a6a; font-size: 13px;")
+        hl.addWidget(lbl_t)
 
-    def on_wavelength_changed(self, val):
-        self.wavelength_scale = val / 1000.0
-        self.label_wl.setText(f"{self.wavelength_scale:.3f}")
+        self.sld = QSlider(Qt.Horizontal)
+        self.sld.setRange(1812, 3588)
+        self.sld.setValue(2400)
+        self.sld.setFixedWidth(260)
+        self.sld.setStyleSheet(self._slider_css())
+        self.sld.valueChanged.connect(self._on_theta)
+        hl.addWidget(self.sld)
 
-    def on_samples_changed(self, val):
-        self.n_samples = val
-        self.label_sp.setText(str(val))
+        self.theta_label = QLabel("240.0°")
+        self.theta_label.setAlignment(Qt.AlignCenter); self.theta_label.setFixedWidth(72)
+        self.theta_label.setStyleSheet(
+            "color: #2a3a5a; font-size: 12px; font-family: monospace;"
+            f" background: white; padding: 3px 6px; border-radius: 4px;"
+            f" border: 1px solid {BORDER.name()};")
+        hl.addWidget(self.theta_label)
 
-    def update_display(self):
-        # GPU 计算焦散
-        render_caustics(self.light_x, self.light_y, self.wavelength_scale, self.n_samples)
-        ti.sync()
+        hl.addSpacing(24)
 
-        # 转换为 QImage
-        img_np = img_field.to_numpy()
-        img_np = np.clip(img_np, 0.0, 1.0) * 255.0
-        img_np = img_np.astype(np.uint8)
-        qimg = QImage(img_np.data, W, H, W * 3, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(qimg)
+        lbl_r = QLabel("R")
+        lbl_r.setStyleSheet("color: #3a4a6a; font-size: 13px;")
+        hl.addWidget(lbl_r)
 
-        # 在图像上绘制点光源标记
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
+        self.r_sld = QSlider(Qt.Horizontal)
+        self.r_sld.setRange(60, 150); self.r_sld.setValue(100)
+        self.r_sld.setFixedWidth(100)
+        self.r_sld.setStyleSheet(self._slider_css())
+        self.r_sld.valueChanged.connect(self._on_radius)
+        hl.addWidget(self.r_sld)
 
-        # 世界坐标 -> 像素坐标
-        px = int((self.light_x - WORLD_X_MIN) / WORLD_W * W)
-        py = int((self.light_y - WORLD_Y_MIN) / WORLD_H * H)
-        # 限制在画面内
-        px = max(0, min(W-1, px))
-        py = max(0, min(H-1, py))
+        self.r_label = QLabel("1.00"); self.r_label.setFixedWidth(40)
+        self.r_label.setStyleSheet("color: #2a3a5a; font-size: 12px; font-family: monospace;")
+        hl.addWidget(self.r_label)
 
-        # 绘制光晕
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(255, 255, 200, 80))
-        painter.drawEllipse(px - 8, py - 8, 16, 16)
-        painter.setBrush(QColor(255, 255, 255, 200))
-        painter.drawEllipse(px - 3, py - 3, 6, 6)
-        painter.end()
+        hl.addStretch()
 
-        self.image_label.setPixmap(pixmap)
+        self.play_btn = QPushButton("▶ 播放"); self.play_btn.setFixedWidth(88)
+        self.play_btn.setStyleSheet(
+            "QPushButton { background: #5a7aa8; color: white; border: none;"
+            " padding: 6px 10px; border-radius: 4px; font-size: 12px; }"
+            "QPushButton:hover { background: #6a8ab8; }"
+            "QPushButton:pressed { background: #4a6a98; }")
+        self.play_btn.clicked.connect(self._toggle_play)
+        hl.addWidget(self.play_btn)
+
+        return w
+
+    def _on_theta(self, v):
+        self.state['theta'] = v*math.pi/1800.0
+        self.theta_label.setText(f"{v/10.0:.1f}°")
+        self.view.update()
+
+    def _on_radius(self, v):
+        self.state['R'] = v/100.0
+        self.r_label.setText(f"{self.state['R']:.2f}")
+        self.view.invalidate()
+        self.view.update()
+
+    def _toggle_play(self):
+        self.playing = not self.playing
+        if self.playing:
+            self.play_btn.setText("⏸ 暂停"); self.timer.start()
+        else:
+            self.play_btn.setText("▶ 播放"); self.timer.stop()
+
+    def _tick(self):
+        v = self.sld.value() + 10
+        if v > 3588: v = 1812
+        self.sld.setValue(v)
 
 
-# -------------------- 启动 --------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = CausticsWindow()
-    window.show()
+    win = MainWindow(); win.show()
     sys.exit(app.exec())
