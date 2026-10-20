@@ -300,7 +300,11 @@ class LSystemWidget(QWidget):
         er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
 
         pen = QPen()
-        pen.setWidth(max(1, min(3, int(round(2 * scale)))))
+        pen_width = max(1, min(3, int(round(2 * scale))))
+        pen.setWidth(pen_width)
+        # 对齐到像素中心：奇数宽度加 0.5，偶数宽度加 1.0，
+        # 否则浮点坐标下抗锯齿会把 1px 线摊到相邻两列，出现一边深一边浅
+        snap = 0.5 if pen_width % 2 == 1 else 1.0
         buckets = 48
 
         for b in range(buckets):
@@ -309,10 +313,10 @@ class LSystemWidget(QWidget):
             if i1 <= i0:
                 continue
             chunk = self.path[i0:i1]
-            xs = (chunk[:, 0] * scale + off_x).tolist()
-            ys = (chunk[:, 1] * scale + off_y).tolist()
-            xe = (chunk[:, 2] * scale + off_x).tolist()
-            ye = (chunk[:, 3] * scale + off_y).tolist()
+            xs = (np.floor(chunk[:, 0] * scale + off_x) + snap).tolist()
+            ys = (np.floor(chunk[:, 1] * scale + off_y) + snap).tolist()
+            xe = (np.floor(chunk[:, 2] * scale + off_x) + snap).tolist()
+            ye = (np.floor(chunk[:, 3] * scale + off_y) + snap).tolist()
             lines = [QLineF(a, c, d, e) for a, c, d, e in zip(xs, ys, xe, ye)]
             k = b / (buckets - 1)
             pen.setColor(QColor(int(sr + (er - sr) * k),
