@@ -349,18 +349,13 @@ class StigmergyCanvas(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(10, 10, 12))
-        # 等比缩放并居中
-        w, h = self.width(), self.height()
-        side = min(w, h)
-        painter.drawImage(QRect((w - side) // 2, (h - side) // 2, side, side), self._image)
+        # 直接铺满画布：略有一点非等比拉伸，但不会出现上下/左右黑边
+        painter.drawImage(self.rect(), self._image)
 
     def _to_sim(self, pos):
-        w, h = self.width(), self.height()
-        side = min(w, h)
-        ox, oy = (w - side) / 2.0, (h - side) / 2.0
-        fx = (pos.x() - ox) / max(1, side)
-        fy = (pos.y() - oy) / max(1, side)
-        return fx * self.sim.size, fy * self.sim.size
+        w = max(1, self.width())
+        h = max(1, self.height())
+        return pos.x() / w * self.sim.size, pos.y() / h * self.sim.size
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ShiftModifier):
@@ -404,7 +399,8 @@ class StigmergyApp(QMainWindow):
     # ---------- UI ----------
     def init_ui(self):
         self.setWindowTitle("Stigmergy 黏菌 / 蚁群网络")
-        self.setGeometry(100, 100, 940, 660)
+        # 面板 300 + 左右边距 12 + 间距 8；高度只留上下边距，让画布尽量是正方形
+        self.setGeometry(100, 100, 320 + 640, 12 + 640)
 
         central = QWidget()
         self.setCentralWidget(central)
