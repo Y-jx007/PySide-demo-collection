@@ -264,6 +264,7 @@ class TerrainCanvas(QWidget):
         self.show_water = True
         self.show_cracks = True
         self.show_shade = True
+        self._soil_lut = None
         self._image = None
         self._dirty = True
         self.setMinimumSize(420, 420)
@@ -278,6 +279,18 @@ class TerrainCanvas(QWidget):
         self.update()
 
     # ---------- 着色 ----------
+    def _build_soil_lut(self):
+        """256×256 查表：高度 × 湿度 → 土壤颜色（含高处露岩）。"""
+        hi = np.linspace(0.0, 1.0, 256, dtype=np.float32)[:, None]
+        wi = np.linspace(0.0, 1.0, 256, dtype=np.float32)[None, :]
+        dry = np.array([188, 162, 118], np.float32)
+        wetc = np.array([118, 92, 66], np.float32)
+        lut = dry[None, None, :] * (1.0 - wi[..., None]) + wetc[None, None, :] * wi[..., None]
+        lut = np.broadcast_to(lut, (256, 256, 3)).copy()
+        rock = np.clip((hi - 0.66) / 0.34, 0.0, 1.0)[..., None] * 0.55
+        lut = lut * (1.0 - rock) + np.array([146, 142, 138], np.float32) * rock
+        self._soil_lut = np.clip(lut, 0, 255).astype(np.uint8).reshape(-1, 3)
+
     def _render_image(self):
         sim = self.sim
         n = sim.size
@@ -294,18 +307,15 @@ class TerrainCanvas(QWidget):
         light = (nx * -0.48 + ny * -0.48 + nz * 0.73) * inv
         shade = np.clip(0.62 + 0.75 * light, 0.30, 1.45)
 
-        # 干土 / 湿泥
-        wet = np.clip(_blur3(sim.wet) * 1.25, 0.0, 1.0)[..., None]
-        dry_soil = np.array([188, 162, 118], np.float32)
-        wet_soil = np.array([118, 92, 66], np.float32)
-        rgb = dry_soil * (1 - wet) + wet_soil * wet
-
-        # 高处露岩
-        rock = np.clip((hn - 0.66) / 0.34, 0, 1)[..., None]
-        rgb = rgb * (1 - rock * 0.55) + np.array([146, 142, 138], np.float32) * (rock * 0.55)
+        # 干土 / 湿泥 + 高处露岩：查表（以高度和湿度为索引），省掉多次浮点混合
+        if self._soil_lut is None:
+            self._build_soil_lut()
+        wetv = np.clip(_blur3(sim.wet) * 1.25, 0.0, 1.0)
+        idx = (hn * 255.0).astype(np.int32) * 256 + (wetv * 255.0).astype(np.int32)
+        rgb = self._soil_lut[idx].astype(np.float32)
 
         if self.show_shade:
-            rgb = rgb * shade[..., None]
+            rgb *= shade[..., None]
 
         # 积水 / 湿润：低洼处偏蓝
         if self.show_water:
@@ -381,7 +391,7 @@ class ErosionApp(QMainWindow):
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.tick)
-        self.timer.start(33)
+        self.timer.start(45)
         self.update_stats()
 
     def init_ui(self):
@@ -537,7 +547,13 @@ class ErosionApp(QMainWindow):
         self.rain_label.setText(str(v))
 
     def tick(self):
-        self.sim.step()
+        sim = self.sim
+        busy = sim.raining or sim.drying or sim.count > 0
+        if not busy:
+            return
+        sim.step()
+        if sim.raining:
+            sim.step()          # 下雨时每帧推进两步，视觉速度不变但重绘次数少一半
         self.canvas.invalidate()
         self._frames += 1
 
