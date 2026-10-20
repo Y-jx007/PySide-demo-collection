@@ -46,7 +46,7 @@
 | 应用 | 说明 |
 |------|------|
 | **Lenia** | 连续元胞自动机，参考 [Lenia](https://chakazul.github.io/Lenia/JavaScript/Lenia.html) |
-| **Conway** | 生命游戏 |
+| **Conway** | 生命游戏，14 个经典预设（滑翔机枪、脉冲星等）、残影轨迹、滚轮缩放 |
 | **Distill** | 神经网络元胞自动机，参考 [Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)，需要 PyTorch |
 
 ### 实验（未完全打磨）

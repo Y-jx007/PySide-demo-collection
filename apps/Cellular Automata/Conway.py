@@ -1,193 +1,349 @@
-﻿from custom_import import *
-from collections import defaultdict
+from custom_import import *
+from PySide6.QtCore import QLineF
 
-class SparseCellAutomaton:
+# ==================== 经典预设图案 ====================
+# '.' 或 ' ' 表示死亡，其余字符表示存活
+PRESETS = {
+    "滑翔机 Glider": [
+        ".O.",
+        "..O",
+        "OOO",
+    ],
+    "轻型飞船 LWSS": [
+        ".O..O",
+        "....O",
+        "O...O",
+        ".OOOO",
+    ],
+    "高斯帕滑翔机枪 Gosper Gun": [
+        "........................O...........",
+        "......................O.O...........",
+        "............OO......OO............OO",
+        "...........O...O....OO............OO",
+        "OO........O.....O...OO..............",
+        "OO........O...O.OO....O.O...........",
+        "..........O.....O.......O...........",
+        "...........O...O....................",
+        "............OO......................",
+    ],
+    "脉冲星 Pulsar": [
+        "..OOO...OOO..",
+        ".............",
+        "O....O.O....O",
+        "O....O.O....O",
+        "O....O.O....O",
+        "..OOO...OOO..",
+        ".............",
+        "..OOO...OOO..",
+        "O....O.O....O",
+        "O....O.O....O",
+        "O....O.O....O",
+        ".............",
+        "..OOO...OOO..",
+    ],
+    "R 五连 R-pentomino": [
+        ".OO",
+        "OO.",
+        ".O.",
+    ],
+    "橡子 Acorn": [
+        ".O.....",
+        "...O...",
+        "OO..OOO",
+    ],
+    "顽固分子 Diehard": [
+        "......O.",
+        "OO......",
+        ".O...OOO",
+    ],
+    "无限增长 Infinite Growth": [
+        "OOO.O",
+        "O....",
+        "...OO",
+        ".OO.O",
+        "O.O.O",
+    ],
+    "蜂巢 Beehive": [
+        ".OO.",
+        "O..O",
+        ".OO.",
+    ],
+    "面包 Loaf": [
+        ".OO.",
+        "O..O",
+        ".O.O",
+        "..O.",
+    ],
+    "闪光灯 Blinker": [
+        "OOO",
+    ],
+    "蟾蜍 Toad": [
+        ".OOO",
+        "OOO.",
+    ],
+    "方块 Block": [
+        "OO",
+        "OO",
+    ],
+    "飞船队 Fleet": [
+        ".O..O......",
+        "....O......",
+        "O...O......",
+        ".OOOO......",
+        "...........",
+        "......O..O.",
+        ".........O.",
+        "......O...O",
+        "......OOOO.",
+    ],
+}
+
+
+class LifeAutomaton:
+    """稠密 numpy 网格上的生命游戏，边界环绕。"""
+
     def __init__(self, width, height):
         self.width = width
         self.height = height
-        self.live_cells = set()
-        self._render_cache = None
-        self._cache_dirty = True
-        
-    def get_cell(self, x, y):
-        return 1 if (y, x) in self.live_cells else 0
-    
-    def set_cell(self, x, y, state):
-        if state == 1:
-            self.live_cells.add((y, x))
-        else:
-            self.live_cells.discard((y, x))
-        self._cache_dirty = True
-        
-    def update(self):
-        neighbor_count = defaultdict(int)
-        for y, x in self.live_cells:
-            for dy in [-1, 0, 1]:
-                for dx in [-1, 0, 1]:
-                    if dx == 0 and dy == 0:
-                        continue
-                    nx, ny = (x + dx) % self.width, (y + dy) % self.height
-                    neighbor_count[(ny, nx)] += 1
-        
-        new_live_cells = set()
-        for (y, x), count in neighbor_count.items():
-            if (y, x) in self.live_cells:
-                if 2 <= count <= 3:
-                    new_live_cells.add((y, x))
-            else:
-                if count == 3:
-                    new_live_cells.add((y, x))
-        
-        self.live_cells = new_live_cells
-        self._cache_dirty = True
-    
-    def get_render_grid(self):
-        if self._render_cache is None or self._cache_dirty:
-            self._render_cache = np.zeros((self.height, self.width), dtype=np.int8)
-            for y, x in self.live_cells:
-                if 0 <= y < self.height and 0 <= x < self.width:
-                    self._render_cache[y, x] = 1
-            self._cache_dirty = False
-        return self._render_cache
-    
+        self.grid = np.zeros((height, width), dtype=bool)
+        self.generation = 0
+        self.trail = np.zeros((height, width), dtype=np.float32)
+        self.trail_decay = 0.90
+
+    # ---------- 状态操作 ----------
     def clear(self):
-        self.live_cells.clear()
-        self._cache_dirty = True
+        self.grid[:] = False
+        self.trail[:] = 0.0
+        self.generation = 0
+
+    def set_cell(self, x, y, state):
+        if 0 <= x < self.width and 0 <= y < self.height:
+            self.grid[y, x] = bool(state)
+
+    def get_cell(self, x, y):
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return 1 if self.grid[y, x] else 0
+        return 0
+
+    def toggle_cell(self, x, y):
+        if 0 <= x < self.width and 0 <= y < self.height:
+            self.grid[y, x] = not self.grid[y, x]
+
+    def resize(self, width, height):
+        self.width = width
+        self.height = height
+        self.grid = np.zeros((height, width), dtype=bool)
+        self.trail = np.zeros((height, width), dtype=np.float32)
+        self.generation = 0
+
+    def randomize(self, density=0.28, margin=0):
+        h, w = self.grid.shape
+        rnd = np.random.random((h, w)) < density
+        mask = np.zeros((h, w), dtype=bool)
+        mask[margin:h - margin, margin:w - margin] = True
+        self.grid[:] = rnd & mask
+        self.trail[self.grid] = 1.0
+        self.generation = 0
+
+    def place_pattern(self, rows, cx, cy):
+        """把字符图案以 (cx, cy) 为中心放置，返回实际放置的细胞数。"""
+        pat_h = len(rows)
+        pat_w = max(len(r) for r in rows)
+        x0 = cx - pat_w // 2
+        y0 = cy - pat_h // 2
+        count = 0
+        for j, row in enumerate(rows):
+            for i, ch in enumerate(row):
+                if ch in ". ":
+                    continue
+                x, y = x0 + i, y0 + j
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    self.grid[y, x] = True
+                    count += 1
+        self.trail[self.grid] = 1.0
+        return count
+
+    # ---------- 演化 ----------
+    def step(self):
+        g = self.grid
+        h, w = g.shape
+        padded = np.pad(g, 1, mode="wrap")
+        n = padded[0:h, 0:w].astype(np.uint8)
+        n += padded[0:h, 1:w + 1]
+        n += padded[0:h, 2:w + 2]
+        n += padded[1:h + 1, 0:w]
+        n += padded[1:h + 1, 2:w + 2]
+        n += padded[2:h + 2, 0:w]
+        n += padded[2:h + 2, 1:w + 1]
+        n += padded[2:h + 2, 2:w + 2]
+        alive = n == 3
+        alive |= g & (n == 2)
+        self.grid = alive
+        self.generation += 1
+        self.trail *= self.trail_decay
+        self.trail[self.grid] = 1.0
+
+    @property
+    def population(self):
+        return int(self.grid.sum())
 
 
-class CellWidget(QWidget):
-    def __init__(self, automaton, cell_size=8, main_window=None):
+# ==================== 画布 ====================
+class LifeCanvas(QWidget):
+    """整块画布用一个缩放 QImage 绘制，单帧开销与细胞数无关。"""
+
+    def __init__(self, automaton, cell_size=2, main_window=None):
         super().__init__()
         self.automaton = automaton
         self.cell_size = cell_size
         self.main_window = main_window
         self.setMouseTracking(True)
-        self.drawing = False
         self.draw_mode = 1
+        self.drawing = False
         self.dragging = False
         self.last_drag_pos = None
-        self.last_cell_pos = None
-        
-        self.update_size()
-        
+        self.last_cell = None
+
         self.alive_color = QColor(0, 128, 255)
-        self.dead_color = QColor(240, 240, 240)
-        self.grid_color = QColor(200, 200, 200)
-        
-    def update_size(self):
-        self.setFixedSize(
-            self.automaton.width * self.cell_size,
-            self.automaton.height * self.cell_size
-        )
-    
+        self.dead_color = QColor(248, 248, 248)
+        self.grid_color = QColor(210, 210, 210)
+        self.show_grid = True
+        self.show_trail = False
+        self._lut = None
+        self._image = None
+        self._dirty = True
+        self._update_size()
+
+    # ---------- 尺寸与图像 ----------
+    def _update_size(self):
+        self.setFixedSize(self.automaton.width * self.cell_size,
+                          self.automaton.height * self.cell_size)
+
+    def invalidate(self):
+        self._dirty = True
+        self.update()
+
+    def set_colors(self, alive, dead):
+        self.alive_color = alive
+        self.dead_color = dead
+        self._lut = None
+        self._dirty = True
+        self.update()
+
+    def _build_lut(self):
+        """256 级 LUT：把轨迹强度映射成颜色，避免每帧做浮点混合。"""
+        lut = np.empty((256, 3), dtype=np.uint8)
+        ar, ag, ab = self.alive_color.red(), self.alive_color.green(), self.alive_color.blue()
+        dr, dg, db = self.dead_color.red(), self.dead_color.green(), self.dead_color.blue()
+        t = np.linspace(0.0, 1.0, 256, dtype=np.float32)[:, None]
+        lut[:, 0] = np.clip(dr + (ar - dr) * t[:, 0], 0, 255)
+        lut[:, 1] = np.clip(dg + (ag - dg) * t[:, 0], 0, 255)
+        lut[:, 2] = np.clip(db + (ab - db) * t[:, 0], 0, 255)
+        self._lut = lut
+
+    def _render_image(self):
+        if self._lut is None:
+            self._build_lut()
+        if self.show_trail:
+            idx = (np.clip(self.automaton.trail, 0, 1) * 255).astype(np.uint8)
+        else:
+            idx = np.where(self.automaton.grid, 255, 0).astype(np.uint8)
+        rgb = self._lut[idx]
+        h, w = idx.shape
+        img = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
+        self._image = img.copy()
+        self._dirty = False
+
     def paintEvent(self, event):
+        if self._dirty or self._image is None:
+            self._render_image()
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(event.rect(), self.dead_color)
-        
-        grid = self.automaton.get_render_grid()
-        x_start = max(0, event.rect().x() // self.cell_size)
-        y_start = max(0, event.rect().y() // self.cell_size)
-        x_end = min(self.automaton.width, (event.rect().right() // self.cell_size) + 1)
-        y_end = min(self.automaton.height, (event.rect().bottom() // self.cell_size) + 1)
-        
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(self.alive_color)
-        for y in range(y_start, y_end):
-            for x in range(x_start, x_end):
-                if grid[y, x] == 1:
-                    painter.drawRect(
-                        x * self.cell_size, 
-                        y * self.cell_size,
-                        self.cell_size, 
-                        self.cell_size
-                    )
-        
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        painter.drawImage(self.rect(), self._image)
+
+        if self.show_grid and self.cell_size >= 6:
+            self._draw_grid(painter, event.rect())
+        painter.end()
+
+    def _draw_grid(self, painter, rect):
+        cs = self.cell_size
+        x0 = max(0, rect.left() // cs)
+        x1 = min(self.automaton.width, rect.right() // cs + 1)
+        y0 = max(0, rect.top() // cs)
+        y1 = min(self.automaton.height, rect.bottom() // cs + 1)
         painter.setPen(QPen(self.grid_color, 1))
-        for x in range(x_start, x_end + 1):
-            painter.drawLine(
-                x * self.cell_size, y_start * self.cell_size,
-                x * self.cell_size, y_end * self.cell_size
-            )
-        for y in range(y_start, y_end + 1):
-            painter.drawLine(
-                x_start * self.cell_size, y * self.cell_size,
-                x_end * self.cell_size, y * self.cell_size
-            )
-    
+        lines = []
+        for x in range(x0, x1 + 1):
+            lines.append(QLineF(x * cs, y0 * cs, x * cs, y1 * cs))
+        for y in range(y0, y1 + 1):
+            lines.append(QLineF(x0 * cs, y * cs, x1 * cs, y * cs))
+        painter.drawLines(lines)
+
+    # ---------- 鼠标 ----------
+    def _cell_at(self, pos):
+        return pos.x() // self.cell_size, pos.y() // self.cell_size
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = True
-            pos = event.position().toPoint()
-            self.toggle_cell(pos)
-            self.last_cell_pos = (pos.x() // self.cell_size, pos.y() // self.cell_size)
+            x, y = self._cell_at(event.position().toPoint())
+            self._paint_cell(x, y)
+            self.last_cell = (x, y)
         elif event.button() == Qt.MiddleButton:
             self.dragging = True
-            self.last_drag_pos = event.globalPos()
+            self.last_drag_pos = event.globalPosition().toPoint()
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
-    
+
     def mouseMoveEvent(self, event):
         if self.drawing:
-            pos = event.position().toPoint()
-            current_cell_pos = (pos.x() // self.cell_size, pos.y() // self.cell_size)
-            if self.last_cell_pos and current_cell_pos != self.last_cell_pos:
-                self.draw_line(self.last_cell_pos, current_cell_pos)
-                self.last_cell_pos = current_cell_pos
-            else:
-                self.toggle_cell(pos)
+            x, y = self._cell_at(event.position().toPoint())
+            if self.last_cell and (x, y) != self.last_cell:
+                self._paint_line(self.last_cell, (x, y))
+                self.last_cell = (x, y)
+            elif not self.last_cell:
+                self._paint_cell(x, y)
+                self.last_cell = (x, y)
         elif self.dragging and self.last_drag_pos:
-            current_pos = event.globalPos()
-            delta = current_pos - self.last_drag_pos
+            pos = event.globalPosition().toPoint()
+            delta = pos - self.last_drag_pos
             if self.main_window:
                 self.main_window.pan_view(delta.x(), delta.y())
-            self.last_drag_pos = current_pos
+            self.last_drag_pos = pos
             event.accept()
-    
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = False
-            self.last_cell_pos = None
+            self.last_cell = None
         elif event.button() == Qt.MiddleButton:
             self.dragging = False
             self.setCursor(Qt.ArrowCursor)
-            event.accept()
-    
+
     def wheelEvent(self, event):
-        zoom_in = event.angleDelta().y() > 0
         if self.main_window:
-            if zoom_in:
-                self.main_window.zoom_in()
+            if event.angleDelta().y() > 0:
+                self.main_window.zoom_by(1)
             else:
-                self.main_window.zoom_out()
+                self.main_window.zoom_by(-1)
         event.accept()
-    
-    def toggle_cell(self, pos):
-        x = pos.x() // self.cell_size
-        y = pos.y() // self.cell_size
-        if 0 <= x < self.automaton.width and 0 <= y < self.automaton.height:
-            self.automaton.set_cell(x, y, self.draw_mode)
-            self.update(
-                x * self.cell_size, 
-                y * self.cell_size,
-                self.cell_size, 
-                self.cell_size
-            )
-    
-    def draw_line(self, start, end):
+
+    def _paint_cell(self, x, y):
+        if self.draw_mode == 1:
+            self.automaton.set_cell(x, y, True)
+        else:
+            self.automaton.set_cell(x, y, False)
+        self.invalidate()
+
+    def _paint_line(self, start, end):
         x0, y0 = start
         x1, y1 = end
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
         sx = 1 if x0 < x1 else -1
         sy = 1 if y0 < y1 else -1
         err = dx - dy
-        updated_cells = set()
-        
         while True:
-            if 0 <= x0 < self.automaton.width and 0 <= y0 < self.automaton.height:
-                self.automaton.set_cell(x0, y0, self.draw_mode)
-                updated_cells.add((x0, y0))
+            self._paint_cell(x0, y0)
             if x0 == x1 and y0 == y1:
                 break
             e2 = 2 * err
@@ -197,218 +353,327 @@ class CellWidget(QWidget):
             if e2 < dx:
                 err += dx
                 y0 += sy
-        
-        for x, y in updated_cells:
-            self.update(
-                x * self.cell_size, 
-                y * self.cell_size,
-                self.cell_size, 
-                self.cell_size
-            )
-    
-    def update_cell_size(self, cell_size):
-        self.cell_size = max(1, cell_size)
-        self.update_size()
-        self.update()
 
 
+# ==================== 主窗口 ====================
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("元胞自动机 - 生命游戏 (大网格)")
-        
-        self.width, self.height = 500, 500
-        self.automaton = SparseCellAutomaton(self.width, self.height)
-        self.fps = 60
-        self.update_interval = 1000 // self.fps
-        self.cell_size = 6
-        
+        self.setWindowTitle("生命游戏 Conway's Game of Life")
+        self.setGeometry(120, 60, 1120, 860)
+
+        self.grid_width = 400
+        self.grid_height = 400
+        self.cell_size = 2
+        self.fps = 30
+        self.automaton = LifeAutomaton(self.grid_width, self.grid_height)
+
+        self._fps_frames = 0
+        self._fps_time = time.perf_counter()
+
         self.init_ui()
-        
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_automaton)
-        
+
+        self.stats_timer = QTimer()
+        self.stats_timer.timeout.connect(self.update_stats)
+        self.stats_timer.start(500)
+
+        # 默认放一个高斯帕滑翔机枪，打开就能看到东西
+        self.automaton.place_pattern(PRESETS["高斯帕滑翔机枪 Gosper Gun"],
+                                     self.grid_width // 2, self.grid_height // 2)
+        self.canvas.invalidate()
+        self.update_stats()
+
+    # ---------- UI ----------
     def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        layout = QVBoxLayout(central_widget)
-        layout.setSpacing(8)
-        layout.setContentsMargins(8, 8, 8, 8)
-        
-        # 控制面板
-        control_layout = QHBoxLayout()
-        control_layout.setSpacing(6)
-        
-        self.start_button = QPushButton("开始")
-        self.start_button.clicked.connect(self.toggle_simulation)
-        control_layout.addWidget(self.start_button)
-        
-        self.step_button = QPushButton("单步")
-        self.step_button.clicked.connect(self.step_automaton)
-        control_layout.addWidget(self.step_button)
-        
-        self.clear_button = QPushButton("清除")
-        self.clear_button.clicked.connect(self.clear_grid)
-        control_layout.addWidget(self.clear_button)
-        
-        control_layout.addWidget(QLabel("绘制模式:"))
-        self.draw_mode_combo = QComboBox()
-        self.draw_mode_combo.addItem("绘制", 1)
-        self.draw_mode_combo.addItem("擦除", 0)
-        self.draw_mode_combo.currentIndexChanged.connect(self.change_draw_mode)
-        control_layout.addWidget(self.draw_mode_combo)
-        
-        control_layout.addStretch()
-        layout.addLayout(control_layout)
-        
-        # 缩放和速度控制
-        zoom_speed_layout = QHBoxLayout()
-        zoom_speed_layout.setSpacing(10)
-        
-        zoom_layout = QHBoxLayout()
-        zoom_layout.setSpacing(4)
-        zoom_layout.addWidget(QLabel("缩放:"))
-        
-        self.zoom_out_button = QPushButton("-")
-        self.zoom_out_button.clicked.connect(self.zoom_out)
-        self.zoom_out_button.setFixedWidth(30)
-        zoom_layout.addWidget(self.zoom_out_button)
-        
-        self.zoom_label = QLabel(f"{self.cell_size}px")
-        self.zoom_label.setFixedWidth(40)
-        self.zoom_label.setAlignment(Qt.AlignCenter)
-        zoom_layout.addWidget(self.zoom_label)
-        
-        self.zoom_in_button = QPushButton("+")
-        self.zoom_in_button.clicked.connect(self.zoom_in)
-        self.zoom_in_button.setFixedWidth(30)
-        zoom_layout.addWidget(self.zoom_in_button)
-        
-        zoom_speed_layout.addLayout(zoom_layout)
-        
-        speed_layout = QHBoxLayout()
-        speed_layout.setSpacing(6)
-        speed_layout.addWidget(QLabel("速度:"))
-        
-        self.fps_slider = QSlider(Qt.Horizontal)
-        self.fps_slider.setRange(1, 120)
-        self.fps_slider.setValue(self.fps)
-        self.fps_slider.valueChanged.connect(self.set_fps)
-        self.fps_slider.setFixedWidth(120)
-        speed_layout.addWidget(self.fps_slider)
-        
-        self.fps_label = QLabel(f"{self.fps} FPS")
-        self.fps_label.setFixedWidth(50)
-        speed_layout.addWidget(self.fps_label)
-        
-        zoom_speed_layout.addLayout(speed_layout)
-        zoom_speed_layout.addStretch()
-        layout.addLayout(zoom_speed_layout)
-        
-        # 滚动区域
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(8)
+
+        panel = QWidget()
+        panel.setFixedWidth(270)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setSpacing(6)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.canvas = LifeCanvas(self.automaton, self.cell_size, self)
+
+        self._build_preset_group(panel_layout)
+        self._build_sim_group(panel_layout)
+        self._build_display_group(panel_layout)
+        self._build_grid_group(panel_layout)
+        panel_layout.addStretch()
+
+        root.addWidget(panel)
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(False)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        
-        self.cell_widget = CellWidget(self.automaton, self.cell_size, self)
-        self.scroll_area.setWidget(self.cell_widget)
-        layout.addWidget(self.scroll_area)
-        
-        # 状态栏
-        self.status_label = QLabel(f"就绪 - 网格: {self.width}x{self.height}, 细胞大小: {self.cell_size}px, FPS: {self.fps}")
-        layout.addWidget(self.status_label)
-        
-        self.resize(800, 600)
-        
-        # 样式已通过外部 QSS 文件加载，此处不再内嵌
-    
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.center_view()
-        
-    def center_view(self):
-        h_scrollbar = self.scroll_area.horizontalScrollBar()
-        v_scrollbar = self.scroll_area.verticalScrollBar()
-        h_center = (self.cell_widget.width() - self.scroll_area.viewport().width()) // 2
-        v_center = (self.cell_widget.height() - self.scroll_area.viewport().height()) // 2
-        h_scrollbar.setValue(max(0, h_center))
-        v_scrollbar.setValue(max(0, v_center))
-        
-    def pan_view(self, dx, dy):
-        h_scrollbar = self.scroll_area.horizontalScrollBar()
-        v_scrollbar = self.scroll_area.verticalScrollBar()
-        h_scrollbar.setValue(h_scrollbar.value() - dx)
-        v_scrollbar.setValue(v_scrollbar.value() - dy)
-        
+        self.scroll_area.setAlignment(Qt.AlignCenter)
+        self.scroll_area.setWidget(self.canvas)
+        root.addWidget(self.scroll_area, 1)
+
+        # 统计放到状态栏，面板留给操作
+        self.lbl_status = QLabel("就绪")
+        self.statusBar().addWidget(self.lbl_status, 1)
+        self.lbl_generation = QLabel("代数 0")
+        self.lbl_population = QLabel("存活 0")
+        self.lbl_fps = QLabel("帧率 –")
+        for lbl in (self.lbl_generation, self.lbl_population, self.lbl_fps):
+            self.statusBar().addPermanentWidget(lbl)
+
+    def _build_preset_group(self, layout):
+        group = QGroupBox("预设图案")
+        vbox = QVBoxLayout(group)
+        vbox.setSpacing(4)
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(list(PRESETS.keys()))
+        vbox.addWidget(self.preset_combo)
+
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        place_btn = QPushButton("放置到中心")
+        place_btn.clicked.connect(self.place_preset)
+        row.addWidget(place_btn, 1)
+        vbox.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(4)
+        rand_btn = QPushButton("随机")
+        rand_btn.clicked.connect(self.random_fill)
+        row2.addWidget(rand_btn)
+        clear_btn = QPushButton("清空")
+        clear_btn.clicked.connect(self.clear_grid)
+        row2.addWidget(clear_btn)
+        vbox.addLayout(row2)
+
+        layout.addWidget(group)
+
+    def _build_sim_group(self, layout):
+        group = QGroupBox("模拟")
+        vbox = QVBoxLayout(group)
+        vbox.setSpacing(4)
+
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        self.run_btn = QPushButton("开始")
+        self.run_btn.clicked.connect(self.toggle_simulation)
+        row.addWidget(self.run_btn, 1)
+        step_btn = QPushButton("单步")
+        step_btn.clicked.connect(self.single_step)
+        row.addWidget(step_btn, 1)
+        vbox.addLayout(row)
+
+        form = QFormLayout()
+        form.setSpacing(4)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(1, 120)
+        self.speed_slider.setValue(self.fps)
+        self.speed_slider.valueChanged.connect(self.set_fps)
+        self.speed_label = QLabel(f"{self.fps}")
+        self.speed_label.setFixedWidth(34)
+        self.speed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        speed_row = QHBoxLayout()
+        speed_row.setSpacing(4)
+        speed_row.addWidget(self.speed_slider, 1)
+        speed_row.addWidget(self.speed_label)
+        form.addRow("速度", speed_row)
+
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(1, 20)
+        self.zoom_slider.setValue(self.cell_size)
+        self.zoom_slider.valueChanged.connect(self.set_zoom)
+        self.zoom_label = QLabel(f"{self.cell_size}px")
+        self.zoom_label.setFixedWidth(34)
+        self.zoom_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        zoom_row = QHBoxLayout()
+        zoom_row.setSpacing(4)
+        zoom_row.addWidget(self.zoom_slider, 1)
+        zoom_row.addWidget(self.zoom_label)
+        form.addRow("缩放", zoom_row)
+
+        vbox.addLayout(form)
+        layout.addWidget(group)
+
+    def _build_display_group(self, layout):
+        group = QGroupBox("显示")
+        vbox = QVBoxLayout(group)
+        vbox.setSpacing(4)
+
+        self.grid_check = QCheckBox("网格线（缩放 ≥ 6px 时显示）")
+        self.grid_check.setChecked(True)
+        self.grid_check.toggled.connect(self.toggle_grid)
+        vbox.addWidget(self.grid_check)
+
+        self.trail_check = QCheckBox("残影轨迹")
+        self.trail_check.setChecked(False)
+        self.trail_check.toggled.connect(self.toggle_trail)
+        vbox.addWidget(self.trail_check)
+
+        color_row = QHBoxLayout()
+        color_row.setSpacing(6)
+        color_row.addWidget(QLabel("颜色"))
+        self.alive_btn = ColorButton(self.canvas.alive_color)
+        self.alive_btn.colorChanged.connect(self.on_alive_color)
+        color_row.addWidget(self.alive_btn)
+        self.dead_btn = ColorButton(self.canvas.dead_color)
+        self.dead_btn.colorChanged.connect(self.on_dead_color)
+        color_row.addWidget(self.dead_btn)
+        color_row.addStretch()
+        vbox.addLayout(color_row)
+
+        layout.addWidget(group)
+
+    def _build_grid_group(self, layout):
+        group = QGroupBox("网格")
+        form = QFormLayout(group)
+        form.setSpacing(4)
+        form.setContentsMargins(6, 6, 6, 6)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(50, 1000)
+        self.size_spin.setSingleStep(50)
+        self.size_spin.setValue(self.grid_width)
+        self.size_spin.editingFinished.connect(self.apply_grid_size)
+        form.addRow("边长", self.size_spin)
+
+        hint = QLabel("滚轮缩放，中键拖动")
+        hint.setStyleSheet("color: #888;")
+        form.addRow("", hint)
+
+        layout.addWidget(group)
+
+    # ---------- 操作 ----------
+    def place_preset(self):
+        name = self.preset_combo.currentText()
+        rows = PRESETS.get(name)
+        if not rows:
+            return
+        self.automaton.place_pattern(rows, self.grid_width // 2, self.grid_height // 2)
+        self.canvas.invalidate()
+        self.update_stats()
+        self.lbl_status.setText(f"已放置：{name}")
+
+    def random_fill(self):
+        self.automaton.randomize(0.28)
+        self.canvas.invalidate()
+        self.update_stats()
+
+    def clear_grid(self):
+        self.automaton.clear()
+        self.canvas.invalidate()
+        self.update_stats()
+        self.lbl_status.setText("网格已清除")
+
     def toggle_simulation(self):
         if self.timer.isActive():
             self.timer.stop()
-            self.start_button.setText("开始")
-            self.status_label.setText("已暂停")
+            self.run_btn.setText("开始")
+            self.lbl_status.setText("已暂停")
         else:
-            self.timer.start(self.update_interval)
-            self.start_button.setText("暂停")
-            self.status_label.setText("运行中...")
-    
-    def step_automaton(self):
-        self.automaton.update()
-        self.cell_widget.update()
-    
+            self.timer.start(max(1, 1000 // self.fps))
+            self.run_btn.setText("暂停")
+            self.lbl_status.setText("运行中…")
+
+    def single_step(self):
+        self.automaton.step()
+        self.canvas.invalidate()
+        self.update_stats()
+
     def update_automaton(self):
-        self.automaton.update()
-        self.cell_widget.update()
-    
-    def clear_grid(self):
-        self.automaton.clear()
-        self.cell_widget.update()
-        self.status_label.setText("网格已清除")
-    
+        self.automaton.step()
+        self.canvas.invalidate()
+        self._fps_frames += 1
+
     def set_fps(self, value):
         self.fps = value
-        self.update_interval = 1000 // self.fps
-        self.fps_label.setText(f"{self.fps} FPS")
-        self.status_label.setText(f"网格: {self.width}x{self.height}, 细胞大小: {self.cell_size}px, FPS: {self.fps}")
+        self.speed_label.setText(str(value))
         if self.timer.isActive():
-            self.timer.start(self.update_interval)
-    
-    def change_draw_mode(self, index):
-        self.cell_widget.draw_mode = self.draw_mode_combo.itemData(index)
-    
-    def zoom_in(self):
-        old_cell_size = self.cell_size
-        self.cell_size = min(50, self.cell_size + 1)
-        if old_cell_size != self.cell_size:
-            self.update_zoom(old_cell_size)
-    
-    def zoom_out(self):
-        old_cell_size = self.cell_size
-        self.cell_size = max(1, self.cell_size - 1)
-        if old_cell_size != self.cell_size:
-            self.update_zoom(old_cell_size)
-    
-    def update_zoom(self, old_cell_size):
-        h_scrollbar = self.scroll_area.horizontalScrollBar()
-        v_scrollbar = self.scroll_area.verticalScrollBar()
+            self.timer.start(max(1, 1000 // value))
+
+    def set_zoom(self, value):
+        self.cell_size = value
+        self.zoom_label.setText(f"{value}px")
+        self.zoom_by(0)
+
+    def zoom_by(self, delta):
+        new_size = max(1, min(20, self.cell_size + delta))
+        if new_size != self.cell_size:
+            self.cell_size = new_size
+            self.zoom_slider.blockSignals(True)
+            self.zoom_slider.setValue(new_size)
+            self.zoom_slider.blockSignals(False)
+            self.zoom_label.setText(f"{new_size}px")
+        self._apply_canvas_size()
+
+    def _apply_canvas_size(self):
+        # 保持视口中心不动
         viewport = self.scroll_area.viewport()
-        view_center_x = h_scrollbar.value() + viewport.width() / 2
-        view_center_y = v_scrollbar.value() + viewport.height() / 2
-        world_x = view_center_x / old_cell_size
-        world_y = view_center_y / old_cell_size
-        
-        self.cell_widget.update_cell_size(self.cell_size)
-        
-        new_view_center_x = world_x * self.cell_size
-        new_view_center_y = world_y * self.cell_size
-        new_h_scroll = new_view_center_x - viewport.width() / 2
-        new_v_scroll = new_view_center_y - viewport.height() / 2
-        
-        h_scrollbar.setValue(int(new_h_scroll))
-        v_scrollbar.setValue(int(new_v_scroll))
-        
-        self.zoom_label.setText(f"{self.cell_size}px")
-        self.status_label.setText(f"网格: {self.width}x{self.height}, 细胞大小: {self.cell_size}px, FPS: {self.fps}")
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+        cx = (hbar.value() + viewport.width() / 2) / max(1, self.canvas.cell_size)
+        cy = (vbar.value() + viewport.height() / 2) / max(1, self.canvas.cell_size)
+        self.canvas.cell_size = self.cell_size
+        self.canvas._update_size()
+        self.canvas.invalidate()
+        hbar.setValue(int(cx * self.cell_size - viewport.width() / 2))
+        vbar.setValue(int(cy * self.cell_size - viewport.height() / 2))
+
+    def toggle_grid(self, checked):
+        self.canvas.show_grid = bool(checked)
+        self.canvas.invalidate()
+
+    def toggle_trail(self, checked):
+        self.canvas.show_trail = bool(checked)
+        if not checked:
+            self.automaton.trail[:] = 0.0
+        self.canvas.invalidate()
+
+    def on_alive_color(self, color):
+        self.canvas.set_colors(color, self.canvas.dead_color)
+
+    def on_dead_color(self, color):
+        self.canvas.set_colors(self.canvas.alive_color, color)
+
+    def apply_grid_size(self):
+        size = self.size_spin.value()
+        if size == self.grid_width:
+            return
+        self.grid_width = self.grid_height = size
+        self.automaton.resize(size, size)
+        self.canvas._update_size()
+        self.canvas.invalidate()
+        self.update_stats()
+        self.lbl_status.setText(f"网格已重置为 {size}×{size}")
+
+    def pan_view(self, dx, dy):
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+        hbar.setValue(hbar.value() - dx)
+        vbar.setValue(vbar.value() - dy)
+
+    def update_stats(self):
+        self.lbl_generation.setText(f"{self.automaton.generation:,}")
+        self.lbl_population.setText(f"{self.automaton.population:,}")
+        now = time.perf_counter()
+        if now - self._fps_time >= 0.5:
+            self.lbl_fps.setText(f"{self._fps_frames / (now - self._fps_time):.0f}")
+            self._fps_frames = 0
+            self._fps_time = now
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        self.stats_timer.stop()
+        super().closeEvent(event)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -158,7 +158,7 @@ APPS = [
     },
     {
         "title": "Conway",
-        "description": "模拟和可视化生命游戏",
+        "description": "生命游戏，含 14 个经典预设与残影轨迹",
         "path": "Cellular Automata/Conway.py",
         "friendly": "元胞自动机",
         "category": "Cellular Automata",
