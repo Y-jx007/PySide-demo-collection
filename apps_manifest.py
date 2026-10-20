@@ -92,6 +92,13 @@ APPS = [
         "category": "Cellular Automata",
     },
     {
+        "title": "Beam",
+        "description": "横梁承重：有限元算弯曲应力，超强度即断裂",
+        "path": "Physics/Beam.py",
+        "friendly": "横梁承重",
+        "category": "Physics",
+    },
+    {
         "title": "Erosion",
         "description": "降雨冲刷地形，干后泥土龟裂",
         "path": "Physics/Erosion.py",

@@ -26,6 +26,7 @@
 |------|------|
 | **Schrödinger** | Runge-Kutta 模拟二维量子波包演化 |
 | **Turing** | Gray-Scott 等反应扩散系统 |
+| **Beam** | 横梁承重：欧拉-伯努利梁有限元，应力超材料强度即断裂，可扫描承重与梁高/梁长的关系 |
 | **Erosion** | 降雨冲刷地形（雨滴侵蚀），干燥后按 Voronoi 板块边界张开泥土龟裂 |
 | **Ising** | 二维伊辛模型，参考 [Ising.js](https://mattbierbaum.github.io/ising.js/) |
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
