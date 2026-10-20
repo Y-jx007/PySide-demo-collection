@@ -288,6 +288,15 @@ class TaichiCanvas(QOpenGLWidget):
         data = np.transpose(data, (1, 0, 2))
         data = np.ascontiguousarray(data)
 
+        # 保持模拟的分辨率比例，绝不拉伸：窗口比例不对时用黑边补齐
+        w, h = self.width(), self.height()
+        target = resolution[0] / resolution[1]
+        if w / max(1, h) > target:
+            vw, vh = int(h * target), h
+        else:
+            vw, vh = w, int(w / target)
+        glViewport((w - vw) // 2, (h - vh) // 2, max(1, vw), max(1, vh))
+
         glClear(GL_COLOR_BUFFER_BIT)
         glBindTexture(GL_TEXTURE_2D, self.texture_id)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, resolution[0], resolution[1],
@@ -348,14 +357,13 @@ class ControlPanel(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content = QWidget()
         main = QVBoxLayout(content)
-        main.setSpacing(6)
-        main.setContentsMargins(2, 2, 2, 2)
+        main.setSpacing(4)
+        main.setContentsMargins(2, 0, 2, 0)
 
         main.addWidget(self._build_control_group())
         main.addWidget(self._build_potential_group())
         main.addWidget(self._build_packet_group())
         main.addWidget(self._build_solver_group())
-        main.addWidget(self._build_stats_group())
         main.addStretch()
 
         scroll.setWidget(content)
@@ -468,17 +476,8 @@ class ControlPanel(QWidget):
         return None
 
     def _build_stats_group(self):
-        group = QGroupBox("统计")
-        form = QFormLayout()
-        form.setSpacing(3)
-        self.lbl_time = QLabel("0.00")
-        self.lbl_norm = QLabel("–")
-        self.lbl_fps = QLabel("–")
-        form.addRow("模拟时间:", self.lbl_time)
-        form.addRow("归一化:", self.lbl_norm)
-        form.addRow("帧率:", self.lbl_fps)
-        group.setLayout(form)
-        return group
+        # 统计信息放在窗口状态栏，面板只保留参数
+        return None
 
     def _add_slider(self, form, key):
         label, lo, hi, default, fmt = self.SLIDERS[key]
@@ -545,7 +544,9 @@ class ControlPanel(QWidget):
 
     def _on_reset(self):
         initialize()
-        self.lbl_time.setText("0.00")
+        lbl = getattr(self, "lbl_time", None)
+        if lbl is not None:
+            lbl.setText("模拟时间 0.0")
 
     def _toggle_simulation(self):
         self.simulation_running = not self.simulation_running
@@ -595,7 +596,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("薛定谔方程模拟 – 自定义势能版")
         # 面板 330 + 左右边距 12；画布随窗口伸缩（默认接近 2:1）
-        self.setGeometry(100, 100, 330 + 12 + 960, 592)
+        self.setGeometry(100, 100, 330 + 12 + 960, 505)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -613,6 +614,17 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self.control_panel)
         main_layout.addWidget(self.canvas, 1)
+
+        # 统计放在状态栏，面板就不用为了三行数字挤压参数区
+        bar = self.statusBar()
+        bar.setSizeGripEnabled(False)
+        self.lbl_time = QLabel("模拟时间 0.0")
+        self.lbl_norm = QLabel("归一化 –")
+        self.lbl_fps = QLabel("帧率 –")
+        for w in (self.lbl_time, self.lbl_norm, self.lbl_fps):
+            bar.addWidget(w)
+            bar.addWidget(QLabel("  "))
+        self.control_panel.lbl_time = self.lbl_time
 
         self._sim_time = 0.0
         self._frames = 0
@@ -635,9 +647,9 @@ class MainWindow(QMainWindow):
             fps = self._frames / (now - self._last_stat)
             self._frames = 0
             self._last_stat = now
-            panel.lbl_time.setText(f"{self._sim_time:.1f}")
-            panel.lbl_fps.setText(f"{fps:.1f}")
-            panel.lbl_norm.setText(f"{compute_norm():.3e}")
+            self.lbl_time.setText(f"模拟时间 {self._sim_time:.1f}")
+            self.lbl_fps.setText(f"帧率 {fps:.1f}")
+            self.lbl_norm.setText(f"归一化 {compute_norm():.3e}")
 
     def closeEvent(self, event):
         self.timer.stop()
