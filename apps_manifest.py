@@ -92,6 +92,13 @@ APPS = [
         "category": "Cellular Automata",
     },
     {
+        "title": "Erosion",
+        "description": "降雨冲刷地形，干后泥土龟裂",
+        "path": "Physics/Erosion.py",
+        "friendly": "水力侵蚀",
+        "category": "Physics",
+    },
+    {
         "title": "Ising",
         "description": "模拟二维伊辛模型",
         "path": "Physics/Ising.py",

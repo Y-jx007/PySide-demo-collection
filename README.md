@@ -26,6 +26,7 @@
 |------|------|
 | **Schrödinger** | Runge-Kutta 模拟二维量子波包演化 |
 | **Turing** | Gray-Scott 等反应扩散系统 |
+| **Erosion** | 降雨冲刷地形（雨滴侵蚀），干燥后按 Voronoi 板块边界张开泥土龟裂 |
 | **Ising** | 二维伊辛模型，参考 [Ising.js](https://mattbierbaum.github.io/ising.js/) |
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
