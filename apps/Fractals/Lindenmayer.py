@@ -153,6 +153,7 @@ class LSystemWidget(QWidget):
         self.offset_x = 0.0
         self.offset_y = 0.0
         self._pixmap = None             # 渲染缓存
+        self.antialias = False          # 细线默认不抗锯齿，保证粗细一致
 
         self.start_color = QColor(139, 69, 19)
         self.end_color = QColor(34, 139, 34)
@@ -302,9 +303,9 @@ class LSystemWidget(QWidget):
         pen = QPen()
         pen_width = max(1, min(3, int(round(2 * scale))))
         pen.setWidth(pen_width)
-        # 对齐到像素中心：奇数宽度加 0.5，偶数宽度加 1.0，
-        # 否则浮点坐标下抗锯齿会把 1px 线摊到相邻两列，出现一边深一边浅
-        snap = 0.5 if pen_width % 2 == 1 else 1.0
+        # 默认关掉抗锯齿：实测只有非抗锯齿光栅化能让 1px 线做到「每列恰好 1 个像素」，
+        # 抗锯齿会因为亚像素覆盖变成 1~2 像素、且左右明暗不均。可在面板里打开。
+        painter.setRenderHint(QPainter.Antialiasing, bool(self.antialias))
         buckets = 48
 
         for b in range(buckets):
@@ -313,10 +314,10 @@ class LSystemWidget(QWidget):
             if i1 <= i0:
                 continue
             chunk = self.path[i0:i1]
-            xs = (np.floor(chunk[:, 0] * scale + off_x) + snap).tolist()
-            ys = (np.floor(chunk[:, 1] * scale + off_y) + snap).tolist()
-            xe = (np.floor(chunk[:, 2] * scale + off_x) + snap).tolist()
-            ye = (np.floor(chunk[:, 3] * scale + off_y) + snap).tolist()
+            xs = (chunk[:, 0] * scale + off_x).tolist()
+            ys = (chunk[:, 1] * scale + off_y).tolist()
+            xe = (chunk[:, 2] * scale + off_x).tolist()
+            ye = (chunk[:, 3] * scale + off_y).tolist()
             lines = [QLineF(a, c, d, e) for a, c, d, e in zip(xs, ys, xe, ye)]
             k = b / (buckets - 1)
             pen.setColor(QColor(int(sr + (er - sr) * k),
@@ -366,6 +367,7 @@ class LSystemWindow(QMainWindow):
         self.create_system_selection(panel_layout)
         self.create_parameters_section(panel_layout)
         self.create_colors_section(panel_layout)
+        self.create_options_section(panel_layout)
         self.create_rules_section(panel_layout)
         self.create_buttons_section(panel_layout)
         self.create_stats_section(panel_layout)
@@ -430,6 +432,21 @@ class LSystemWindow(QMainWindow):
         hbox.addWidget(self.bg_color_btn)
         hbox.addStretch()
         layout.addWidget(group)
+
+    def create_options_section(self, layout):
+        group = QGroupBox("显示")
+        vbox = QVBoxLayout(group)
+        vbox.setSpacing(3)
+        self.antialias_check = QCheckBox("抗锯齿（更平滑，但细线粗细会不均匀）")
+        self.antialias_check.setChecked(False)
+        self.antialias_check.toggled.connect(self.on_antialias)
+        vbox.addWidget(self.antialias_check)
+        layout.addWidget(group)
+
+    def on_antialias(self, checked):
+        self.canvas.antialias = bool(checked)
+        self.canvas._pixmap = None
+        self.canvas.update()
 
     def create_rules_section(self, layout):
         group = QGroupBox("L-system 规则")
