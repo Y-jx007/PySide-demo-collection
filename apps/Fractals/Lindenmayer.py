@@ -153,7 +153,7 @@ class LSystemWidget(QWidget):
         self.offset_x = 0.0
         self.offset_y = 0.0
         self._pixmap = None             # 渲染缓存
-        self.antialias = False          # 细线默认不抗锯齿，保证粗细一致
+        self.antialias = True           # 抗锯齿 + 半覆盖补实色
 
         self.start_color = QColor(139, 69, 19)
         self.end_color = QColor(34, 139, 34)
@@ -233,20 +233,60 @@ class LSystemWidget(QWidget):
         painter.drawPixmap(0, 0, self._pixmap)
 
     def _render_pixmap(self):
-        """只有线段远小于一个像素、而且数量巨大时才打点；其余走矢量线（更亮更准）。"""
+        """线段远小于一个像素且数量巨大时打点；其余走矢量线。"""
         n = self.path.shape[0]
         if n > 200_000 and self._segment_pixels() < 0.5:
             image = self._render_scatter()
             if image is not None:
                 return QPixmap.fromImage(image)
 
+        if self.antialias:
+            image = self._render_crisp_aa()
+            if image is not None:
+                return QPixmap.fromImage(image)
+
         pm = QPixmap(self.size())
         pm.fill(self.bg_color)
         painter = QPainter(pm)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.Antialiasing, False)
         self._draw_path(painter)
         painter.end()
         return pm
+
+    def _render_crisp_aa(self):
+        """抗锯齿渲染 → 把「半覆盖」的像素补成实色 → 叠到背景上。
+
+        直接抗锯齿会让边缘像素按覆盖度变淡（深浅不一）；纯 Bresenham 虽然实心，
+        但台阶处粗细会跳。这里取抗锯齿的几何精度，再把覆盖度阈值化成实心色，
+        两个毛病一起消掉。
+        """
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+
+        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        img.fill(Qt.transparent)
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        self._draw_path(painter)
+        painter.end()
+
+        buf = img.bits()
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, img.bytesPerLine())
+        arr = arr[:, :w * 4].reshape(h, w, 4)
+        alpha = arr[:, :, 3].astype(np.float32)
+
+        out = np.empty((h, w, 3), dtype=np.uint8)
+        out[:, :] = (self.bg_color.red(), self.bg_color.green(), self.bg_color.blue())
+
+        keep = alpha > 24          # 覆盖度 ~9% 以上就算实心
+        if keep.any():
+            # 反预乘：预乘存储下 C = C_pre * 255 / A
+            inv = np.where(alpha > 1, 255.0 / np.maximum(alpha, 1.0), 0.0)[..., None]
+            rgb = np.clip(arr[:, :, 2::-1].astype(np.float32) * inv, 0, 255)
+            out[keep] = rgb[keep].astype(np.uint8)
+
+        return QImage(out.data, w, h, w * 3, QImage.Format_RGB888).copy()
 
     def _segment_pixels(self):
         """抽样估算平均线段在屏幕上的长度（像素）。"""
@@ -303,8 +343,7 @@ class LSystemWidget(QWidget):
         pen = QPen()
         pen_width = max(1, min(3, int(round(2 * scale))))
         pen.setWidth(pen_width)
-        # 默认关掉抗锯齿：实测只有非抗锯齿光栅化能让 1px 线做到「每列恰好 1 个像素」，
-        # 抗锯齿会因为亚像素覆盖变成 1~2 像素、且左右明暗不均。可在面板里打开。
+        # 抗锯齿开关由 _render_pixmap 决定：开启时会额外做「补实色」处理
         painter.setRenderHint(QPainter.Antialiasing, bool(self.antialias))
         buckets = 48
 
@@ -437,8 +476,8 @@ class LSystemWindow(QMainWindow):
         group = QGroupBox("显示")
         vbox = QVBoxLayout(group)
         vbox.setSpacing(3)
-        self.antialias_check = QCheckBox("抗锯齿（更平滑，但细线粗细会不均匀）")
-        self.antialias_check.setChecked(False)
+        self.antialias_check = QCheckBox("抗锯齿（平滑；关闭则用纯像素线）")
+        self.antialias_check.setChecked(True)
         self.antialias_check.toggled.connect(self.on_antialias)
         vbox.addWidget(self.antialias_check)
         layout.addWidget(group)
