@@ -2,78 +2,164 @@ from custom_import import *
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QPolygonF, QLinearGradient, QBrush
 
-# ==================== 材料与梁 ====================
+# ==================== 材料 ====================
 G = 9.81
-B_WIDTH = 0.06          # 梁的宽度（出平面方向），固定
+B_WIDTH = 0.06          # 梁宽（出平面方向）
 
 MATERIALS = {
-    "松木": (10e9, 40e6),
-    "橡木": (12e9, 55e6),
-    "钢材": (200e9, 250e6),
-    "混凝土": (30e9, 3e6),
+    "松木": (10e9, 40e6, 0.30),
+    "橡木": (12e9, 55e6, 0.30),
+    "钢材": (200e9, 250e6, 0.28),
+    "混凝土": (30e9, 3e6, 0.20),
 }
 
 
+# ==================== 二维平面应力有限元 ====================
 class BeamSolver:
-    """欧拉-伯努利梁的一维有限元（每节点挠度+转角两个自由度）。"""
+    """平面应力 Q4 单元，梁用矩形网格离散。
 
-    def __init__(self, length, height, E, sigma_ult, support="simple", n_elem=64):
+    每个单元 4 节点 × 2 自由度，2×2 高斯积分组装刚度矩阵；约束自由度后
+    求一次逆（几何不变时复用），之后每改一次载荷只做一次矩阵乘。
+    """
+
+    def __init__(self, length, height, E, sigma_ult, support="simple", nx=36, ny=6, nu=0.3):
         self.L = length
         self.h = height
         self.E = E
         self.sigma_ult = sigma_ult
+        self.nu = nu
         self.support = support
-        self.n = n_elem
-        self.le = length / n_elem
+        self.nx = nx
+        self.ny = ny
+        self._build()
+        self._assemble()
+        self._apply_bc()
+        self._factor()
+
+    # ---------- 网格 ----------
+    def _build(self):
+        nx, ny = self.nx, self.ny
+        xs = np.linspace(0.0, self.L, nx + 1)
+        ys = np.linspace(-self.h / 2.0, self.h / 2.0, ny + 1)
+        self.xs, self.ys = xs, ys
+        self.nodes = np.array([(x, y) for y in ys for x in xs], dtype=np.float64)
+        self.n_nodes = self.nodes.shape[0]
+        conn = []
+        for j in range(ny):
+            for i in range(nx):
+                n0 = j * (nx + 1) + i
+                conn.append([n0, n0 + 1, n0 + (nx + 1) + 1, n0 + (nx + 1)])
+        self.conn = np.array(conn, dtype=np.int32)
+
+    def _material_D(self):
+        E, nu = self.E, self.nu
+        return E / (1.0 - nu * nu) * np.array([
+            [1.0, nu, 0.0],
+            [nu, 1.0, 0.0],
+            [0.0, 0.0, (1.0 - nu) / 2.0],
+        ])
+
+    # ---------- 组装 ----------
+    def _B_matrix(self, xi, eta):
+        """矩形单元在自然坐标 (xi, eta) 处的应变矩阵；所有单元形状相同，只需算一次。"""
+        dx, dy = self.L / self.nx, self.h / self.ny
+        dN_dxi = 0.25 * np.array([-(1 - eta), (1 - eta), (1 + eta), -(1 + eta)])
+        dN_deta = 0.25 * np.array([-(1 - xi), -(1 + xi), (1 + xi), (1 - xi)])
+        dNx = dN_dxi * (2.0 / dx)
+        dNy = dN_deta * (2.0 / dy)
+        B = np.zeros((3, 8))
+        B[0, 0::2] = dNx
+        B[1, 1::2] = dNy
+        B[2, 0::2] = dNy
+        B[2, 1::2] = dNx
+        return B
+
+    def _assemble(self):
+        D = self._material_D()
+        g = 1.0 / np.sqrt(3.0)
+        dx, dy = self.L / self.nx, self.h / self.ny
+        ke = np.zeros((8, 8))
+        for xi in (-g, g):
+            for eta in (-g, g):
+                B = self._B_matrix(xi, eta)
+                ke += B.T @ D @ B * (dx * dy / 4.0) * B_WIDTH
+        self.ke = ke
+
+        K = np.zeros((2 * self.n_nodes, 2 * self.n_nodes))
+        for conn in self.conn:
+            idx = np.empty(8, dtype=np.int32)
+            idx[0::2] = 2 * conn
+            idx[1::2] = 2 * conn + 1
+            K[np.ix_(idx, idx)] += ke
+        self.K = K
+        self.ndof = 2 * self.n_nodes
+
+        # 四角的应力矩阵也只需要算一次
+        corners = ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
+        self.corner_S = [D @ self._B_matrix(xi, eta) for xi, eta in corners]
+
+    def _apply_bc(self):
+        nx = self.nx
+        left, right = 0, nx
+        fixed = [2 * left, 2 * left + 1]        # 左端下角：铰接
+        if self.support == fixed:
+            fixed += [2 * right, 2 * right + 1]
+        else:
+            fixed += [2 * right + 1]            # 简支：右端仅约束竖向
+        self.fixed = np.array(sorted(set(fixed)), dtype=np.int32)
+
+    def _factor(self):
+        mask = np.ones(self.ndof, dtype=bool)
+        mask[self.fixed] = False
+        self.free = np.nonzero(mask)[0]
+        Kff = self.K[np.ix_(self.free, self.free)]
+        # 对称正定，用 Cholesky 分解；每个载荷步只做两次三角回代
+        # （numpy 的 inv 在这台机器上异常慢，scipy 的 potrf 只要 20ms）
+        try:
+            from scipy.linalg import cho_factor, cho_solve
+            self._cho = cho_factor(Kff, lower=False, check_finite=False)
+            self._solve_free = lambda b: cho_solve(self._cho, b, check_finite=False)
+        except Exception:
+            self._cho = None
+            self.Kinv = np.linalg.inv(Kff)
+            self._solve_free = lambda b: self.Kinv @ b
+        # 单元自由度索引，便于一次性取 u_e
+        self.elem_dof = np.empty((len(self.conn), 8), dtype=np.int32)
+        self.elem_dof[:, 0::2] = 2 * self.conn
+        self.elem_dof[:, 1::2] = 2 * self.conn + 1
+
+    # ---------- 求解 ----------
+    def _stress(self, u):
+        ue = u[self.elem_dof].T                     # (8, n_elem)
+        best = None
+        for S in self.corner_S:
+            s = S @ ue                              # (3, n_elem)
+            val = 0.5 * (s[0] + s[1]) + np.hypot(0.5 * (s[0] - s[1]), s[2])
+            best = val if best is None else np.maximum(best, val)
+        return best
 
     def solve(self, load, load_pos=None):
-        """返回 (挠度数组, 最大弯曲应力, 最大挠度, 断裂位置x)。"""
-        n = self.n
-        le = self.le
-        EI = self.E * B_WIDTH * self.h ** 3 / 12.0
-        ndof = 2 * (n + 1)
         if load_pos is None:
             load_pos = self.L / 2.0
+        F = np.zeros(self.ndof)
+        nx = self.nx
+        t = float(np.clip(load_pos / self.L, 0.0, 1.0)) * nx
+        i0 = int(np.floor(t))
+        i1 = min(nx, i0 + 1)
+        w1 = t - i0
+        base = self.ny * (nx + 1)
+        F[2 * (base + i0) + 1] -= load * (1.0 - w1)
+        F[2 * (base + i1) + 1] -= load * w1
 
-        ke = EI / le ** 3 * np.array([
-            [12.0, 6 * le, -12.0, 6 * le],
-            [6 * le, 4 * le * le, -6 * le, 2 * le * le],
-            [-12.0, -6 * le, 12.0, -6 * le],
-            [6 * le, 2 * le * le, -6 * le, 4 * le * le],
-        ])
-        K = np.zeros((ndof, ndof))
-        for e in range(n):
-            idx = [2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3]
-            K[np.ix_(idx, idx)] += ke
-
-        F = np.zeros(ndof)
-        j = int(np.clip(round(load_pos / le), 0, n))
-        F[2 * j] -= load
-
-        fixed = [0, 2 * n]
-        if self.support == "fixed":
-            fixed += [1, 2 * n + 1]
-        # 注意：不要用 np.setdiff1d —— 它在这套 numpy 里会触发 numpy.ma 的惰性
-        # 导入并递归，直接栈溢出把进程打崩
-        mask = np.ones(ndof, dtype=bool)
-        mask[fixed] = False
-        free = np.nonzero(mask)[0]
-        u = np.zeros(ndof)
-        u[free] = np.linalg.solve(K[np.ix_(free, free)], F[free])
-
-        w = u[0::2]
-        # 每单元两端弯矩 → 弯曲应力 σ = 6M / (b h²)
-        i2 = 6.0 * EI / (B_WIDTH * self.h ** 2)
-        m1 = i2 / le ** 2 * (u[0:-3:2] * 6.0 + u[1:-2:2] * 4.0 * le
-                             - u[2:-1:2] * 6.0 + u[3::2] * 2.0 * le)
-        m2 = i2 / le ** 2 * (-u[0:-3:2] * 6.0 - u[1:-2:2] * 2.0 * le
-                             + u[2:-1:2] * 6.0 - u[3::2] * 4.0 * le)
-        stress = np.maximum(np.abs(m1), np.abs(m2))
-        k = int(np.argmax(stress))
-        return w, float(stress[k]), float(np.abs(w).max()), (k + 0.5) * le, stress
+        u = np.zeros(self.ndof)
+        u[self.free] = self._solve_free(F[self.free])
+        sig1 = self._stress(u)
+        k = int(np.argmax(sig1))
+        dmax = float(np.abs(u[1::2]).max())
+        cx = float(np.mean(self.nodes[self.conn[k], 0]))
+        return u, float(sig1[k]), dmax, cx, sig1
 
     def capacity(self, load_pos=None):
-        """二分求断裂载荷。"""
         if load_pos is None:
             load_pos = self.L / 2.0
         lo, hi = 0.0, 1.0
@@ -93,7 +179,7 @@ class BeamCanvas(QWidget):
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.setMinimumSize(560, 340)
+        self.setMinimumSize(560, 320)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -103,101 +189,96 @@ class BeamCanvas(QWidget):
         sim = app.solver
 
         w, hh = self.width(), self.height()
-        margin_x = 80
+        margin_x = 90
         span = max(1e-6, sim.L)
         scale_x = (w - 2 * margin_x) / span
-        base_y = hh * 0.62
-        h_px = max(6.0, min(90.0, sim.h * scale_x * 2.2))
+        base_y = hh * 0.52
         exag = app.exag
 
-        w_def = app.deflection          # 当前挠度分布
-        xs = np.linspace(0, span, len(w_def))
-
-        # 支座
-        sup_color = QColor(90, 90, 96)
+        sup_y = base_y + sim.h * scale_x * 0.5 + 6
         for x in (0.0, span):
             sx = margin_x + x * scale_x
-            path = QPolygonF([
-                QPointF(sx, base_y + h_px / 2),
-                QPointF(sx - 14, base_y + h_px / 2 + 24),
-                QPointF(sx + 14, base_y + h_px / 2 + 24),
-            ])
-            p.setBrush(sup_color)
+            p.setBrush(QColor(90, 90, 96))
             p.setPen(Qt.NoPen)
-            p.drawPolygon(path)
+            p.drawPolygon(QPolygonF([QPointF(sx, sup_y),
+                                     QPointF(sx - 15, sup_y + 22),
+                                     QPointF(sx + 15, sup_y + 22)]))
             p.setPen(QPen(QColor(150, 150, 155), 2))
-            p.drawLine(QPointF(sx - 22, base_y + h_px / 2 + 24),
-                       QPointF(sx + 22, base_y + h_px / 2 + 24))
-            # 钉子
-            p.setBrush(QColor(70, 70, 75))
-            p.drawEllipse(QPointF(sx, base_y), 4, 4)
+            p.drawLine(QPointF(sx - 22, sup_y + 22), QPointF(sx + 22, sup_y + 22))
 
         if app.broken:
-            self._draw_broken(p, margin_x, scale_x, base_y, h_px)
+            self._draw_broken(p, margin_x, scale_x, base_y, sim)
         else:
-            self._draw_beam(p, margin_x, scale_x, base_y, h_px, xs, w_def, exag)
+            self._draw_mesh(p, margin_x, scale_x, base_y, sim, exag)
 
-        # 重物
         if not app.broken and app.load > 0:
             pos = app.load_pos if app.load_pos is not None else span / 2.0
             sx = margin_x + pos * scale_x
-            bw = 30 + 40 * min(1.0, app.load / max(1.0, app.break_load or 1e9))
-            bh = 18 + 26 * min(1.0, app.load / max(1.0, app.break_load or 1e9))
-            top = base_y - h_px / 2 + w_def[len(w_def) // 2] * exag - bh
+            top_y = self._top_y(sim, pos, margin_x, scale_x, base_y, exag)
+            frac = min(1.0, app.load / max(1.0, app.break_load or app.load * 1.4))
+            bw = 34 + 44 * frac
+            bh = 20 + 24 * frac
             p.setBrush(QColor(70, 78, 92))
             p.setPen(Qt.NoPen)
-            p.drawRoundedRect(QRectF(sx - bw / 2, top, bw, bh), 4, 4)
+            p.drawRoundedRect(QRectF(sx - bw / 2, top_y - bh - 2, bw, bh), 4, 4)
             p.setPen(QColor(255, 255, 255))
             f = p.font()
             f.setPointSize(8)
             p.setFont(f)
-            p.drawText(QRectF(sx - bw / 2, top, bw, bh), Qt.AlignCenter,
+            p.drawText(QRectF(sx - bw / 2, top_y - bh - 2, bw, bh), Qt.AlignCenter,
                        f"{app.load / G:.0f}kg")
 
-        # 应力颜色条
         self._draw_legend(p, w, hh)
         p.end()
 
-    def _draw_beam(self, p, mx, sx, base_y, h_px, xs, w_def, exag):
-        sim = self.app.solver
-        n = len(w_def) - 1
-        # 逐段绘制：上缘受压（蓝）、下缘受拉（红），颜色强度 ∝ 应力
-        for i in range(n):
-            x0 = mx + xs[i] * sx
-            x1 = mx + xs[i + 1] * sx
-            y0 = base_y + w_def[i] * exag
-            y1 = base_y + w_def[i + 1] * exag
-            frac = float(self.app.stress_profile[i]) if i < len(self.app.stress_profile) else 0.0
-            t = float(np.clip(frac, 0.0, 1.0))
-            top = QColor(int(120 + 60 * t), int(150 + 40 * t), 235)
-            bot = QColor(235, int(150 - 80 * t), int(120 - 60 * t))
-            grad = QLinearGradient(x0, y0 - h_px / 2, x0, y0 + h_px / 2)
-            grad.setColorAt(0.0, top)
-            grad.setColorAt(1.0, bot)
-            p.setBrush(QBrush(grad))
-            p.setPen(Qt.NoPen)
-            p.drawPolygon(QPolygonF([
-                QPointF(x0, y0 - h_px / 2), QPointF(x1, y1 - h_px / 2),
-                QPointF(x1, y1 + h_px / 2), QPointF(x0, y0 + h_px / 2),
-            ]))
-        p.setPen(QPen(QColor(40, 40, 45), 1.2))
-        poly_top = [QPointF(mx + xs[i] * sx, base_y + w_def[i] * exag - h_px / 2) for i in range(n + 1)]
-        poly_bot = [QPointF(mx + xs[i] * sx, base_y + w_def[i] * exag + h_px / 2) for i in range(n)]
-        p.drawPolyline(QPolygonF(poly_top))
-        p.drawPolyline(QPolygonF(poly_bot))
+    def _node_pixels(self, sim, mx, sx, base_y, exag):
+        u = self.app.u
+        nodes = sim.nodes
+        if u is None:
+            px = mx + nodes[:, 0] * sx
+            py = base_y - nodes[:, 1] * sx
+        else:
+            # 只有位移放大，梁本身的厚度和位置不放大
+            px = mx + nodes[:, 0] * sx + u[0::2] * exag * sx
+            py = base_y - nodes[:, 1] * sx - u[1::2] * exag * sx
+        return px, py
 
-    def _draw_broken(self, p, mx, sx, base_y, h_px):
-        app = self.app
-        span = app.solver.L
+    def _top_y(self, sim, x_pos, mx, sx, base_y, exag):
+        px, py = self._node_pixels(sim, mx, sx, base_y, exag)
+        i = int(np.clip(round(x_pos / sim.L * sim.nx), 0, sim.nx))
+        return float(py[sim.ny * (sim.nx + 1) + i])
+
+    def _draw_mesh(self, p, mx, sx, base_y, sim, exag):
+        px, py = self._node_pixels(sim, mx, sx, base_y, exag)
+        limit = sim.sigma_ult
+        for e, conn in enumerate(sim.conn):
+            sig = self.app.sigma_elem[e]
+            t = float(np.clip(abs(sig) / limit, 0.0, 1.0))
+            if sig >= 0:      # 拉应力：越接近强度越红
+                col = QColor(int(150 + 95 * t), int(170 - 110 * t), int(205 - 160 * t))
+            else:             # 压应力：蓝
+                col = QColor(int(120 - 25 * t), int(150 + 35 * t), int(210))
+            p.setBrush(col)
+            p.setPen(QPen(QColor(110, 110, 120, 90), 0.5))
+            p.drawPolygon(QPolygonF([QPointF(px[i], py[i]) for i in conn]))
+
+        p.setPen(QPen(QColor(40, 40, 45), 1.5))
+        p.setBrush(Qt.NoBrush)
+        top = [sim.ny * (sim.nx + 1) + i for i in range(sim.nx + 1)]
+        bottom = list(range(sim.nx + 1))
+        p.drawPolyline(QPolygonF([QPointF(px[i], py[i]) for i in bottom]))
+        p.drawPolyline(QPolygonF([QPointF(px[i], py[i]) for i in top]))
+
+    def _draw_broken(self, p, mx, sx, base_y, sim):
+        span = sim.L
+        h_px = max(6.0, sim.h * sx)
         mid = mx + span * sx / 2
-        drop = min(120.0, h_px * 1.5 + 40)
         p.setPen(Qt.NoPen)
         for sign in (-1, 1):
             x0 = mx if sign < 0 else mid
             x1 = mid if sign < 0 else mx + span * sx
-            # 绕着外侧支座转，断口自然垂下来
             pivot = mx if sign < 0 else mx + span * sx
-            ang = -14.0 if sign < 0 else 14.0
+            ang = 13.0 if sign < 0 else -13.0   # 断口向下垂
             p.save()
             p.translate(pivot, base_y)
             p.rotate(ang)
@@ -222,8 +303,8 @@ class BeamCanvas(QWidget):
         f.setPointSize(8)
         p.setFont(f)
         p.setPen(QColor(90, 90, 96))
-        p.drawText(QRectF(16, h - 34, 420, 20), Qt.AlignLeft | Qt.AlignVCenter,
-                   "上缘受压（蓝）  下缘受拉（红）  颜色越深越接近材料强度")
+        p.drawText(QRectF(16, h - 28, 560, 20), Qt.AlignLeft | Qt.AlignVCenter,
+                   "单元按主应力上色：偏红＝受拉（危险），偏蓝＝受压；形变已放大显示")
 
 
 # ==================== 数据图 ====================
@@ -231,7 +312,7 @@ class SweepChart(QWidget):
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.setMinimumHeight(180)
+        self.setMinimumHeight(170)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -244,10 +325,10 @@ class SweepChart(QWidget):
         p.drawRect(QRectF(left, top, w - left - right, h - top - bottom))
 
         mode = self.app.sweep_mode
-        p.setPen(QColor(70, 70, 76))
         f = p.font()
         f.setPointSize(9)
         p.setFont(f)
+        p.setPen(QColor(70, 70, 76))
         title = {"height": "承重 vs 梁高（理论 ∝ h²）",
                  "length": "承重 vs 梁长（理论 ∝ 1/L）"}.get(mode, "还没有数据 —— 运行一次扫描")
         p.drawText(QRectF(left, 2, w - left - right, 16), Qt.AlignCenter, title)
@@ -258,8 +339,8 @@ class SweepChart(QWidget):
 
         xs = np.array([r["x"] for r in runs])
         ys = np.array([r["P"] for r in runs])
-        x_lo, x_hi = xs.min(), xs.max()
-        y_lo, y_hi = 0.0, max(ys) * 1.15
+        x_lo, x_hi = float(xs.min()), float(xs.max())
+        y_lo, y_hi = 0.0, float(max(ys)) * 1.15
         pw, ph = w - left - right, h - top - bottom
 
         def to_px(x, y):
@@ -267,25 +348,22 @@ class SweepChart(QWidget):
             fy = (y - y_lo) / max(1e-9, y_hi - y_lo)
             return left + fx * pw, top + (1 - fy) * ph
 
-        # 理论曲线
         if mode in ("height", "length"):
             L = runs[0]["L"]
             hh = runs[0]["h"]
-            E, sig = MATERIALS[self.app.material]
-            n_pts = 60
-            curve_x = np.linspace(x_lo, x_hi, n_pts)
+            E, sig, nu = MATERIALS[self.app.material]
+            curve_x = np.linspace(x_lo, x_hi, 32)
             curve_y = []
             for v in curve_x:
                 if mode == "height":
-                    sim = BeamSolver(L, v / 100.0, E, sig, self.app.support)
+                    sim = BeamSolver(L, v / 100.0, E, sig, self.app.support, nu=nu)
                 else:
-                    sim = BeamSolver(v, hh, E, sig, self.app.support)
+                    sim = BeamSolver(v, hh, E, sig, self.app.support, nu=nu)
                 curve_y.append(sim.capacity())
             pts = [QPointF(*to_px(x, y)) for x, y in zip(curve_x, curve_y)]
             p.setPen(QPen(QColor(120, 150, 210), 2))
             p.drawPolyline(QPolygonF(pts))
 
-        # 实测点
         p.setPen(QPen(QColor(220, 90, 60), 1))
         p.setBrush(QColor(220, 90, 60))
         for x, y in zip(xs, ys):
@@ -295,8 +373,7 @@ class SweepChart(QWidget):
         p.setPen(QColor(90, 90, 96))
         xlabel = "梁高 h (cm)" if mode == "height" else ("梁长 L (m)" if mode == "length" else "")
         p.drawText(QRectF(left, h - 22, pw, 16), Qt.AlignCenter, xlabel)
-        p.drawText(QRectF(4, top, 56, 16), Qt.AlignRight | Qt.AlignVCenter,
-                   f"{y_hi / 1000:.0f}kN")
+        p.drawText(QRectF(4, top, 56, 16), Qt.AlignRight | Qt.AlignVCenter, f"{y_hi / 1000:.0f}kN")
         p.drawText(QRectF(4, top + ph - 12, 56, 16), Qt.AlignRight | Qt.AlignVCenter, "0")
         p.end()
 
@@ -305,20 +382,24 @@ class SweepChart(QWidget):
 class BeamApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("横梁承重 · 断裂实验")
-        self.setGeometry(120, 70, 1180, 800)
+        self.setWindowTitle("横梁承重 · 二维有限元")
+        self.setGeometry(110, 60, 1180, 820)
 
         self.material = "松木"
         self.support = "simple"
-        self.beam_length = 1.6          # m
-        self.beam_height = 0.12         # m
-        self.load = 0.0            # N
-        self.load_pos = None       # 默认跨中
+        self.beam_length = 1.6
+        self.beam_height = 0.12
+        self.load = 0.0
+        self.load_pos = None
         self.broken = False
         self.auto_loading = False
         self.break_load = None
         self.runs = []
         self.sweep_mode = None
+        self.u = None
+        self.sigma_elem = None
+        self.max_stress = 0.0
+        self.max_defl = 0.0
         self._rebuild()
         self.init_ui()
 
@@ -328,26 +409,22 @@ class BeamApp(QMainWindow):
 
     # ---------- 模型 ----------
     def _rebuild(self):
-        E, sig = MATERIALS[self.material]
-        self.solver = BeamSolver(self.beam_length, self.beam_height, E, sig, self.support)
-        self.deflection = np.zeros(self.solver.n + 1)
-        self.stress_profile = np.zeros(self.solver.n)
+        E, sig, nu = MATERIALS[self.material]
+        self.solver = BeamSolver(self.beam_length, self.beam_height, E, sig, self.support, nu=nu)
+        self.u = None
+        self.sigma_elem = np.zeros(len(self.solver.conn))
         self.max_stress = 0.0
         self.max_defl = 0.0
-        self.break_x = self.beam_length / 2
 
     def update_solution(self):
         if self.broken:
             return
-        load = self.load
-        w, smax, dmax, bx, stress = self.solver.solve(load, self.load_pos)
-        self.deflection = w
+        u, smax, dmax, cx, sig = self.solver.solve(self.load, self.load_pos)
+        self.u = u
         self.max_stress = smax
         self.max_defl = dmax
-        self.break_x = bx
-        # 每单元应力占比（用于沿梁长上色）
-        self.stress_profile = np.clip(stress / self.solver.sigma_ult, 0.0, 1.0)
-        if smax >= self.solver.sigma_ult:
+        self.sigma_elem = sig
+        if smax >= self.solver.sigma_ult and self.load > 0:
             self.fail()
 
     def fail(self):
@@ -357,16 +434,13 @@ class BeamApp(QMainWindow):
         self.runs.append({
             "L": self.beam_length, "h": self.beam_height, "P": self.load,
             "x": self.beam_height * 100 if self.sweep_mode == "height" else self.beam_length,
-            "mode": self.sweep_mode, "material": self.material, "support": self.support,
         })
-        if hasattr(self, "chart"):
-            self.chart.update()
+        self.chart.update()
         self.update_stats()
 
     def tick(self):
         if self.auto_loading and not self.broken:
-            # 逐步加载：越接近断裂走得越慢，看得清
-            step = max(20.0, self.load * 0.06)
+            step = max(15.0, self.load * 0.05)
             self.load += step
             self.update_solution()
             self.canvas.update()
@@ -387,7 +461,6 @@ class BeamApp(QMainWindow):
         pv.setContentsMargins(0, 0, 0, 0)
 
         self.canvas = BeamCanvas(self)
-
         self._build_beam_group(pv)
         self._build_load_group(pv)
         self._build_sweep_group(pv)
@@ -403,7 +476,7 @@ class BeamApp(QMainWindow):
         rv.addWidget(self.chart)
         root.addWidget(right, 1)
 
-        self.lbl_status = QLabel("调好梁的尺寸，点「自动加载」看它什么时候断")
+        self.lbl_status = QLabel("调好尺寸，点「自动加载」看梁什么时候断")
         self.statusBar().addWidget(self.lbl_status, 1)
         self.lbl_load = QLabel("载荷 0 kg")
         self.lbl_stress = QLabel("应力 –")
@@ -412,7 +485,7 @@ class BeamApp(QMainWindow):
             self.statusBar().addPermanentWidget(wdg)
 
     def _build_beam_group(self, parent):
-        group = QGroupBox("梁")
+        group = QGroupBox("梁（二维网格）")
         form = QFormLayout(group)
         form.setSpacing(4)
         form.setContentsMargins(6, 6, 6, 6)
@@ -506,8 +579,7 @@ class BeamApp(QMainWindow):
         self.beam_length = self.len_slider.value() / 100.0
         self.beam_height = self.hgt_slider.value() / 100.0
         self._rebuild()
-        if hasattr(self, "lbl_cap"):
-            self.lbl_cap.setText("极限载荷 –")
+        self.lbl_cap.setText("极限载荷 –")
         self.canvas.update()
         self.update_stats()
 
@@ -539,22 +611,18 @@ class BeamApp(QMainWindow):
         self.sweep_mode = mode
         self.runs = []
         self.auto_loading = False
-        E, sig = MATERIALS[self.material]
+        E, sig, nu = MATERIALS[self.material]
         if mode == "height":
-            values = np.linspace(0.02, 0.30, 9)
-            for v in values:
-                sim = BeamSolver(self.beam_length, v, E, sig, self.support)
-                cap = sim.capacity()
-                self.runs.append({"L": self.beam_length, "h": v, "P": cap, "x": v * 100, "mode": mode})
+            for v in np.linspace(0.02, 0.30, 9):
+                sim = BeamSolver(self.beam_length, v, E, sig, self.support, nu=nu)
+                self.runs.append({"L": self.beam_length, "h": v, "P": sim.capacity(), "x": v * 100})
         else:
-            values = np.linspace(0.5, 3.0, 9)
-            for v in values:
-                sim = BeamSolver(v, self.beam_height, E, sig, self.support)
-                cap = sim.capacity()
-                self.runs.append({"L": v, "h": self.beam_height, "P": cap, "x": v, "mode": mode})
+            for v in np.linspace(0.5, 3.0, 9):
+                sim = BeamSolver(v, self.beam_height, E, sig, self.support, nu=nu)
+                self.runs.append({"L": v, "h": self.beam_height, "P": sim.capacity(), "x": v})
         self.chart.update()
-        n = len(self.runs)
-        self.lbl_status.setText(f"已扫描 {n} 组：" + ("梁越高越抗弯（∝ h²）" if mode == "height" else "梁越长越弱（∝ 1/L）"))
+        self.lbl_status.setText(f"已扫描 {len(self.runs)} 组：" +
+                                ("梁越高越抗弯（∝ h²）" if mode == "height" else "梁越长越弱（∝ 1/L）"))
 
     def clear_runs(self):
         self.runs = []
@@ -565,7 +633,7 @@ class BeamApp(QMainWindow):
         self.lbl_load.setText(f"载荷 {self.load / G:.0f} kg")
         if self.max_stress > 0:
             ratio = self.max_stress / self.solver.sigma_ult
-            self.lbl_stress.setText(f"应力 {self.max_stress / 1e6:.1f} MPa（{ratio * 100:.0f}%）")
+            self.lbl_stress.setText(f"主应力 {self.max_stress / 1e6:.1f} MPa（{ratio * 100:.0f}%）")
             self.lbl_defl.setText(f"挠度 {self.max_defl * 1000:.2f} mm")
         else:
             self.lbl_stress.setText("应力 –")
@@ -574,14 +642,12 @@ class BeamApp(QMainWindow):
             self.lbl_status.setText(
                 f"断裂！极限载荷 {self.break_load / 1000:.2f} kN（{self.break_load / G:.0f} kg）")
 
-    # 挠度显示放大系数
     @property
     def exag(self):
         d = self.max_defl
-        if d <= 1e-12:
-            return 0.0
-        target = self.beam_height * 2.2          # 目标显示偏移（米）
-        return min(4000.0, target / d)
+        if d <= 1e-12 or self.beam_length <= 0:
+            return 1.0
+        return float(np.clip(self.beam_length * 0.12 / d, 1.0, 4000.0))
 
 
 if __name__ == "__main__":
