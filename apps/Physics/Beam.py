@@ -402,7 +402,7 @@ class BeamCanvas(QWidget):
 
         # 木桩垫在梁端下方：桩的外缘与梁端平齐
         post_w = 16.0
-        ground_y = base_y + (sim.h * 0.5 + 0.30) * scale_x
+        ground_y = hh - 10.0        # 木桩一直延伸到画布底部
         post_x = []
         for node, side in ((sim.left_node, +1), (sim.right_node, -1)):
             ex = margin_x + float(pos[node, 0]) * scale_x      # 梁端位置
