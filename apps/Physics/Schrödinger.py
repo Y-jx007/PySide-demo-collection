@@ -140,8 +140,10 @@ def potential(p):
             slit_w = potential_params[None].double_slit_width
             c1 = resolution[1] / 2 - slit_sep / 2
             c2 = resolution[1] / 2 + slit_sep / 2
-            in_slit1 = ti.abs(p[1] - c1) < slit_w / 2
-            in_slit2 = ti.abs(p[1] - c2) < slit_w / 2
+            half = slit_w / 2
+            # 半开区间 [lo, hi)：两条缝落在相同数量的像素上，缝宽 0 时完全不透
+            in_slit1 = (p[1] >= c1 - half) and (p[1] < c1 + half)
+            in_slit2 = (p[1] >= c2 - half) and (p[1] < c2 + half)
             if not (in_slit1 or in_slit2):
                 result = 1.0
 
@@ -150,7 +152,10 @@ def potential(p):
         barrier_thickness = potential_params[None].barrier_thickness
         if ti.abs(p[0] - barrier_center_x) < barrier_thickness / 2:
             slit_w = potential_params[None].single_slit_width
-            if ti.abs(p[1] - resolution[1] / 2) >= slit_w / 2:
+            half = slit_w / 2
+            cy = resolution[1] / 2
+            in_slit = (p[1] >= cy - half) and (p[1] < cy + half)
+            if not in_slit:
                 result = 1.0
 
     elif preset == 2:                   # 圆形势 (强度决定正负)
@@ -285,7 +290,7 @@ class TaichiCanvas(QOpenGLWidget):
         glEnable(GL_TEXTURE_2D)
         self.texture_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, self.texture_id)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
@@ -339,9 +344,9 @@ class ControlPanel(QWidget):
     SLIDERS = {
         'strength':               ('势能强度', -100, 100, 10, lambda v: f"{v / 10:.1f}"),
         'barrier_thickness':      ('壁垒厚度', 1, 50, 5, str),
-        'double_slit_width':      ('缝宽', 1, 80, 10, str),
-        'double_slit_separation': ('缝间距', 5, 400, 50, str),
-        'single_slit_width':      ('缝宽', 1, 400, 50, str),
+        'double_slit_width':      ('缝宽', 0, 80, 10, str),
+        'double_slit_separation': ('缝间距', 4, 400, 50, str),
+        'single_slit_width':      ('缝宽', 0, 400, 50, str),
         'radius':                 ('圆半径', 5, 500, 50, str),
         'momentum':               ('初始动量', 0, 1000, 250, str),
         'width':                  ('波包半径', 10, 200, 50, lambda v: f"{v / 100:.2f}"),
