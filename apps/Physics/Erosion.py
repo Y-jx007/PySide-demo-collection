@@ -62,9 +62,8 @@ class ErosionSim:
         self.rng = np.random.default_rng(seed)
         self.h = self._make_terrain()
         self.h0 = self.h.copy()
-        self.wet = np.zeros((size, size), dtype=np.float32)
-        self.moisture = np.full((size, size), 0.85, dtype=np.float32)
-        self.dry = 0.0
+        self._update_relief()
+        self.moisture = np.full((size, size), 0.85, dtype=np.float32)   # 逐格含水量
         self.raining = False
         self.drying = False
         self.rain_rate = 320
@@ -119,12 +118,20 @@ class ErosionSim:
     def reset(self):
         self.h = self._make_terrain()
         self.h0 = self.h.copy()
-        self.wet[:] = 0.0
+        self._update_relief()
         self.moisture[:] = 0.85
-        self.dry = 0.0
         self.count = 0
         self.total_drops = 0
         self._build_cracks()
+
+    def _update_relief(self):
+        h = self.h
+        lo, hi = float(h.min()), float(h.max())
+        self._relief = ((h - lo) / max(1e-6, hi - lo)).astype(np.float32)
+
+    @property
+    def dryness(self):
+        return float(1.0 - self.moisture.mean())
 
     # ---------- 龟裂 ----------
     def _build_cracks(self):
@@ -274,8 +281,8 @@ class ErosionSim:
         self.life[:n] -= 1
 
         # 记录湿润痕迹
-        self.wet[yi, xi] += 0.05
-        np.clip(self.wet, 0.0, 1.0, out=self.wet)
+        self.moisture[yi, xi] += 0.02
+        np.clip(self.moisture, 0.0, 1.0, out=self.moisture)
 
         dead = (self.life[:n] <= 0) | (self.wat[:n] < 0.02) | (nx < 1) | (ny < 1) \
             | (nx > self.size - 2) | (ny > self.size - 2)
@@ -290,14 +297,15 @@ class ErosionSim:
     def step(self):
         if self.raining:
             self.add_rain(self.rain_rate)
-            self.wet *= 0.995
-            self.dry = max(0.0, self.dry - 0.006)
+            # 下雨时地面趋近饱和，雨水在低洼处积得更多
+            self.moisture += 0.006 * (1.0 - self.moisture)
+        elif self.drying:
+            # 逐格蒸发：高处、坡地干得快，低洼处保留水分
+            rate = 0.0035 * (0.65 + 0.75 * np.clip(self._relief, 0.0, 1.0))
+            self.moisture -= rate
         else:
-            self.wet *= 0.988
-            if self.drying:
-                self.dry = min(1.0, self.dry + 0.005)
-            else:
-                self.dry = max(0.0, self.dry - 0.002)
+            self.moisture -= 0.0004
+        np.clip(self.moisture, 0.0, 1.0, out=self.moisture)
         self.step_drops()
         np.clip(self.h, 0.0, 3.0, out=self.h)
 
@@ -342,12 +350,13 @@ class TerrainCanvas(QWidget):
         sim = self.sim
         n = sim.size
         h = _blur3(_blur3(sim.h))     # 显示用平滑：抹掉单格开凿痕迹
-        dry = sim.dry
+        wetfield = _blur3(sim.moisture)
+        dry = np.clip(1.0 - wetfield, 0.0, 1.0)
 
         # 干泥板会向四周裂缝处翘起：只影响显示高度，不动模拟的高度场
-        if dry > 0.02:
+        if sim.dryness > 0.02:
             prox = np.clip(1.0 - sim.crack_edge / 9.0, 0.0, 1.0) ** 2
-            h = h + prox * 0.006 * dry
+            h = h + prox * 0.006 * dry * 3.0
 
         hmin, hmax = float(h.min()), float(h.max())
         hn = (h - hmin) / max(1e-6, hmax - hmin)
@@ -363,7 +372,7 @@ class TerrainCanvas(QWidget):
         # 干土 / 湿泥 + 高处露岩：查表（以高度和湿度为索引），省掉多次浮点混合
         if self._soil_lut is None:
             self._build_soil_lut()
-        wetv = np.clip(_blur3(sim.wet) * 1.25, 0.0, 1.0)
+        wetv = np.clip(wetfield * 1.15, 0.0, 1.0)
         idx = (hn * 255.0).astype(np.int32) * 256 + (wetv * 255.0).astype(np.int32)
         rgb = self._soil_lut[idx].astype(np.float32)
 
@@ -371,19 +380,21 @@ class TerrainCanvas(QWidget):
             rgb *= shade[..., None]
 
         # 每块板干燥后的色差 + 泥沙颗粒
-        rgb += (sim.plate_tint[..., None] - 0.5) * 10.0 * dry
+        rgb += (sim.plate_tint[..., None] - 0.5) * 10.0 * dry[..., None]
         rgb += sim.grain[..., None] * 9.0
 
         # 积水 / 湿润：低洼处偏蓝
         if self.show_water:
-            pond = np.clip((0.16 - hn) / 0.16, 0.0, 1.0) * np.clip((sim.wet - 0.10) * 2.5, 0, 1)
+            pond = np.clip((0.16 - hn) / 0.16, 0.0, 1.0) * np.clip((wetfield - 0.90) * 8.0, 0, 1)
             water = np.clip(pond, 0.0, 1.0)[..., None]
             rgb = rgb * (1 - water * 0.75) + np.array([70, 118, 165], np.float32) * (water * 0.75)
 
         # 龟裂：宽度由「到板块边界的垂直距离」决定，不随板块大小变化
-        if self.show_cracks and dry > 0.02:
-            crack = 1.0 - smoothstep(1.1, 3.6, sim.crack_edge)
-            reveal = np.clip((dry - sim.crack_noise * 0.5) * 4.0, 0.0, 1.0)
+        if self.show_cracks and sim.dryness > 0.02:
+            dw = 0.7 + 1.9 * sim.dryness
+            crack = 1.0 - smoothstep(dw, dw * 2.8, sim.crack_edge)
+            # 逐格干度决定开裂缝，噪声让它成片出现
+            reveal = np.clip((dry - 0.32 - sim.crack_noise * 0.22) * 3.2, 0.0, 1.0)
             slope = np.hypot(gx, gy) * exag
             flat = np.clip(1.0 - slope * 0.5, 0.0, 1.0)
             crack = _blur3(crack * reveal * flat)[..., None] * 0.92
@@ -615,7 +626,7 @@ class ErosionApp(QMainWindow):
         self._frames += 1
 
     def update_stats(self):
-        self.lbl_dry.setText(f"干燥 {self.sim.dry * 100:.0f}%")
+        self.lbl_dry.setText(f"干燥 {self.sim.dryness * 100:.0f}%")
         self.lbl_drops.setText(f"雨滴 {self.sim.count:,}")
         now = time.perf_counter()
         if now - self._fps_t >= 0.5:
