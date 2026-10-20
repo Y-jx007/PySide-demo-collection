@@ -235,7 +235,7 @@ class LSystemWidget(QWidget):
         pm = QPixmap(self.size())
         pm.fill(self.bg_color)
         painter = QPainter(pm)
-        painter.setRenderHint(QPainter.Antialiasing)
+        # 不开抗锯齿：纯像素线条，粗细与深浅都均匀
         self._draw_path(painter)
         painter.end()
         return pm
