@@ -132,6 +132,15 @@ class TrainThread(QThread):
 
         seed_torch = torch.from_numpy(seed).to(self.device)
 
+        # 损伤掩膜用到的坐标网格只算一次
+        YY, XX = torch.meshgrid(torch.arange(H, device=self.device),
+                                torch.arange(W, device=self.device), indexing='ij')
+
+        # 记录平滑 loss 最优的权重：训练末期 loss 是带噪声的，最后一轮未必最好
+        best_state = None
+        best_ema = float('inf')
+        ema = None
+
         for epoch in range(1, self.epochs + 1):
             if not self._is_running:
                 break
@@ -152,9 +161,8 @@ class TrainThread(QThread):
                     for i in range(damage_n):
                         cx, cy = np.random.randint(10, H-10), np.random.randint(10, W-10)
                         r = np.random.randint(5, 15)
-                        Y, X = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
-                        mask = ((X - cx)**2 + (Y - cy)**2) <= r**2
-                        damage_masks[i, 0] = ~mask
+                        mask = ((XX - cx)**2 + (YY - cy)**2) <= r**2
+                        damage_masks[i, 0] = (~mask).float()
                     x0[-damage_n:] *= damage_masks.permute(0, 2, 3, 1)
             else:
                 x0 = seed_torch.repeat(self.batch_size, 1, 1, 1)
@@ -173,6 +181,12 @@ class TrainThread(QThread):
             progress = int(epoch / self.epochs * 100)
             self.progress_signal.emit(progress)
 
+            # 平滑 loss 创新低时留一份权重（每 10 轮才拷贝一次，开销可忽略）
+            ema = loss.item() if ema is None else 0.98 * ema + 0.02 * loss.item()
+            if epoch > 50 and epoch % 10 == 0 and ema < best_ema:
+                best_ema = ema
+                best_state = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+
             if self.use_pool:
                 pool.update(idxs, x.detach().cpu().numpy())
 
@@ -188,6 +202,10 @@ class TrainThread(QThread):
                     vis = np.clip(vis, 0, 1)
                     rgba_uint8 = (vis * 255).astype(np.uint8)
                     self.state_signal.emit(rgba_uint8)
+
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            print(f"训练结束：已恢复平滑 loss 最优的权重 (ema={best_ema:.4f})")
 
         self.finished_signal.emit()
 
@@ -216,7 +234,7 @@ class GLDisplayWidget(QOpenGLWidget):
 
     def paintGL(self):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         total_w = self.width()
         total_h = self.height()
         spacing = 6
@@ -258,12 +276,12 @@ class MainWindow(QMainWindow):
         self.model_dir = str(Path(__file__).resolve().parents[2] / "models")
         os.makedirs(self.model_dir, exist_ok=True)
 
-        # 恢复默认网格大小为60，训练更稳定
-        self.grid_size = 60
+        # 论文配方：40×40 网格、随机展开 40-60 步、约 8000 轮、零填充边界
+        self.grid_size = 40
         self.channel_n = 16
         self.fire_rate = 0.5
-        self.steps_range = (64, 96)
-        self.epochs = 2000
+        self.steps_range = (40, 60)
+        self.epochs = 4000
         self.lr = 2e-3
         self.pool_size = 1024
         self.batch_size = 8
@@ -283,7 +301,7 @@ class MainWindow(QMainWindow):
         self.sim_steps_per_tick = 24
         self.current_angle = 0.0
         self.target_train_scale = 1.0
-        self.use_circular = True    # 默认使用周期边界
+        self.use_circular = False   # 与论文一致：零填充边界，避免图案跨边界绕回来
 
         self.reset_model = True
         self._updating_model_list = False
@@ -836,7 +854,9 @@ class MainWindow(QMainWindow):
         self.btn_train.setEnabled(True)
         self.btn_stop_train.setEnabled(False)
         self.progress_bar.setValue(100)
-        QMessageBox.information(self, "提示", "训练完成！")
+        # 训练结束把画布重置成单粒种子，直接就能看生长
+        self.reset_state()
+        QMessageBox.information(self, "提示", "训练完成！画布已重置为单粒种子，点「运行」即可观察生长。")
 
 if __name__ == "__main__":
     fmt = QSurfaceFormat()
