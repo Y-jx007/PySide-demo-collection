@@ -18,6 +18,7 @@
 | **Cplot** | 复变函数幅角图，基于 [cplot](https://github.com/nschloe/cplot) |
 | **Traveler** | 遗传算法求解旅行商问题 |
 | **Lorenz** | 三维洛伦兹吸引子可视化 |
+| **Stigmergy** | 黏菌 / 蚁群的信息素寻路（stigmergy）：个体留下痕迹，痕迹反过来引导个体，自发形成静脉状输运网络；可拖拽投放食物让网络重新布线 |
 
 ### Physics
 

@@ -62,6 +62,13 @@ APPS = [
         "friendly": "洛伦兹吸引子",
         "category": "Math",
     },
+    {
+        "title": "Stigmergy",
+        "description": "黏菌/蚁群的信息素寻路：个体留下痕迹，痕迹反过来引导个体",
+        "path": "Math/Stigmergy.py",
+        "friendly": "黏菌网络",
+        "category": "Math",
+    },
     # ---------------- Physics ----------------
     {
         "title": "Schrödinger",
