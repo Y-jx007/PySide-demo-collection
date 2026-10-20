@@ -153,7 +153,6 @@ class LSystemWidget(QWidget):
         self.offset_x = 0.0
         self.offset_y = 0.0
         self._pixmap = None             # 渲染缓存
-        self.antialias = True           # 抗锯齿 + 半覆盖补实色
 
         self.start_color = QColor(139, 69, 19)
         self.end_color = QColor(34, 139, 34)
@@ -233,104 +232,16 @@ class LSystemWidget(QWidget):
         painter.drawPixmap(0, 0, self._pixmap)
 
     def _render_pixmap(self):
-        """线段远小于一个像素且数量巨大时打点；其余走矢量线。"""
-        n = self.path.shape[0]
-        if n > 200_000 and self._segment_pixels() < 0.5:
-            image = self._render_scatter()
-            if image is not None:
-                return QPixmap.fromImage(image)
-
-        if self.antialias:
-            image = self._render_crisp_aa()
-            if image is not None:
-                return QPixmap.fromImage(image)
-
         pm = QPixmap(self.size())
         pm.fill(self.bg_color)
         painter = QPainter(pm)
-        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setRenderHint(QPainter.Antialiasing)
         self._draw_path(painter)
         painter.end()
         return pm
 
-    def _render_crisp_aa(self):
-        """抗锯齿渲染 → 把「半覆盖」的像素补成实色 → 叠到背景上。
-
-        直接抗锯齿会让边缘像素按覆盖度变淡（深浅不一）；纯 Bresenham 虽然实心，
-        但台阶处粗细会跳。这里取抗锯齿的几何精度，再把覆盖度阈值化成实心色，
-        两个毛病一起消掉。
-        """
-        w, h = self.width(), self.height()
-        if w <= 0 or h <= 0:
-            return None
-
-        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
-        img.fill(Qt.transparent)
-        painter = QPainter(img)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        self._draw_path(painter)
-        painter.end()
-
-        buf = img.bits()
-        arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, img.bytesPerLine())
-        arr = arr[:, :w * 4].reshape(h, w, 4)
-        alpha = arr[:, :, 3].astype(np.float32)
-
-        out = np.empty((h, w, 3), dtype=np.uint8)
-        out[:, :] = (self.bg_color.red(), self.bg_color.green(), self.bg_color.blue())
-
-        keep = alpha > 24          # 覆盖度 ~9% 以上就算实心
-        if keep.any():
-            # 反预乘：预乘存储下 C = C_pre * 255 / A
-            inv = np.where(alpha > 1, 255.0 / np.maximum(alpha, 1.0), 0.0)[..., None]
-            rgb = np.clip(arr[:, :, 2::-1].astype(np.float32) * inv, 0, 255)
-            out[keep] = rgb[keep].astype(np.uint8)
-
-        return QImage(out.data, w, h, w * 3, QImage.Format_RGB888).copy()
-
-    def _segment_pixels(self):
-        """抽样估算平均线段在屏幕上的长度（像素）。"""
-        n = self.path.shape[0]
-        if n == 0:
-            return 1e9
-        sample = self.path[::max(1, n // 4000)]
-        lens = np.hypot(sample[:, 2] - sample[:, 0], sample[:, 3] - sample[:, 1])
-        return float(lens.mean() * self.scale)
-
-    def _render_scatter(self):
-        """把每段的两端都画成像素：亚像素线段时与矢量渲染几乎无差别。"""
-        w, h = self.width(), self.height()
-        if w <= 0 or h <= 0:
-            return None
-        arr = self.path
-        n = arr.shape[0]
-
-        # 起点和终点一起画，避免长线段之间出现空隙
-        xs = np.concatenate([arr[:, 0], arr[:, 2]]) * self.scale + self.offset_x
-        ys = np.concatenate([arr[:, 1], arr[:, 3]]) * self.scale + self.offset_y
-        t_idx = np.concatenate([np.arange(n), np.arange(n)])
-        px = np.rint(xs).astype(np.int32)
-        py = np.rint(ys).astype(np.int32)
-        mask = (px >= 0) & (px < w) & (py >= 0) & (py < h)
-        if not mask.any():
-            return None
-
-        t = t_idx[mask] / max(1, n - 1)
-        sr, sg, sb = self.start_color.red(), self.start_color.green(), self.start_color.blue()
-        er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
-        cols = np.empty((int(mask.sum()), 3), dtype=np.uint8)
-        cols[:, 0] = np.clip(sr + (er - sr) * t, 0, 255)
-        cols[:, 1] = np.clip(sg + (eg - sg) * t, 0, 255)
-        cols[:, 2] = np.clip(sb + (eb - sb) * t, 0, 255)
-
-        img = np.empty((h, w, 3), dtype=np.uint8)
-        img[:, :] = (self.bg_color.red(), self.bg_color.green(), self.bg_color.blue())
-        img[py[mask], px[mask]] = cols
-
-        return QImage(img.data, w, h, w * 3, QImage.Format_RGB888).copy()
-
     def _draw_path(self, painter):
-        """按进度分 48 档颜色，逐档 drawLines；路径来自 numpy 数组，内存很小。"""
+        """原始绘法：逐段整数坐标 + 逐段渐变颜色（与最初版本完全一致）。"""
         n = self.path.shape[0]
         if n == 0:
             return
@@ -339,31 +250,21 @@ class LSystemWidget(QWidget):
         off_y = self.offset_y
         sr, sg, sb = self.start_color.red(), self.start_color.green(), self.start_color.blue()
         er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
+        dr, dg, db = er - sr, eg - sg, eb - sb
 
         pen = QPen()
-        pen_width = max(1, min(3, int(round(2 * scale))))
-        pen.setWidth(pen_width)
-        # 抗锯齿开关由 _render_pixmap 决定：开启时会额外做「补实色」处理
-        painter.setRenderHint(QPainter.Antialiasing, bool(self.antialias))
-        buckets = 48
+        pen.setWidth(max(1, int(2 * scale)))
 
-        for b in range(buckets):
-            i0 = b * n // buckets
-            i1 = (b + 1) * n // buckets
-            if i1 <= i0:
-                continue
-            chunk = self.path[i0:i1]
-            xs = (chunk[:, 0] * scale + off_x).tolist()
-            ys = (chunk[:, 1] * scale + off_y).tolist()
-            xe = (chunk[:, 2] * scale + off_x).tolist()
-            ye = (chunk[:, 3] * scale + off_y).tolist()
-            lines = [QLineF(a, c, d, e) for a, c, d, e in zip(xs, ys, xe, ye)]
-            k = b / (buckets - 1)
-            pen.setColor(QColor(int(sr + (er - sr) * k),
-                                int(sg + (eg - sg) * k),
-                                int(sb + (eb - sb) * k)))
+        rows = self.path.tolist()
+        denom = n - 1 if n > 1 else 1
+        for i, (x1, y1, x2, y2) in enumerate(rows):
+            t = i / denom if n > 1 else 0
+            pen.setColor(QColor(int(sr + dr * t), int(sg + dg * t), int(sb + db * t)))
             painter.setPen(pen)
-            painter.drawLines(lines)
+            painter.drawLine(
+                int(x1 * scale + off_x), int(y1 * scale + off_y),
+                int(x2 * scale + off_x), int(y2 * scale + off_y)
+            )
 
     def save_image(self, filename):
         """将当前图形保存为图片文件"""
@@ -406,7 +307,6 @@ class LSystemWindow(QMainWindow):
         self.create_system_selection(panel_layout)
         self.create_parameters_section(panel_layout)
         self.create_colors_section(panel_layout)
-        self.create_options_section(panel_layout)
         self.create_rules_section(panel_layout)
         self.create_buttons_section(panel_layout)
         self.create_stats_section(panel_layout)
@@ -471,21 +371,6 @@ class LSystemWindow(QMainWindow):
         hbox.addWidget(self.bg_color_btn)
         hbox.addStretch()
         layout.addWidget(group)
-
-    def create_options_section(self, layout):
-        group = QGroupBox("显示")
-        vbox = QVBoxLayout(group)
-        vbox.setSpacing(3)
-        self.antialias_check = QCheckBox("抗锯齿（平滑；关闭则用纯像素线）")
-        self.antialias_check.setChecked(True)
-        self.antialias_check.toggled.connect(self.on_antialias)
-        vbox.addWidget(self.antialias_check)
-        layout.addWidget(group)
-
-    def on_antialias(self, checked):
-        self.canvas.antialias = bool(checked)
-        self.canvas._pixmap = None
-        self.canvas.update()
 
     def create_rules_section(self, layout):
         group = QGroupBox("L-system 规则")
