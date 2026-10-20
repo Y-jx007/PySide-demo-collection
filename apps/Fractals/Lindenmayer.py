@@ -5,7 +5,8 @@ from PySide6.QtCore import QLineF
 # ========== L-system 核心 ==========
 class LSystem:
     """优化后的 L-system，字符串生成使用列表拼接，O(n) 复杂度"""
-    MAX_CHARS = 6_000_000      # 超过就截断：路径用 numpy 存，600 万字符约 200MB 以内
+    TIME_BUDGET = 30.0         # 生成+建路径的总时间预算（秒）
+    MAX_CHARS = 30_000_000     # 内存保险丝，正常情况由时间预算先触发
 
     def __init__(self):
         self.axiom = ""
@@ -20,28 +21,36 @@ class LSystem:
     def add_rule(self, predecessor, successor):
         self.rules[predecessor] = successor
 
-    def generate(self, generations=None, max_chars=None):
-        """返回 (字符串, 是否被截断)。"""
+    def generate(self, generations=None, deadline=None, max_chars=None):
+        """返回 (字符串, 截断原因)。原因：None / 'time' / 'size'。"""
         if generations is None:
             generations = self.generations
+        if deadline is None:
+            deadline = time.perf_counter() + self.TIME_BUDGET
         cap = max_chars or self.MAX_CHARS
         result = self.axiom
-        truncated = False
+        reason = None
         rules = self.rules
         for _ in range(generations):
+            if time.perf_counter() > deadline:
+                reason = 'time'
+                break
             parts = []
             total = 0
-            for char in result:
+            for i, char in enumerate(result):
                 s = rules.get(char, char)
                 parts.append(s)
                 total += len(s)
                 if total > cap:
-                    truncated = True
+                    reason = 'size'
+                    break
+                if (i & 0x3FFFF) == 0 and time.perf_counter() > deadline:
+                    reason = 'time'
                     break
             result = ''.join(parts)
-            if truncated:
+            if reason:
                 break
-        return result, truncated
+        return result, reason
 
     def set_parameters(self, angle, distance, generations):
         self.angle = angle
@@ -66,7 +75,8 @@ class LSystemGenerator(QThread):
 
     def run(self):
         t0 = time.perf_counter()
-        string, truncated = self.lsystem.generate()
+        deadline = t0 + self.lsystem.TIME_BUDGET
+        string, reason = self.lsystem.generate(deadline=deadline)
         if self._cancelled:
             return
 
@@ -87,8 +97,12 @@ class LSystemGenerator(QThread):
         min_y = max_y = y
 
         for index, char in enumerate(string):
-            if index % 4096 == 0 and self._cancelled:
-                return
+            if (index & 0xFFF) == 0:
+                if self._cancelled:
+                    return
+                if time.perf_counter() > deadline:
+                    reason = 'time'
+                    break
             if char == 'F':
                 new_x = x + dx * distance
                 new_y = y + dy * distance
@@ -120,14 +134,15 @@ class LSystemGenerator(QThread):
             "path": path,
             "bbox": (min_x, min_y, max_x, max_y),
             "chars": len(string),
-            "truncated": truncated,
+            "truncated": bool(reason),
+            "reason": reason,
             "elapsed": time.perf_counter() - t0,
         })
 
 # ========== L-system 绘图部件 ==========
 class LSystemWidget(QWidget):
     """优化后的绘图部件：缓存路径、包围盒、缩放因子；支持后台生成"""
-    statsReady = Signal(int, int, bool, float)   # 线段数, 字符串长度, 是否截断, 耗时(秒)
+    statsReady = Signal(int, int, bool, float, str)   # 线段数, 字符数, 截断, 耗时, 原因
 
     def __init__(self):
         super().__init__()
@@ -179,7 +194,8 @@ class LSystemWidget(QWidget):
         self._pixmap = None
         self.update()
         self.statsReady.emit(int(path.shape[0]), int(result["chars"]),
-                             bool(result["truncated"]), float(result["elapsed"]))
+                             bool(result["truncated"]), float(result["elapsed"]),
+                             result.get("reason") or "")
 
     def _update_transform(self):
         """根据当前包围盒和窗口大小计算缩放和平移（居中）"""
@@ -216,9 +232,9 @@ class LSystemWidget(QWidget):
         painter.drawPixmap(0, 0, self._pixmap)
 
     def _render_pixmap(self):
-        """线段很多时用 numpy 直接打点（快两个数量级），否则走矢量线（更细腻）。"""
+        """只有线段远小于一个像素、而且数量巨大时才打点；其余走矢量线（更亮更准）。"""
         n = self.path.shape[0]
-        if n > 300_000:
+        if n > 200_000 and self._segment_pixels() < 0.5:
             image = self._render_scatter()
             if image is not None:
                 return QPixmap.fromImage(image)
@@ -231,27 +247,37 @@ class LSystemWidget(QWidget):
         painter.end()
         return pm
 
+    def _segment_pixels(self):
+        """抽样估算平均线段在屏幕上的长度（像素）。"""
+        n = self.path.shape[0]
+        if n == 0:
+            return 1e9
+        sample = self.path[::max(1, n // 4000)]
+        lens = np.hypot(sample[:, 2] - sample[:, 0], sample[:, 3] - sample[:, 1])
+        return float(lens.mean() * self.scale)
+
     def _render_scatter(self):
-        """把每个线段终点画成一个像素；几十万段以上时肉眼与矢量线几乎无差别。"""
+        """把每段的两端都画成像素：亚像素线段时与矢量渲染几乎无差别。"""
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
             return None
         arr = self.path
         n = arr.shape[0]
 
-        xs = arr[:, 2] * self.scale + self.offset_x
-        ys = arr[:, 3] * self.scale + self.offset_y
+        # 起点和终点一起画，避免长线段之间出现空隙
+        xs = np.concatenate([arr[:, 0], arr[:, 2]]) * self.scale + self.offset_x
+        ys = np.concatenate([arr[:, 1], arr[:, 3]]) * self.scale + self.offset_y
+        t_idx = np.concatenate([np.arange(n), np.arange(n)])
         px = np.rint(xs).astype(np.int32)
         py = np.rint(ys).astype(np.int32)
         mask = (px >= 0) & (px < w) & (py >= 0) & (py < h)
         if not mask.any():
             return None
-        idx = np.nonzero(mask)[0]
 
-        t = idx / max(1, n - 1)
+        t = t_idx[mask] / max(1, n - 1)
         sr, sg, sb = self.start_color.red(), self.start_color.green(), self.start_color.blue()
         er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
-        cols = np.empty((idx.size, 3), dtype=np.uint8)
+        cols = np.empty((int(mask.sum()), 3), dtype=np.uint8)
         cols[:, 0] = np.clip(sr + (er - sr) * t, 0, 255)
         cols[:, 1] = np.clip(sg + (eg - sg) * t, 0, 255)
         cols[:, 2] = np.clip(sb + (eb - sb) * t, 0, 255)
@@ -259,12 +285,6 @@ class LSystemWidget(QWidget):
         img = np.empty((h, w, 3), dtype=np.uint8)
         img[:, :] = (self.bg_color.red(), self.bg_color.green(), self.bg_color.blue())
         img[py[mask], px[mask]] = cols
-
-        # 起点单独补一个像素，避免整条路径缺头
-        sx = int(round(arr[0, 0] * self.scale + self.offset_x))
-        sy = int(round(arr[0, 1] * self.scale + self.offset_y))
-        if 0 <= sx < w and 0 <= sy < h:
-            img[sy, sx] = (sr, sg, sb)
 
         return QImage(img.data, w, h, w * 3, QImage.Format_RGB888).copy()
 
@@ -457,14 +477,17 @@ class LSystemWindow(QMainWindow):
         group.setLayout(form)
         layout.addWidget(group)
 
-    def on_stats(self, segments, chars, truncated, elapsed):
+    def on_stats(self, segments, chars, truncated, elapsed, reason):
         self.lbl_length.setText(f"{chars:,}")
         self.lbl_segments.setText(f"{segments:,}")
         self.lbl_time.setText(f"{elapsed * 1000:.0f} ms")
         self.generate_btn.setEnabled(True)
-        if truncated:
+        if reason == "time":
             self.lbl_status.setText(
-                f"已完成，但字符串超过 {LSystem.MAX_CHARS:,} 字符被截断——降低迭代次数或简化规则")
+                f"超过 {LSystem.TIME_BUDGET:.0f} 秒预算，已截断——降低迭代次数或简化规则")
+        elif reason == "size":
+            self.lbl_status.setText(
+                f"字符串达到内存上限 {LSystem.MAX_CHARS:,} 字符，已截断")
         else:
             self.lbl_status.setText(f"完成：{segments:,} 条线段，{elapsed * 1000:.0f} ms")
 
