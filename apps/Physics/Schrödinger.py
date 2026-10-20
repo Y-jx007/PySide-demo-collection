@@ -1,4 +1,5 @@
 from custom_import import *
+from PySide6.QtWidgets import QDialog
 
 ti.init(arch=ti.gpu, default_fp=ti.f32, kernel_profiler=False, offline_cache=True)
 
@@ -44,22 +45,29 @@ class CustomPotentialCompiler:
 
     def compile_potential(self, code_str, width, height):
         try:
-            for key in list(self.globals_dict.keys()):
-                if key not in ['math', 'np', 'ti', 'tm', 'sin', 'cos',
-                               'exp', 'sqrt', 'abs', 'pi', 'e']:
-                    del self.globals_dict[key]
-
+            ns = dict(self.globals_dict)
+            body = "\n".join("    " + line if line.strip() else "" for line in code_str.splitlines())
             func_code = f"""
 def potential_func(x, y, width={width}, height={height}):
-    {code_str}
+{body}
     return result
 """
-            exec(func_code, self.globals_dict)
-            potential_func = self.globals_dict['potential_func']
+            exec(func_code, ns)
+            potential_func = ns['potential_func']
 
             x_coords = np.linspace(0, width - 1, width)
             y_coords = np.linspace(0, height - 1, height)
             X, Y = np.meshgrid(x_coords, y_coords, indexing='ij')
+
+            # 快路径：整段表达式能直接吃 numpy 数组（用 np.where 之类的写法）
+            try:
+                values = np.asarray(potential_func(X, Y), dtype=np.float32)
+                if values.shape == (width, height) and np.all(np.isfinite(values)):
+                    return np.ascontiguousarray(values), None
+            except Exception:
+                pass
+
+            # 慢路径：逐点求值（用户写的是普通 Python 标量运算时走这里）
             potential_values = np.zeros((width, height), dtype=np.float32)
             for i in range(width):
                 for j in range(height):
@@ -115,8 +123,8 @@ def init_parameters():
     wave_packet_params[None].center_y = 0.5
     wave_packet_params[None].direction = 0.0
 
-    simulation_params[None].time_step = 0.1
-    simulation_params[None].steps_per_frame = 30
+    simulation_params[None].time_step = 0.2
+    simulation_params[None].steps_per_frame = 12
 
 # ── 势能函数 (强度可为负) ────────────────
 @ti.func
@@ -249,7 +257,8 @@ def update_custom_potential_field(potential_array: ti.types.ndarray()):
 class TaichiCanvas(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(resolution[0], resolution[1])
+        self.setMinimumSize(480, 240)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.texture_id = None
         init_hue_lut()
 
@@ -297,178 +306,287 @@ class TaichiCanvas(QOpenGLWidget):
 
 # ── 控制面板 ─────────────────────────────
 class ControlPanel(QWidget):
+    """左侧参数面板：按「势能 / 波包 / 求解器」分组，只显示当前类型相关的参数。"""
+
+    # key: (标签, 最小, 最大, 默认, 格式化)
+    SLIDERS = {
+        'strength':               ('势能强度', -100, 100, 10, lambda v: f"{v / 10:.1f}"),
+        'barrier_thickness':      ('壁垒厚度', 1, 50, 5, str),
+        'double_slit_width':      ('缝宽', 1, 80, 10, str),
+        'double_slit_separation': ('缝间距', 5, 400, 50, str),
+        'single_slit_width':      ('缝宽', 1, 400, 50, str),
+        'radius':                 ('圆半径', 5, 500, 50, str),
+        'momentum':               ('初始动量', 0, 1000, 250, str),
+        'width':                  ('波包半径', 10, 200, 50, lambda v: f"{v / 100:.2f}"),
+        'center_x':               ('中心 X', 0, 100, 30, lambda v: f"{v / 100:.2f}"),
+        'center_y':               ('中心 Y', 0, 100, 50, lambda v: f"{v / 100:.2f}"),
+        'direction':              ('传播方向', 0, 360, 0, lambda v: f"{v}°"),
+        'time_step':              ('时间步长', 5, 25, 20, lambda v: f"{v / 100:.2f}"),
+        'steps_per_frame':        ('每帧步数', 1, 200, 12, str),
+    }
+
+    DEFAULT_CODE = (
+        "a = ((x + 33.75) % 135 < 67.5) & ((y - 33.75) % 135 > 67.5)\n"
+        "b = ((x + 33.75) % 135 > 67.5) & ((y - 33.75) % 135 < 67.5)\n"
+        "result = np.where(a | b, 1, -1)"
+    )
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.simulation_running = True
-        self.custom_potential_code = (
-            'result = 1 if ((x+33.75) % 135 < 67.5 and (y-33.75) % 135 > 67.5) '
-            'or ((x+33.75) % 135 > 67.5 and (y-33.75) % 135 < 67.5) else -1'
-        )
         self.sliders = {}
         self.labels = {}
+        self._custom_code = self.DEFAULT_CODE
+        self._custom_ready = False
         self._init_ui()
 
+    # ---------- UI ----------
     def _init_ui(self):
+        self.setFixedWidth(330)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumWidth(450)
-        scroll.setMinimumWidth(380)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content = QWidget()
         main = QVBoxLayout(content)
+        main.setSpacing(6)
+        main.setContentsMargins(2, 2, 2, 2)
 
-        grid = QGridLayout()
-
-        grid.addWidget(QLabel("势能类型:"), 0, 0)
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["双缝", "单缝", "圆势", "自定义势能"])
-        self.preset_combo.setCurrentIndex(0)
-        grid.addWidget(self.preset_combo, 0, 1)
-
-        slider_defs = [
-            ("strength",             -100, 100, 10),
-            ("single_slit_width",    0,    100, 50),
-            ("double_slit_width",    0,    100, 10),
-            ("double_slit_separation", 0,  200, 50),
-            ("radius",               0,    200, 50),
-            ("barrier_thickness",    1,    50,  5),
-            ("momentum",             0,    1000,250),
-            ("width",                10,   200, 50),
-            ("center_x",             0,    100, 30),
-            ("center_y",             0,    100, 50),
-            ("direction",            0,    360, 0),
-            ("time_step",            1,    30,  10),
-            ("steps_per_frame",      1,    180, 30),
-        ]
-
-        row = 1
-        left_col = 0
-        right_col = 3
-        for name, minv, maxv, defv in slider_defs:
-            if name == "momentum":
-                row = 1
-            col_offset = right_col if name in ["momentum","width","center_x","center_y",
-                                               "direction","time_step","steps_per_frame"] else left_col
-            grid.addWidget(QLabel(f"{self._param_label(name)}:"), row, col_offset)
-            slider = QSlider(Qt.Horizontal)
-            slider.setRange(minv, maxv)
-            slider.setValue(defv)
-            grid.addWidget(slider, row, col_offset+1)
-            label = QLabel()
-            grid.addWidget(label, row, col_offset+2)
-            self.sliders[name] = slider
-            self.labels[name] = label
-            slider.valueChanged.connect(lambda val, n=name: self._on_param_changed(n, val))
-            self._update_label(name, defv)
-            row += 1
-
-        main.addLayout(grid)
-        main.addWidget(QFrame(frameShape=QFrame.HLine))   # 已去除凹陷阴影
-
-        custom_grp = QGroupBox("自定义势能函数")
-        custom_layout = QVBoxLayout(custom_grp)
-        custom_layout.addWidget(QLabel("编辑自定义势能函数，必须赋值变量 'result'。"))
-        self.code_editor = QTextEdit()
-        self.code_editor.setPlainText(self.custom_potential_code)
-        # 字体设置已删除
-        self.code_editor.setMinimumHeight(100)
-        custom_layout.addWidget(self.code_editor)
-        btn_row = QHBoxLayout()
-        self.apply_custom_btn = QPushButton("应用自定义势能")
-        self.reset_custom_btn = QPushButton("重置为示例")
-        btn_row.addWidget(self.apply_custom_btn)
-        btn_row.addWidget(self.reset_custom_btn)
-        custom_layout.addLayout(btn_row)
-        main.addWidget(custom_grp)
-        main.addWidget(QFrame(frameShape=QFrame.HLine))   # 已去除凹陷阴影
-
-        btn_row2 = QHBoxLayout()
-        self.start_pause_btn = QPushButton("暂停")
-        self.start_pause_btn.setCheckable(True)
-        self.start_pause_btn.setChecked(True)
-        self.reset_btn = QPushButton("重置波函数")
-        btn_row2.addWidget(self.start_pause_btn)
-        btn_row2.addWidget(self.reset_btn)
-        main.addLayout(btn_row2)
+        main.addWidget(self._build_control_group())
+        main.addWidget(self._build_potential_group())
+        main.addWidget(self._build_packet_group())
+        main.addWidget(self._build_solver_group())
+        main.addWidget(self._build_stats_group())
         main.addStretch()
 
         scroll.setWidget(content)
         panel_layout = QVBoxLayout(self)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.addWidget(scroll)
-        self.setLayout(panel_layout)
 
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         self.start_pause_btn.clicked.connect(self._toggle_simulation)
-        self.reset_btn.clicked.connect(lambda: initialize())
-        self.apply_custom_btn.clicked.connect(self._apply_custom_potential)
-        self.reset_custom_btn.clicked.connect(lambda: self.code_editor.setPlainText(self.custom_potential_code))
+        self.reset_btn.clicked.connect(self._on_reset)
+        self.edit_potential_btn.clicked.connect(self._open_potential_editor)
 
-    def _param_label(self, name):
-        return {
-            "strength": "势能强度", "single_slit_width": "单缝宽度",
-            "double_slit_width": "双缝宽度", "double_slit_separation": "双缝间距",
-            "radius": "圆半径", "barrier_thickness": "壁垒厚度",
-            "momentum": "初始动量", "width": "波包半径",
-            "center_x": "中心X", "center_y": "中心Y",
-            "direction": "传播方向", "time_step": "时间步长",
-            "steps_per_frame": "每帧步数"
-        }.get(name, name)
+        # 先把默认的自定义势能编译好，切到「自定义」时就能直接看
+        self._compile_and_upload(self._custom_code)
+        self._on_preset_changed(0)
 
-    def _on_param_changed(self, name, value):
-        self._update_label(name, value)
-        if name == "strength":
+    def _build_control_group(self):
+        group = QGroupBox("控制")
+        layout = QHBoxLayout()
+        layout.setSpacing(6)
+        self.start_pause_btn = QPushButton("暂停")
+        self.start_pause_btn.setCheckable(True)
+        self.start_pause_btn.setChecked(True)
+        self.reset_btn = QPushButton("重置波函数")
+        layout.addWidget(self.start_pause_btn)
+        layout.addWidget(self.reset_btn)
+        group.setLayout(layout)
+        return group
+
+    def _build_potential_group(self):
+        group = QGroupBox("势能")
+        layout = QVBoxLayout()
+        layout.setSpacing(6)
+
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(QLabel("类型:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(["双缝", "单缝", "圆势", "自定义"])
+        h.addWidget(self.preset_combo, 1)
+        layout.addWidget(row)
+
+        form = QFormLayout()
+        form.setSpacing(3)
+        self._add_slider(form, 'strength')
+        layout.addLayout(form)
+
+        # 只与某种势能相关的参数，按类型显示/隐藏
+        self.shape_groups = {}
+        self.shape_groups[0] = self._make_shape_group(
+            "双缝参数", ['barrier_thickness', 'double_slit_width', 'double_slit_separation'])
+        self.shape_groups[1] = self._make_shape_group(
+            "单缝参数", ['barrier_thickness', 'single_slit_width'])
+        self.shape_groups[2] = self._make_shape_group("圆势参数", ['radius'])
+        for g in self.shape_groups.values():
+            layout.addWidget(g)
+
+        self.edit_potential_btn = QPushButton("编辑自定义势能…")
+        layout.addWidget(self.edit_potential_btn)
+
+        group.setLayout(layout)
+        return group
+
+    def _make_shape_group(self, title, keys):
+        box = QGroupBox(title)
+        form = QFormLayout()
+        form.setSpacing(3)
+        for k in keys:
+            self._add_slider(form, k)
+        box.setLayout(form)
+        return box
+
+    def _build_packet_group(self):
+        group = QGroupBox("初始波包")
+        form = QFormLayout()
+        form.setSpacing(3)
+        for k in ('momentum', 'width', 'center_x', 'center_y', 'direction'):
+            self._add_slider(form, k)
+        group.setLayout(form)
+        return group
+
+    def _build_solver_group(self):
+        group = QGroupBox("求解器")
+        form = QFormLayout()
+        form.setSpacing(3)
+        for k in ('time_step', 'steps_per_frame'):
+            self._add_slider(form, k)
+        group.setLayout(form)
+        return group
+
+    def _open_potential_editor(self):
+        dlg = PotentialEditor(self._custom_code, self)
+        if dlg.exec() == QDialog.Accepted:
+            error = self._compile_and_upload(dlg.code())
+            if error:
+                QMessageBox.warning(self, "编译错误", f"自定义势能函数编译失败:\n{error}")
+                return
+            potential_params[None].preset = 3
+            if self.preset_combo.currentIndex() != 3:
+                self.preset_combo.setCurrentIndex(3)
+
+    def _compile_and_upload(self, code):
+        values, error = potential_compiler.compile_potential(code, resolution[0], resolution[1])
+        if error:
+            return error
+        update_custom_potential_field(values)
+        self._custom_code = code
+        self._custom_ready = True
+        return None
+
+    def _build_stats_group(self):
+        group = QGroupBox("统计")
+        form = QFormLayout()
+        form.setSpacing(3)
+        self.lbl_time = QLabel("0.00")
+        self.lbl_norm = QLabel("–")
+        self.lbl_fps = QLabel("–")
+        form.addRow("模拟时间:", self.lbl_time)
+        form.addRow("归一化:", self.lbl_norm)
+        form.addRow("帧率:", self.lbl_fps)
+        group.setLayout(form)
+        return group
+
+    def _add_slider(self, form, key):
+        label, lo, hi, default, fmt = self.SLIDERS[key]
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(int(lo), int(hi))
+        slider.setValue(int(default))
+        value_label = QLabel(fmt(default))
+        value_label.setFixedWidth(44)
+        value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        def _on_change(v):
+            value_label.setText(fmt(v))
+            self._apply_param(key, v)
+
+        slider.valueChanged.connect(_on_change)
+        h.addWidget(slider, 1)
+        h.addWidget(value_label)
+        form.addRow(label, row)
+        self.sliders[key] = slider
+        self.labels[key] = value_label
+        self._apply_param(key, default)
+        return slider
+
+    # ---------- 参数写入 ----------
+    def _apply_param(self, key, value):
+        if key == "strength":
             potential_params[None].strength = value / 10.0
-        elif name == "momentum":
+        elif key == "momentum":
             wave_packet_params[None].momentum = float(value)
-        elif name == "width":
+        elif key == "width":
             wave_packet_params[None].width = value / 100.0
-        elif name == "center_x":
+        elif key == "center_x":
             wave_packet_params[None].center_x = value / 100.0
-        elif name == "center_y":
+        elif key == "center_y":
             wave_packet_params[None].center_y = value / 100.0
-        elif name == "direction":
+        elif key == "direction":
             wave_packet_params[None].direction = float(value)
-        elif name == "time_step":
+        elif key == "time_step":
             simulation_params[None].time_step = value / 100.0
-        elif name == "steps_per_frame":
+        elif key == "steps_per_frame":
             simulation_params[None].steps_per_frame = value
-        elif name == "single_slit_width":
+        elif key == "single_slit_width":
             potential_params[None].single_slit_width = float(value)
-        elif name == "double_slit_width":
+        elif key == "double_slit_width":
             potential_params[None].double_slit_width = float(value)
-        elif name == "double_slit_separation":
+        elif key == "double_slit_separation":
             potential_params[None].double_slit_separation = float(value)
-        elif name == "radius":
+        elif key == "radius":
             potential_params[None].radius = float(value)
-        elif name == "barrier_thickness":
+        elif key == "barrier_thickness":
             potential_params[None].barrier_thickness = float(value)
 
-    def _update_label(self, name, value):
-        if name == "strength":
-            self.labels[name].setText(f"{value/10.0:.1f}")
-        elif name in ("momentum", "direction", "single_slit_width", "double_slit_width",
-                      "double_slit_separation", "radius", "barrier_thickness", "steps_per_frame"):
-            self.labels[name].setText(str(value))
-        elif name in ("width", "center_x", "center_y", "time_step"):
-            self.labels[name].setText(f"{value/100.0:.2f}")
-
+    # ---------- 事件 ----------
     def _on_preset_changed(self, idx):
         potential_params[None].preset = idx
-        if idx == 3:
-            self._apply_custom_potential()
+        for k, box in self.shape_groups.items():
+            box.setVisible(k == idx)
+        if idx == 3 and not self._custom_ready:
+            self._compile_and_upload(self._custom_code)
 
-    def _apply_custom_potential(self):
-        code = self.code_editor.toPlainText()
-        potential_values, error = potential_compiler.compile_potential(code, resolution[0], resolution[1])
-        if error:
-            QMessageBox.warning(self, "编译错误", f"自定义势能函数编译失败:\n{error}")
-            return
-        update_custom_potential_field(potential_values)
-        potential_params[None].preset = 3
-        self.preset_combo.setCurrentIndex(3)
+    def _on_reset(self):
+        initialize()
+        self.lbl_time.setText("0.00")
 
     def _toggle_simulation(self):
         self.simulation_running = not self.simulation_running
         self.start_pause_btn.setText("暂停" if self.simulation_running else "开始")
+
+
+# ── 自定义势能编辑对话框 ──────────────────
+class PotentialEditor(QDialog):
+    def __init__(self, code, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("自定义势能函数")
+        self.resize(720, 460)
+
+        layout = QVBoxLayout(self)
+        hint = QLabel("给 result 赋值。x、y 在向量化路径下是 numpy 数组，"
+                      "可以直接写 np.where(...)；普通标量写法也能用，只是会慢一些。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        layout.addWidget(hint)
+
+        self.editor = QTextEdit()
+        self.editor.setPlainText(code)
+        self.editor.setLineWrapMode(QTextEdit.NoWrap)
+        layout.addWidget(self.editor, 1)
+
+        row = QHBoxLayout()
+        reset_btn = QPushButton("恢复示例")
+        reset_btn.clicked.connect(lambda: self.editor.setPlainText(ControlPanel.DEFAULT_CODE))
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("应用")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        row.addWidget(reset_btn)
+        row.addStretch()
+        row.addWidget(cancel_btn)
+        row.addWidget(ok_btn)
+        layout.addLayout(row)
+
+    def code(self):
+        return self.editor.toPlainText()
 
 
 # ── 主窗口 ─────────────────────────────
@@ -476,11 +594,19 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("薛定谔方程模拟 – 自定义势能版")
-        self.setGeometry(100, 100, 1200, 600)
+        # 面板 330 + 左右边距 12；画布随窗口伸缩（默认接近 2:1）
+        self.setGeometry(100, 100, 330 + 12 + 960, 592)
 
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(8)
+
+        # 先初始化 Taichi 侧参数，再建面板：面板滑条的默认值最终生效
+        init_parameters()
+        initialize()
+        custom_potential_field.fill(0.0)
 
         self.control_panel = ControlPanel()
         self.canvas = TaichiCanvas()
@@ -488,28 +614,51 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.control_panel)
         main_layout.addWidget(self.canvas, 1)
 
-        init_parameters()
-        initialize()
-        custom_potential_field.fill(0.0)
+        self._sim_time = 0.0
+        self._frames = 0
+        self._last_stat = time.perf_counter()
 
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_simulation)
-        self.timer.start(0)
+        self.timer.start(16)
 
     def _update_simulation(self):
-        if self.control_panel.simulation_running:
+        panel = self.control_panel
+        if panel.simulation_running:
             self.canvas.update_simulation()
+            self._sim_time += (simulation_params[None].steps_per_frame
+                               * simulation_params[None].time_step)
+            self._frames += 1
+
+        now = time.perf_counter()
+        if now - self._last_stat > 0.5:
+            fps = self._frames / (now - self._last_stat)
+            self._frames = 0
+            self._last_stat = now
+            panel.lbl_time.setText(f"{self._sim_time:.1f}")
+            panel.lbl_fps.setText(f"{fps:.1f}")
+            panel.lbl_norm.setText(f"{compute_norm():.3e}")
 
     def closeEvent(self, event):
         self.timer.stop()
         event.accept()
 
+
+@ti.kernel
+def compute_norm() -> ti.f32:
+    s = 0.0
+    for i, j in psi:
+        v = psi[i, j]
+        s += v[0] * v[0] + v[1] * v[1]
+    return s
+
+
 def main():
     app = QApplication(sys.argv)
-    # 不再设置全局字体
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
