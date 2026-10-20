@@ -1,6 +1,9 @@
 from custom_import import *
 from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QPolygonF, QBrush
+from PySide6.QtGui import QPolygonF
+
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 
 # ==================== 材料 ====================
 G = 9.81
@@ -13,12 +16,10 @@ MATERIALS = {
     "混凝土": (30e9, 3e6, 0.20, 2400.0),
 }
 
-MASS_SCALE = 8.0       # 质量放大：准静态加载时显式时间步能大很多
-
 
 # ==================== 静态有限元（测极限载荷 / 扫描） ====================
 class StaticBeam:
-    """平面应力 Q4 + Cholesky；用于快速求极限载荷和扫描。"""
+    """平面应力 Q4 + Cholesky；用来快速求极限载荷。"""
 
     def __init__(self, length, height, E, sigma_ult, support="simple", nx=36, ny=6, nu=0.3):
         self.L, self.h, self.E, self.sigma_ult = length, height, E, sigma_ult
@@ -133,31 +134,34 @@ class StaticBeam:
         return hi
 
 
-# ==================== Taichi 显式动力学 + 单元失效 ====================
-class DynamicBeam:
-    """显式动力学：单元内力回代到节点，应力超限就把该单元删掉。
+# ==================== 隐式动力学 + 单元失效 ====================
+class ImplicitBeam:
+    """后向差分隐式动力学 + 稀疏 LU，单元应力/失效判定交给 Taichi 并行。
 
-    裂缝不是画出来的——单元失效后刚度消失，相邻单元随即超载，裂纹自己往前跑，
-    整根梁最终塌下去，全过程都是算出来的。
+    这是 Taichi 官方 FEM 例子的做法：显式时间步受 CFL 限制，这里只能取到
+    ~9 μs，而梁的一阶周期约 70 ms，纯显式根本跑不到准静态；换成隐式积分后
+    时间步可以取毫秒级，一次分解、每步只做回代，才可能实时。
     """
 
-    def __init__(self, length, height, E, sigma_ult, rho, support="simple", nx=36, ny=6, nu=0.3):
+    def __init__(self, length, height, E, sigma_ult, rho, support="simple", nx=36, ny=6,
+                 nu=0.3, dt=1.2e-3):
         self.L, self.h, self.nx, self.ny = length, height, nx, ny
-        self.sigma_ult = sigma_ult
+        self.sigma_ult, self.rho, self.dt = sigma_ult, rho, dt
         self.support = support
         xs = np.linspace(0.0, length, nx + 1)
         ys = np.linspace(-height / 2.0, height / 2.0, ny + 1)
-        nodes = np.array([(x, y) for y in ys for x in xs], dtype=np.float32)
+        self.nodes = np.array([(x, y) for y in ys for x in xs], dtype=np.float32)
         conn = []
         for j in range(ny):
             for i in range(nx):
                 n0 = j * (nx + 1) + i
                 conn.append([n0, n0 + 1, n0 + nx + 2, n0 + nx + 1])
-        conn = np.array(conn, dtype=np.int32)
-        self.nodes, self.conn = nodes, conn
-        n_nodes, n_elem = len(nodes), len(conn)
+        self.conn = np.array(conn, dtype=np.int32)
+        self.n_nodes, self.n_elem = len(self.nodes), len(self.conn)
+        self.ndof = 2 * self.n_nodes
 
         dx, dy = length / nx, height / ny
+        self.dx, self.dy = dx, dy
         D = E / (1 - nu * nu) * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
 
         def Bmat(xi, eta):
@@ -171,155 +175,134 @@ class DynamicBeam:
             return B
 
         g = 1.0 / math.sqrt(3.0)
-        KE = np.zeros((8, 8))
+        ke = np.zeros((8, 8))
         for xi in (-g, g):
             for eta in (-g, g):
                 B = Bmat(xi, eta)
-                KE += B.T @ D @ B * (dx * dy / 4.0) * B_WIDTH
-        S = np.stack([D @ Bmat(xi, eta) for xi, eta in
-                      ((-1, -1), (1, -1), (1, 1), (-1, 1))]).astype(np.float32)
-        mass = np.full(n_nodes, rho * MASS_SCALE * dx * dy * B_WIDTH / 4.0, dtype=np.float32)
+                ke += B.T @ D @ B * (dx * dy / 4.0) * B_WIDTH
+        self.ke = ke
+        self.corner_S = np.stack([D @ Bmat(xi, eta) for xi, eta in
+                                  ((-1, -1), (1, -1), (1, 1), (-1, 1))]).astype(np.float32)
+        self.elem_dof = np.empty((self.n_elem, 8), dtype=np.int32)
+        self.elem_dof[:, 0::2] = 2 * self.conn
+        self.elem_dof[:, 1::2] = 2 * self.conn + 1
 
-        is_fixed = np.zeros((n_nodes, 2), dtype=np.int32)
-        is_fixed[0] = (1, 1)
-        is_fixed[nx] = (1, 1) if support == "fixed" else (0, 1)
+        node_mass = rho * dx * dy * B_WIDTH / 4.0
+        self.mass = np.full(self.ndof, node_mass)
 
-        c = math.sqrt(E / (rho * MASS_SCALE))
-        self.dt = 0.30 * min(dx, dy) / c
-        self.damp = 0.995
+        fixed = [0, 1] + ([2 * nx, 2 * nx + 1] if support == "fixed" else [2 * nx + 1])
+        self.fixed = np.array(sorted(set(fixed)), dtype=np.int32)
 
+        self.broken = np.zeros(self.n_elem, dtype=bool)
+        self.u = np.zeros(self.ndof)
+        self.u_prev = np.zeros(self.ndof)
+        self.alpha = 18.0      # 质量阻尼
+        self.load_node = self.ny * (nx + 1) + nx // 2
+        self._build_matrices()
+        self._init_taichi()
+
+    # ---------- 稀疏矩阵 ----------
+    def _build_matrices(self):
+        rows, cols, vals = [], [], []
+        for e in range(self.n_elem):
+            if self.broken[e]:
+                continue
+            dofs = self.elem_dof[e]
+            for i in range(8):
+                for j in range(8):
+                    rows.append(dofs[i])
+                    cols.append(dofs[j])
+                    vals.append(self.ke[i, j])
+        K = sp.coo_matrix((vals, (rows, cols)), shape=(self.ndof, self.ndof)).tocsc()
+        self.K = K
+
+        dt = self.dt
+        M = sp.diags(self.mass, format="csc")
+        A = (M * (1.0 / dt ** 2) + M * (self.alpha / dt) + K).tolil()
+        for d in self.fixed:
+            A.rows[d] = [d]
+            A.data[d] = [1.0]
+        self.A = A.tocsc()
+        self._lu = spla.splu(self.A)
+
+    # ---------- Taichi：单元应力与失效 ----------
+    def _init_taichi(self):
         ti.reset()
         ti.init(arch=ti.cpu, default_fp=ti.f32)
-        self.pos = ti.Vector.field(2, ti.f32, n_nodes)
-        self.vel = ti.Vector.field(2, ti.f32, n_nodes)
-        self.force = ti.Vector.field(2, ti.f32, n_nodes)
-        self.rest = ti.Vector.field(2, ti.f32, n_nodes)
-        self.broken = ti.field(ti.i32, n_elem)
-        self.stress = ti.field(ti.f32, n_elem)
-        self.ke_f = ti.field(ti.f32, (8, 8))
-        self.s_f = ti.field(ti.f32, (4, 3, 8))
-        self.mass_f = ti.field(ti.f32, n_nodes)
-        self.conn_f = ti.field(ti.i32, (n_elem, 4))
-        self.fix_f = ti.field(ti.i32, (n_nodes, 2))
-
-        self.pos.from_numpy(nodes)
-        self.rest.from_numpy(nodes)
-        self.ke_f.from_numpy(KE.astype(np.float32))
-        self.s_f.from_numpy(S)
-        self.mass_f.from_numpy(mass)
-        self.conn_f.from_numpy(conn)
-        self.fix_f.from_numpy(is_fixed)
-        self.n_nodes, self.n_elem = n_nodes, n_elem
-        self.load_node = self.ny * (self.nx + 1) + self.nx // 2
-        self._compile()
-
-    def _compile(self):
-        pos, vel, force, broken, stress = self.pos, self.vel, self.force, self.broken, self.stress
-        rest = self.rest
-        ke_f, s_f, mass_f, conn_f, fix_f = self.ke_f, self.s_f, self.mass_f, self.conn_f, self.fix_f
-        n_nodes, n_elem, load_node = self.n_nodes, self.n_elem, self.load_node
-
-        ground = -0.30 - self.h  # 地面高度（米），碎块落到这里停住
-
-        rest_area = (self.L / self.nx) * (self.h / self.ny)
-        rest_dx = self.L / self.nx
-        rest_dy = self.h / self.ny
+        self.t_dis = ti.field(ti.f32, 2 * self.n_nodes)
+        self.t_stress = ti.field(ti.f32, self.n_elem)
+        self.t_broken = ti.field(ti.i32, self.n_elem)
+        self.t_s = ti.field(ti.f32, (4, 3, 8))
+        self.t_conn = ti.field(ti.i32, (self.n_elem, 4))
+        self.t_s.from_numpy(self.corner_S)
+        self.t_conn.from_numpy(self.conn)
+        dis, stress, broken, s_f, conn_f = (self.t_dis, self.t_stress, self.t_broken,
+                                            self.t_s, self.t_conn)
+        n_elem = self.n_elem
+        sigma = self.sigma_ult
 
         @ti.kernel
-        def step_kernel(load: ti.f32, sigma: ti.f32, dt: ti.f32, damp: ti.f32):
-            for i in range(n_nodes):
-                force[i] = ti.Vector([0.0, 0.0])
-            force[load_node] += ti.Vector([0.0, -load])
+        def kern():
             for e in range(n_elem):
+                if broken[e] != 0:
+                    continue
                 ue = ti.Vector([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 for k in ti.static(range(4)):
                     n = conn_f[e, k]
-                    ue[2 * k] = pos[n][0] - rest[n][0]
-                    ue[2 * k + 1] = pos[n][1] - rest[n][1]
-                if broken[e] == 0:
-                    fe = ti.Vector([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-                    for i in ti.static(range(8)):
-                        acc = 0.0
-                        for j in ti.static(range(8)):
-                            acc += ke_f[i, j] * ue[j]
-                        fe[i] = acc
-                    for k in ti.static(range(4)):
-                        ti.atomic_add(force[conn_f[e, k]][0], -fe[2 * k])
-                        ti.atomic_add(force[conn_f[e, k]][1], -fe[2 * k + 1])
-                    smax = -1e30
-                    smin_all = 1e30
-                    for c in ti.static(range(4)):
-                        sx = 0.0
-                        sy = 0.0
-                        sxy = 0.0
-                        for j in ti.static(range(8)):
-                            sx += s_f[c, 0, j] * ue[j]
-                            sy += s_f[c, 1, j] * ue[j]
-                            sxy += s_f[c, 2, j] * ue[j]
-                        rad = ti.sqrt(0.25 * (sx - sy) ** 2 + sxy * sxy)
-                        val = 0.5 * (sx + sy) + rad
-                        smin = 0.5 * (sx + sy) - rad
-                        smax = ti.max(smax, val)
-                        smin_all = ti.min(smin_all, smin)
-                    stress[e] = smax
-                    # 单元被拉到严重畸变也删掉：避免裂口拉出一条橡皮筋似的长条
-                    area = 0.0
-                    cx = 0.0
-                    cy = 0.0
-                    for k in ti.static(range(4)):
-                        n0 = conn_f[e, k]
-                        n1 = conn_f[e, (k + 1) % 4]
-                        area += pos[n0][0] * pos[n1][1] - pos[n1][0] * pos[n0][1]
-                        cx += pos[n0][0]
-                        cy += pos[n0][1]
-                    area *= 0.5
-                    # 边被拉到原长 4 倍以上也删（否则裂口会拉出一条细长的“橡皮筋”）
-                    e0 = (pos[conn_f[e, 1]] - pos[conn_f[e, 0]]).norm()
-                    e1 = (pos[conn_f[e, 2]] - pos[conn_f[e, 1]]).norm()
-                    stretched = e0 > 4.0 * rest_dx or e1 > 4.0 * rest_dy
-                    # 拉断、压碎、面积塌缩/膨胀、或严重拉长都让单元失效
-                    if (smax > sigma or smin_all < -1.6 * sigma
-                            or area < 0.35 * rest_area or area > 3.5 * rest_area or stretched):
-                        broken[e] = 1
-            for i in range(n_nodes):
-                if fix_f[i, 0] == 0:
-                    vel[i][0] += force[i][0] / mass_f[i] * dt
-                    vel[i][0] *= damp
-                    pos[i][0] += vel[i][0] * dt
-                if fix_f[i, 1] == 0:
-                    vel[i][1] += force[i][1] / mass_f[i] * dt
-                    vel[i][1] *= damp
-                    pos[i][1] += vel[i][1] * dt
-                    if pos[i][1] < ground:
-                        pos[i][1] = ground
-                        vel[i][1] = 0.0
-        self._step_kernel = step_kernel
+                    ue[2 * k] = dis[2 * n]
+                    ue[2 * k + 1] = dis[2 * n + 1]
+                smax = -1e30
+                smin = 1e30
+                for c in ti.static(range(4)):
+                    sx = 0.0
+                    sy = 0.0
+                    sxy = 0.0
+                    for j in ti.static(range(8)):
+                        sx += s_f[c, 0, j] * ue[j]
+                        sy += s_f[c, 1, j] * ue[j]
+                        sxy += s_f[c, 2, j] * ue[j]
+                    rad = ti.sqrt(0.25 * (sx - sy) ** 2 + sxy * sxy)
+                    smax = ti.max(smax, 0.5 * (sx + sy) + rad)
+                    smin = ti.min(smin, 0.5 * (sx + sy) - rad)
+                stress[e] = smax
+                if smax > sigma or smin < -1.6 * sigma:
+                    broken[e] = 1
+        self._kern = kern
 
-    def step(self, load, substeps=6):
-        for k in range(substeps):
-            damp = self.damp if k == 0 else 1.0
-            self._step_kernel(load, self.sigma_ult, self.dt, damp)
+    # ---------- 推进 ----------
+    def step(self, load, substeps=3):
+        dt = self.dt
+        M = self.mass
+        alpha = self.alpha
+        new_break = False
+        for _ in range(substeps):
+            rhs = M * (2.0 * self.u - self.u_prev) / dt ** 2
+            rhs = rhs + M * (alpha / dt) * self.u
+            rhs[2 * self.load_node + 1] -= load
+            rhs[self.fixed] = 0.0
+            u_new = self._lu.solve(rhs)
+            self.u_prev, self.u = self.u, u_new
+            self.t_dis.from_numpy(self.u.astype(np.float32))
+            self._kern()
+            if int((self.t_broken.to_numpy() > 0).sum()) > int(self.broken.sum()):
+                self.broken = self.t_broken.to_numpy() > 0
+                self._build_matrices()
+                new_break = True
+                break
+        return new_break
 
-    def set_state(self, disp, broken_idx=None):
-        """把静态解作为初始状态装进来，并可以预先弄断指定单元。"""
-        self.pos.from_numpy((self.nodes + disp.reshape(-1, 2)).astype(np.float32))
-        self.vel.from_numpy(np.zeros((self.n_nodes, 2), dtype=np.float32))
-        if broken_idx is not None:
-            m = np.zeros(self.n_elem, dtype=np.int32)
-            m[broken_idx] = 1
-            self.broken.from_numpy(m)
-
+    # ---------- 读回 ----------
     def positions(self):
-        return self.pos.to_numpy()
+        return (self.nodes + self.u.reshape(-1, 2)).astype(np.float32)
 
     def stresses(self):
-        return self.stress.to_numpy()
+        return self.t_stress.to_numpy()
 
     def broken_mask(self):
-        return self.broken.to_numpy() > 0
+        return self.broken.copy()
 
     def broken_count(self):
-        return int((self.broken.to_numpy() > 0).sum())
+        return int(self.broken.sum())
 
 
 # ==================== 画布 ====================
@@ -329,32 +312,45 @@ class BeamCanvas(QWidget):
         self.app = app
         self.setMinimumSize(560, 320)
 
+    def _top_surface_y(self, sim, x_pos, mx, sx, base_y):
+        """梁顶面在给定 x 处的像素 y（跟着变形走）。"""
+        top0 = sim.ny * (sim.nx + 1)
+        pos = self.app.pos
+        i = int(np.clip(round(x_pos / sim.L * sim.nx), 0, sim.nx))
+        x0, y0 = float(pos[top0 + i, 0]), float(pos[top0 + i, 1])
+        if i < sim.nx:
+            x1, y1 = float(pos[top0 + i + 1, 0]), float(pos[top0 + i + 1, 1])
+            if abs(x1 - x0) > 1e-9:
+                frac = float(np.clip((x_pos - x0) / (x1 - x0), 0.0, 1.0))
+                y0 = y0 + (y1 - y0) * frac
+        return base_y - y0 * sx
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(248, 248, 246))
         app = self.app
-        dyn = app.dyn
-        if dyn is None or app.pos is None:
+        sim = app.sim
+        if sim is None or app.pos is None:
             p.end()
             return
 
         w, hh = self.width(), self.height()
         margin_x = 90
-        span = max(1e-6, dyn.L)
+        span = max(1e-6, sim.L)
         scale_x = (w - 2 * margin_x) / span
-        base_y = hh * 0.50
+        base_y = hh * 0.46
 
         pos = app.pos
         px = margin_x + pos[:, 0] * scale_x
         py = base_y - pos[:, 1] * scale_x
         stress = app.elem_stress
         broken = app.broken_mask
-        limit = dyn.sigma_ult
+        limit = sim.sigma_ult
 
-        for node in (0, dyn.nx):
-            sx = margin_x + dyn.nodes[node, 0] * scale_x
-            sy = base_y - dyn.nodes[node, 1] * scale_x + 6
+        for node in (0, sim.nx):
+            sx = margin_x + sim.nodes[node, 0] * scale_x
+            sy = base_y - sim.nodes[node, 1] * scale_x + 6
             p.setBrush(QColor(90, 90, 96))
             p.setPen(Qt.NoPen)
             p.drawPolygon(QPolygonF([QPointF(sx, sy), QPointF(sx - 15, sy + 22),
@@ -362,44 +358,43 @@ class BeamCanvas(QWidget):
             p.setPen(QPen(QColor(150, 150, 155), 2))
             p.drawLine(QPointF(sx - 22, sy + 22), QPointF(sx + 22, sy + 22))
 
-        ground_y = base_y + (0.30 + dyn.h) * scale_x
-        p.setPen(QPen(QColor(200, 196, 188), 2))
-        p.drawLine(QPointF(margin_x - 40, ground_y), QPointF(margin_x + span * scale_x + 40, ground_y))
-
-        for e, conn in enumerate(dyn.conn):
+        for e, conn in enumerate(sim.conn):
             if broken[e]:
-                continue        # 失效单元不再参与绘制，裂口是真的缺口
+                continue
+            t = float(np.clip(abs(stress[e]) / limit, 0.0, 1.0))
+            if stress[e] >= 0:
+                col = QColor(int(150 + 100 * t), int(175 - 120 * t), int(210 - 170 * t))
             else:
-                t = float(np.clip(abs(stress[e]) / limit, 0.0, 1.0))
-                if stress[e] >= 0:
-                    col = QColor(int(150 + 100 * t), int(175 - 120 * t), int(210 - 170 * t))
-                else:
-                    col = QColor(int(120 - 25 * t), int(155 + 35 * t), int(215))
-                p.setBrush(col)
-                p.setPen(QPen(QColor(110, 110, 120, 80), 0.5))
+                col = QColor(int(120 - 25 * t), int(155 + 35 * t), int(215))
+            p.setBrush(col)
+            p.setPen(QPen(QColor(110, 110, 120, 70), 0.5))
             p.drawPolygon(QPolygonF([QPointF(px[i], py[i]) for i in conn]))
 
         if app.load > 0:
-            nid = dyn.load_node
-            sx = float(px[nid])
-            top = float(py[nid]) - 86
+            x_pos = app.load_pos if app.load_pos is not None else span / 2.0
+            sx = margin_x + x_pos * scale_x
+            surf_y = self._top_surface_y(sim, x_pos, margin_x, scale_x, base_y)
             frac = min(1.0, app.load / max(1.0, app.capacity_ref or app.load * 1.2))
-            bw, bh = 36 + 44 * frac, 20 + 22 * frac
-            p.setBrush(QColor(70, 78, 92))
-            p.setPen(Qt.NoPen)
+            bw, bh = 40 + 46 * frac, 24 + 26 * frac
+            top = surf_y - bh - 1
+            p.setBrush(QColor(66, 74, 90))
+            p.setPen(QPen(QColor(40, 46, 58), 1))
             p.drawRoundedRect(QRectF(sx - bw / 2, top, bw, bh), 4, 4)
             p.setPen(QColor(255, 255, 255))
             f = p.font()
             f.setPointSize(8)
             p.setFont(f)
             p.drawText(QRectF(sx - bw / 2, top, bw, bh), Qt.AlignCenter, f"{app.load / G:.0f}kg")
+            p.setPen(QPen(QColor(160, 60, 50), 2))
+            p.drawLine(QPointF(sx, top + bh), QPointF(sx, surf_y - 1))
 
         f = p.font()
         f.setPointSize(8)
         p.setFont(f)
         p.setPen(QColor(90, 90, 96))
-        p.drawText(QRectF(16, hh - 26, 620, 18), Qt.AlignLeft | Qt.AlignVCenter,
-                   f"Taichi 显式动力学 · 失效单元 {int(broken.sum())}/{len(broken)} · 主应力上色（红＝受拉）")
+        p.drawText(QRectF(16, hh - 26, 660, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                   f"隐式动力学实时求解（Δt = {sim.dt * 1000:.1f} ms）· "
+                   f"失效单元 {int(broken.sum())}/{len(broken)} · 红＝受拉")
         p.end()
 
 
@@ -518,20 +513,19 @@ class BeamApp(QMainWindow):
         self.beam_length = 1.6
         self.beam_height = 0.12
         self.load = 0.0
-        self.broken = False
+        self.load_pos = None
         self.running = False
+        self.broken = False
         self.runs = []
         self.sweep_mode = None
-        self.dyn = None
+        self.sim = None
         self.pos = None
         self.broken_mask = None
         self.elem_stress = np.zeros(1)
         self._pending_rebuild = False
-        self.mode = "quasi"
-        self.substeps = 12
-        self.collapse_frames = 0
+        self.substeps = 3
 
-        self._rebuild_dyn()
+        self._rebuild_sim()
         self.init_ui()
 
         self.timer = QTimer()
@@ -543,25 +537,23 @@ class BeamApp(QMainWindow):
         self.rebuild_timer.timeout.connect(self.apply_pending)
 
     # ---------- 模型 ----------
-    def _rebuild_dyn(self):
+    def _rebuild_sim(self):
         E, sig, nu, rho = MATERIALS[self.material]
-        self.dyn = DynamicBeam(self.beam_length, self.beam_height, E, sig, rho,
-                               support=self.support, nu=nu)
+        self.sim = ImplicitBeam(self.beam_length, self.beam_height, E, sig, rho,
+                                support=self.support, nu=nu)
         self.static = StaticBeam(self.beam_length, self.beam_height, E, sig,
                                  support=self.support, nu=nu)
         self.capacity_ref = self.static.capacity()
         self.load = 0.0
         self.broken = False
-        self.mode = "quasi"
-        self.pos = self.dyn.positions()
-        self.broken_mask = self.dyn.broken_mask()
-        self.elem_stress = self.dyn.stresses()
+        self.pos = self.sim.positions()
+        self.broken_mask = self.sim.broken_mask()
+        self.elem_stress = self.sim.stresses()
         if hasattr(self, "lbl_cap"):
             self.lbl_cap.setText(f"理论极限 {self.capacity_ref / 1000:.1f} kN")
 
     def reset_beam(self):
-        self._rebuild_dyn()
-        self.mode = "quasi"
+        self._rebuild_sim()
         self.running = False
         self.run_btn.setText("开始加载")
         self.canvas.update()
@@ -569,52 +561,25 @@ class BeamApp(QMainWindow):
         self.lbl_status.setText("已复位")
 
     def tick(self):
-        if self.dyn is None:
+        if not self.running or self.sim is None:
             return
-        if self.mode == "quasi":
-            if not self.running:
-                return
-            # 准静态：直接解平衡方程，形变与应力都是精确的
-            frac = self.load / max(1.0, self.capacity_ref)
-            step = max(8.0, self.capacity_ref * 0.010) * (1.0 if frac < 0.75 else 0.4)
-            self.load += step
-            u, sig = self.static.solve(self.load)
-            self.pos = (self.static.nodes + u.reshape(-1, 2)).astype(np.float32)
-            self.elem_stress = sig
-            self.broken_mask = np.zeros(len(sig), dtype=bool)
-            if sig.max() >= self.static.sigma_ult:
-                self.start_collapse(sig)
-        else:
-            # 动力学塌落：单元失效后刚度消失，裂纹自己扩展
-            self.dyn.step(self.load, substeps=self.substeps)
-            self.pos = self.dyn.positions()
-            self.elem_stress = self.dyn.stresses()
-            self.broken_mask = self.dyn.broken_mask()
-            self.collapse_frames -= 1
-            if self.collapse_frames <= 0:
-                self.mode = "done"
-                self.lbl_status.setText(
-                    f"塌落结束：{int(self.broken_mask.sum())}/{len(self.broken_mask)} 个单元失效，"
-                    f"载荷 {self.load / 1000:.2f} kN（{self.load / G:.0f} kg）")
+        frac = self.load / max(1.0, self.capacity_ref)
+        step = max(6.0, self.capacity_ref * 0.008) * (1.0 if frac < 0.8 else 0.35)
+        self.load += step
+        new_break = self.sim.step(self.load, substeps=self.substeps)
+        self.pos = self.sim.positions()
+        self.elem_stress = self.sim.stresses()
+        self.broken_mask = self.sim.broken_mask()
+        if new_break and not self.broken:
+            self.broken = True
+            self.runs.append({"L": self.beam_length, "h": self.beam_height, "P": self.load,
+                              "x": self.beam_height * 100 if self.sweep_mode == "height"
+                              else self.beam_length})
+            self.chart.update()
+            self.lbl_status.setText(
+                f"开始断裂！载荷 {self.load / 1000:.2f} kN（{self.load / G:.0f} kg）")
         self.canvas.update()
         self.update_stats()
-
-    def start_collapse(self, sig):
-        """应力首次超过强度：把最大应力单元弄断，切到显式动力学算塌落。"""
-        k = int(np.argmax(sig))
-        u, _ = self.static.solve(self.load)
-        self.dyn.set_state(u, broken_idx=[k])
-        self.mode = "dynamic"
-        self.collapse_frames = 90
-        self.running = False
-        self.run_btn.setText("开始加载")
-        self.runs.append({"L": self.beam_length, "h": self.beam_height, "P": self.load,
-                          "x": self.beam_height * 100 if self.sweep_mode == "height"
-                          else self.beam_length})
-        self.chart.update()
-        self.broken = True
-        self.lbl_status.setText(
-            f"跨中单元被拉断！载荷 {self.load / 1000:.2f} kN（{self.load / G:.0f} kg），进入塌落模拟")
 
     # ---------- UI ----------
     def init_ui(self):
@@ -743,16 +708,16 @@ class BeamApp(QMainWindow):
         self.support = "simple" if self.sup_combo.currentIndex() == 0 else "fixed"
         self.beam_length = self.len_slider.value() / 100.0
         self.beam_height = self.hgt_slider.value() / 100.0
-        self._rebuild_dyn()
+        self._rebuild_sim()
         self.running = False
         self.run_btn.setText("开始加载")
         self.canvas.update()
         self.update_stats()
 
     def toggle_run(self):
-        if self.dyn is None:
+        if self.sim is None:
             return
-        if self.broken or self.mode == "done":
+        if self.broken:
             self.reset_beam()
             return
         self.running = not self.running
@@ -785,12 +750,12 @@ class BeamApp(QMainWindow):
 
     def update_stats(self):
         self.lbl_load.setText(f"载荷 {self.load / G:.0f} kg")
-        if self.dyn is not None and self.pos is not None:
-            defl = float(np.abs(self.pos[:, 1] - self.dyn.nodes[:, 1]).max())
+        if self.sim is not None and self.pos is not None:
+            defl = float(np.abs(self.pos[:, 1] - self.sim.nodes[:, 1]).max())
             self.lbl_defl.setText(f"挠度 {defl * 1000:.2f} mm")
             smax = float(np.abs(self.elem_stress).max())
             self.lbl_stress.setText(
-                f"主应力 {smax / 1e6:.1f} MPa（{smax / self.dyn.sigma_ult * 100:.0f}%）")
+                f"主应力 {smax / 1e6:.1f} MPa（{smax / self.sim.sigma_ult * 100:.0f}%）")
 
     def closeEvent(self, event):
         self.timer.stop()
