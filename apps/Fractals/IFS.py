@@ -69,7 +69,8 @@ def generate_ifs_points(transforms, probabilities, iterations, cancel_flag):
 
 
 class FractalWorker(QThread):
-    finished = Signal(np.ndarray)
+    # 注意：不能叫 finished，否则会覆盖 QThread 自带的 finished 信号
+    resultReady = Signal(np.ndarray, float)   # 点集, 耗时(秒)
 
     def __init__(self, transforms, probabilities, iterations):
         super().__init__()
@@ -84,9 +85,17 @@ class FractalWorker(QThread):
     def run(self):
         transforms_np = np.array(self.transforms, dtype=np.float64)
         probs_np = np.array(self.probabilities, dtype=np.float64)
+        total = float(probs_np.sum())
+        if total > 0:
+            probs_np = probs_np / total          # 概率不要求和为 1 也能用
+        else:
+            probs_np = np.full(len(probs_np), 1.0 / len(probs_np))
+
+        t0 = time.perf_counter()
         points = generate_ifs_points(transforms_np, probs_np, self.iterations, self._cancel)
+        elapsed = time.perf_counter() - t0
         if not self._cancel[0]:
-            self.finished.emit(points)
+            self.resultReady.emit(points, elapsed)
 
 
 class FractalWidget(QWidget):
@@ -157,7 +166,8 @@ class FractalWidget(QWidget):
         img[py, px, 1] = g
         img[py, px, 2] = b
 
-        return QImage(img.data, w, h, w * 3, QImage.Format_RGB888)
+        # 必须 copy：QImage 不接管 numpy 缓冲，函数返回后 img 会被释放
+        return QImage(img.data, w, h, w * 3, QImage.Format_RGB888).copy()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -195,7 +205,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IFS 分形生成器")
-        self.setGeometry(100, 100, 900, 600)
+        self.setGeometry(100, 100, 1000, 660)
         self.worker = None
 
         self.color_start = QColor(218, 247, 166)
@@ -206,30 +216,38 @@ class MainWindow(QMainWindow):
         self.generate_fractal()
 
     def init_ui(self):
-        splitter = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(splitter)
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(8)
 
         panel = QWidget()
-        panel.setMaximumWidth(280)
+        panel.setFixedWidth(310)
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setSpacing(10)
-        panel_layout.setContentsMargins(5, 5, 5, 5)
+        panel_layout.setSpacing(6)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
 
         self.create_fractal_selection(panel_layout)
         self.create_parameters_section(panel_layout)
         self.create_transform_section(panel_layout)
         self.create_buttons_section(panel_layout)
+        self.create_stats_section(panel_layout)
         panel_layout.addStretch()
 
         self.fractal_widget = FractalWidget()
-        splitter.addWidget(panel)
-        splitter.addWidget(self.fractal_widget)
-        splitter.setSizes([280, 620])
+        main_layout.addWidget(panel)
+        main_layout.addWidget(self.fractal_widget, 1)
+
+        bar = self.statusBar()
+        bar.setSizeGripEnabled(False)
+        self.lbl_status = QLabel("就绪")
+        bar.addWidget(self.lbl_status)
 
     def create_fractal_selection(self, layout):
         group = QGroupBox("分形选择")
         vbox = QVBoxLayout(group)
-        vbox.addWidget(QLabel("选择预设分形:"))
+        vbox.setSpacing(4)
         self.fractal_combo = QComboBox()
         self.fractal_combo.addItems(IFS_FRACTALS.keys())
         self.fractal_combo.currentTextChanged.connect(self.on_fractal_change)
@@ -237,43 +255,46 @@ class MainWindow(QMainWindow):
         layout.addWidget(group)
 
     def create_parameters_section(self, layout):
-        group = QGroupBox("参数设置")
-        vbox = QVBoxLayout(group)
-        vbox.setSpacing(6)
+        group = QGroupBox("参数")
+        form = QFormLayout()
+        form.setSpacing(3)
 
-        iter_row = QHBoxLayout()
-        iter_row.addWidget(QLabel("迭代次数:"))
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1000, 1000000)
         self.iterations_spin.setValue(50000)
         self.iterations_spin.setSingleStep(10000)
-        iter_row.addWidget(self.iterations_spin)
-        vbox.addLayout(iter_row)
+        self.iterations_spin.setGroupSeparatorShown(True)
+        form.addRow("迭代次数:", self.iterations_spin)
 
-        vbox.addWidget(QLabel("颜色渐变:"))
-        colors_row = QHBoxLayout()
-        colors_row.addWidget(QLabel("起始:"))
+        color_row = QWidget()
+        h = QHBoxLayout(color_row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
         self.start_color_btn = ColorButton(self.color_start)
         self.start_color_btn.colorChanged.connect(self.on_start_color_changed)
-        colors_row.addWidget(self.start_color_btn)
-        colors_row.addSpacing(10)
-        colors_row.addWidget(QLabel("结束:"))
         self.end_color_btn = ColorButton(self.color_end)
         self.end_color_btn.colorChanged.connect(self.on_end_color_changed)
-        colors_row.addWidget(self.end_color_btn)
-        colors_row.addStretch()
-        vbox.addLayout(colors_row)
+        h.addWidget(self.start_color_btn)
+        h.addWidget(QLabel("→"))
+        h.addWidget(self.end_color_btn)
+        h.addStretch()
+        form.addRow("颜色:", color_row)
 
+        group.setLayout(form)
         layout.addWidget(group)
 
     def create_transform_section(self, layout):
         group = QGroupBox("变换参数")
         vbox = QVBoxLayout(group)
-        vbox.addWidget(QLabel("IFS变换参数 (每行一个变换，格式: a,b,c,d,e,f,概率):"))
+        vbox.setSpacing(4)
+        hint = QLabel("每行 a,b,c,d,e,f,概率；概率可以不用凑成 1")
+        hint.setStyleSheet("color:#888;")
+        hint.setWordWrap(True)
+        vbox.addWidget(hint)
         self.transform_edit = QTextEdit()
-        self.transform_edit.setMaximumHeight(120)
-        vbox.addWidget(self.transform_edit)
-        layout.addWidget(group)
+        self.transform_edit.setPlaceholderText("0.850,0.040,-0.040,0.850,0.000,1.600,0.850")
+        vbox.addWidget(self.transform_edit, 1)
+        layout.addWidget(group, 1)
 
     def create_buttons_section(self, layout):
         group = QGroupBox("操作")
@@ -281,10 +302,26 @@ class MainWindow(QMainWindow):
         hbox.setSpacing(6)
         self.generate_btn = QPushButton("生成")
         self.generate_btn.clicked.connect(self.generate_fractal)
+        self.reset_btn = QPushButton("恢复预设")
+        self.reset_btn.clicked.connect(
+            lambda: self.on_fractal_change(self.fractal_combo.currentText()))
         self.save_btn = QPushButton("保存")
         self.save_btn.clicked.connect(self.save_fractal)
-        hbox.addWidget(self.generate_btn)
-        hbox.addWidget(self.save_btn)
+        for b in (self.generate_btn, self.reset_btn, self.save_btn):
+            hbox.addWidget(b)
+        layout.addWidget(group)
+
+    def create_stats_section(self, layout):
+        group = QGroupBox("统计")
+        form = QFormLayout()
+        form.setSpacing(3)
+        self.lbl_points = QLabel("–")
+        self.lbl_transforms = QLabel("–")
+        self.lbl_time = QLabel("–")
+        form.addRow("点数:", self.lbl_points)
+        form.addRow("变换数:", self.lbl_transforms)
+        form.addRow("生成耗时:", self.lbl_time)
+        group.setLayout(form)
         layout.addWidget(group)
 
     def on_fractal_change(self, name):
@@ -309,34 +346,51 @@ class MainWindow(QMainWindow):
 
     def generate_fractal(self):
         if self.worker and self.worker.isRunning():
+            self.lbl_status.setText("上一次生成还没结束")
             return
         text = self.transform_edit.toPlainText().strip()
         transforms = []
         probabilities = []
+        bad = 0
         for line in text.split('\n'):
             line = line.strip()
             if not line:
                 continue
             parts = line.split(',')
             if len(parts) != 7:
+                bad += 1
                 continue
             try:
                 a, b, c, d, e, f, prob = map(float, parts)
                 transforms.append((a, b, c, d, e, f))
                 probabilities.append(prob)
             except ValueError:
+                bad += 1
                 continue
         if not transforms:
+            QMessageBox.warning(self, "参数错误",
+                                "没有解析到有效的变换。\n每行需要 7 个数字：a,b,c,d,e,f,概率")
             return
-        self.worker = FractalWorker(transforms, probabilities, self.iterations_spin.value())
-        self.worker.finished.connect(self.on_fractal_generated)
+
+        msg = f"生成中…（{len(transforms)} 个变换，{self.iterations_spin.value():,} 点"
+        if bad:
+            msg += f"，忽略 {bad} 行无效输入"
+        self.lbl_status.setText(msg + "）")
         self.generate_btn.setEnabled(False)
+
+        self.worker = FractalWorker(transforms, probabilities, self.iterations_spin.value())
+        self.worker.resultReady.connect(self.on_fractal_generated)
+        self._transforms = len(transforms)
         self.worker.start()
 
-    def on_fractal_generated(self, points):
+    def on_fractal_generated(self, points, elapsed):
         self.fractal_widget.set_points(points)
         self.fractal_widget.set_colors(self.color_start, self.color_end)
         self.generate_btn.setEnabled(True)
+        self.lbl_points.setText(f"{len(points):,}")
+        self.lbl_transforms.setText(str(self._transforms))
+        self.lbl_time.setText(f"{elapsed * 1000:.0f} ms")
+        self.lbl_status.setText(f"完成：{len(points):,} 点，{elapsed * 1000:.0f} ms")
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():

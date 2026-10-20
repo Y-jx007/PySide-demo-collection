@@ -1,8 +1,11 @@
 from custom_import import *
+from PySide6.QtCore import QLineF
 
 # ========== L-system 核心 ==========
 class LSystem:
     """优化后的 L-system，字符串生成使用列表拼接，O(n) 复杂度"""
+    MAX_CHARS = 1_200_000      # 超过就截断，避免指数爆炸把进程拖死
+
     def __init__(self):
         self.axiom = ""
         self.rules = {}
@@ -16,17 +19,28 @@ class LSystem:
     def add_rule(self, predecessor, successor):
         self.rules[predecessor] = successor
 
-    def generate(self, generations=None):
+    def generate(self, generations=None, max_chars=None):
+        """返回 (字符串, 是否被截断)。"""
         if generations is None:
             generations = self.generations
+        cap = max_chars or self.MAX_CHARS
         result = self.axiom
+        truncated = False
+        rules = self.rules
         for _ in range(generations):
             parts = []
-            rules = self.rules  # 本地引用加速
+            total = 0
             for char in result:
-                parts.append(rules.get(char, char))
+                s = rules.get(char, char)
+                parts.append(s)
+                total += len(s)
+                if total > cap:
+                    truncated = True
+                    break
             result = ''.join(parts)
-        return result
+            if truncated:
+                break
+        return result, truncated
 
     def set_parameters(self, angle, distance, generations):
         self.angle = angle
@@ -36,7 +50,8 @@ class LSystem:
 # ========== 后台生成线程 ==========
 class LSystemGenerator(QThread):
     """在后台计算 L-system 路径，避免阻塞 GUI"""
-    pathReady = Signal(list, float, float, float, float)  # path, min_x, min_y, max_x, max_y
+    pathReady = Signal(object)   # dict: path/bbox/chars/truncated/elapsed
+
 
     def __init__(self, lsystem, start_x, start_y, parent=None):
         super().__init__(parent)
@@ -49,7 +64,8 @@ class LSystemGenerator(QThread):
         self._cancelled = True
 
     def run(self):
-        string = self.lsystem.generate()
+        t0 = time.perf_counter()
+        string, truncated = self.lsystem.generate()
         if self._cancelled:
             return
         path = []
@@ -96,11 +112,19 @@ class LSystemGenerator(QThread):
             elif char == ']':
                 if stack:
                     x, y, angle = stack.pop()
-        self.pathReady.emit(path, min_x, min_y, max_x, max_y)
+        self.pathReady.emit({
+            "path": path,
+            "bbox": (min_x, min_y, max_x, max_y),
+            "chars": len(string),
+            "truncated": truncated,
+            "elapsed": time.perf_counter() - t0,
+        })
 
 # ========== L-system 绘图部件 ==========
 class LSystemWidget(QWidget):
     """优化后的绘图部件：缓存路径、包围盒、缩放因子；支持后台生成"""
+    statsReady = Signal(int, int, bool, float)   # 线段数, 字符串长度, 是否截断, 耗时(秒)
+
     def __init__(self):
         super().__init__()
         self.lsystem = None
@@ -140,13 +164,16 @@ class LSystemWidget(QWidget):
         self._generator.pathReady.connect(self._on_path_ready)
         self._generator.start()
 
-    def _on_path_ready(self, path, min_x, min_y, max_x, max_y):
+    def _on_path_ready(self, result):
         """后台计算完成，更新路径并重绘"""
+        path = result["path"]
+        min_x, min_y, max_x, max_y = result["bbox"]
         self.path = path
-        # 转换为 QRectF 方便计算
         self.bounding_rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
         self._update_transform()
         self.update()
+        self.statsReady.emit(len(path), int(result["chars"]),
+                             bool(result["truncated"]), float(result["elapsed"]))
 
     def _update_transform(self):
         """根据当前包围盒和窗口大小计算缩放和平移"""
@@ -177,34 +204,44 @@ class LSystemWidget(QWidget):
         self._draw_path(painter)
 
     def _draw_path(self, painter):
-        """公共绘制方法，供 paintEvent 和 save_image 复用"""
+        """公共绘制方法，供 paintEvent 和 save_image 复用
+
+        颜色按进度分成若干档，同档线段一次性 drawLines —— 几十万条线段也不会卡。
+        """
         if not self.path:
             return
         scale = self.scale
         off_x = self.offset_x
         off_y = self.offset_y
         path_len = len(self.path)
-        # 颜色渐变计算
         sr, sg, sb = self.start_color.red(), self.start_color.green(), self.start_color.blue()
         er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
-        dr, dg, db = er - sr, eg - sg, eb - sb
 
         pen = QPen()
-        pen_width = max(1, int(2 * scale))
-        pen.setWidth(pen_width)
+        pen.setWidth(max(1, min(3, int(round(2 * scale)))))
+        buckets = 48
+        batch = []
+        current = -1
 
         for i, ((x1, y1), (x2, y2)) in enumerate(self.path):
-            # 根据进度计算颜色
-            t = i / (path_len - 1) if path_len > 1 else 0
-            r = int(sr + dr * t)
-            g = int(sg + dg * t)
-            b = int(sb + db * t)
-            pen.setColor(QColor(r, g, b))
+            t = i / (path_len - 1) if path_len > 1 else 0.0
+            b = int(t * (buckets - 1))
+            if b != current:
+                if batch:
+                    painter.setPen(pen)
+                    painter.drawLines(batch)
+                    batch = []
+                k = b / (buckets - 1)
+                pen.setColor(QColor(int(sr + (er - sr) * k),
+                                    int(sg + (eg - sg) * k),
+                                    int(sb + (eb - sb) * k)))
+                current = b
+            batch.append(QLineF(x1 * scale + off_x, y1 * scale + off_y,
+                                x2 * scale + off_x, y2 * scale + off_y))
+
+        if batch:
             painter.setPen(pen)
-            painter.drawLine(
-                int(x1 * scale + off_x), int(y1 * scale + off_y),
-                int(x2 * scale + off_x), int(y2 * scale + off_y)
-            )
+            painter.drawLines(batch)
 
     def save_image(self, filename):
         """将当前图形保存为图片文件"""
@@ -228,125 +265,115 @@ class LSystemWidget(QWidget):
 class LSystemWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("L-system 分形生成器 (优化版)")
-        self.setGeometry(100, 100, 900, 600)
+        self.setWindowTitle("L-system 分形生成器")
+        self.setGeometry(100, 100, 1000, 680)
 
         self.canvas = LSystemWidget()
+        self.canvas.statsReady.connect(self.on_stats)
         self.init_ui()
         self.setup_default_systems()
 
     def init_ui(self):
-        central = QSplitter(Qt.Horizontal)
+        central = QWidget()
         self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(8)
 
-        # 左侧控制面板
         panel = QWidget()
-        panel.setMaximumWidth(280)
+        panel.setFixedWidth(310)
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setSpacing(10)
-        panel_layout.setContentsMargins(5, 5, 5, 5)
+        panel_layout.setSpacing(6)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
 
         self.create_system_selection(panel_layout)
-        self.create_parameters_and_colors_section(panel_layout)
+        self.create_parameters_section(panel_layout)
+        self.create_colors_section(panel_layout)
         self.create_rules_section(panel_layout)
         self.create_buttons_section(panel_layout)
+        self.create_stats_section(panel_layout)
         panel_layout.addStretch()
 
-        central.addWidget(panel)
-        central.addWidget(self.canvas)
-        central.setSizes([280, 620])
+        main_layout.addWidget(panel)
+        main_layout.addWidget(self.canvas, 1)
+
+        bar = self.statusBar()
+        bar.setSizeGripEnabled(False)
+        self.lbl_status = QLabel("就绪")
+        bar.addWidget(self.lbl_status)
 
     def create_system_selection(self, layout):
         group = QGroupBox("预设系统")
         vbox = QVBoxLayout(group)
+        vbox.setSpacing(4)
         self.system_combo = QComboBox()
         self.system_combo.currentTextChanged.connect(self.on_system_changed)
         vbox.addWidget(self.system_combo)
         layout.addWidget(group)
 
-    def create_parameters_and_colors_section(self, layout):
-        container = QWidget()
-        hbox = QHBoxLayout(container)
-        hbox.setContentsMargins(0, 0, 0, 0)
+    def create_parameters_section(self, layout):
+        group = QGroupBox("参数")
+        form = QFormLayout()
+        form.setSpacing(3)
 
-        # 参数组
-        params_group = QGroupBox("参数设置")
-        params_layout = QVBoxLayout(params_group)
-        params_layout.setSpacing(6)
-
-        iter_row = QHBoxLayout()
-        iter_row.addWidget(QLabel("迭代:"))
         self.iterations_spin = QSpinBox()
-        self.iterations_spin.setRange(1, 20)
+        self.iterations_spin.setRange(1, 12)
         self.iterations_spin.setValue(4)
-        iter_row.addWidget(self.iterations_spin)
-        params_layout.addLayout(iter_row)
+        form.addRow("迭代次数:", self.iterations_spin)
 
-        ang_row = QHBoxLayout()
-        ang_row.addWidget(QLabel("角度:"))
         self.angle_spin = QDoubleSpinBox()
         self.angle_spin.setRange(1, 180)
         self.angle_spin.setValue(25)
         self.angle_spin.setSuffix("°")
-        ang_row.addWidget(self.angle_spin)
-        params_layout.addLayout(ang_row)
+        self.angle_spin.setDecimals(1)
+        form.addRow("转角:", self.angle_spin)
 
-        dist_row = QHBoxLayout()
-        dist_row.addWidget(QLabel("步长:"))
         self.distance_spin = QDoubleSpinBox()
         self.distance_spin.setRange(1, 50)
         self.distance_spin.setValue(10)
-        dist_row.addWidget(self.distance_spin)
-        params_layout.addLayout(dist_row)
+        form.addRow("步长:", self.distance_spin)
 
-        hbox.addWidget(params_group)
+        group.setLayout(form)
+        layout.addWidget(group)
 
-        # 颜色组
-        colors_group = QGroupBox("颜色设置")
-        colors_layout = QVBoxLayout(colors_group)
-        colors_layout.setSpacing(6)
-
-        start_row = QHBoxLayout()
-        start_row.addWidget(QLabel("起始:"))
+    def create_colors_section(self, layout):
+        group = QGroupBox("颜色")
+        hbox = QHBoxLayout(group)
+        hbox.setSpacing(6)
+        hbox.addWidget(QLabel("起始"))
         self.start_color_btn = ColorButton(self.canvas.start_color)
         self.start_color_btn.colorChanged.connect(self.on_start_color_changed)
-        start_row.addWidget(self.start_color_btn)
-        colors_layout.addLayout(start_row)
-
-        end_row = QHBoxLayout()
-        end_row.addWidget(QLabel("结束:"))
+        hbox.addWidget(self.start_color_btn)
+        hbox.addWidget(QLabel("结束"))
         self.end_color_btn = ColorButton(self.canvas.end_color)
         self.end_color_btn.colorChanged.connect(self.on_end_color_changed)
-        end_row.addWidget(self.end_color_btn)
-        colors_layout.addLayout(end_row)
-
-        bg_row = QHBoxLayout()
-        bg_row.addWidget(QLabel("背景:"))
+        hbox.addWidget(self.end_color_btn)
+        hbox.addWidget(QLabel("背景"))
         self.bg_color_btn = ColorButton(self.canvas.bg_color)
         self.bg_color_btn.colorChanged.connect(self.on_bg_color_changed)
-        bg_row.addWidget(self.bg_color_btn)
-        colors_layout.addLayout(bg_row)
-
-        hbox.addWidget(colors_group)
-        layout.addWidget(container)
+        hbox.addWidget(self.bg_color_btn)
+        hbox.addStretch()
+        layout.addWidget(group)
 
     def create_rules_section(self, layout):
         group = QGroupBox("L-system 规则")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(6)
+        vbox.setSpacing(4)
 
         vbox.addWidget(QLabel("公理:"))
         self.axiom_edit = QTextEdit()
-        self.axiom_edit.setMaximumHeight(35)
+        self.axiom_edit.setMaximumHeight(32)
         self.axiom_edit.setPlaceholderText("例如: F")
         vbox.addWidget(self.axiom_edit)
 
-        vbox.addWidget(QLabel("规则 (每行一条，格式: 前驱->后继):"))
+        hint = QLabel("规则每行一条：前驱->后继；F 前进、+/- 转向、[ ] 入栈出栈")
+        hint.setStyleSheet("color:#888;")
+        hint.setWordWrap(True)
+        vbox.addWidget(hint)
         self.rules_edit = QTextEdit()
-        self.rules_edit.setMaximumHeight(120)
         self.rules_edit.setPlaceholderText("例如: F->F+F-F-F+F")
-        vbox.addWidget(self.rules_edit)
-        layout.addWidget(group)
+        vbox.addWidget(self.rules_edit, 1)
+        layout.addWidget(group, 1)
 
     def create_buttons_section(self, layout):
         group = QGroupBox("操作")
@@ -355,15 +382,39 @@ class LSystemWindow(QMainWindow):
 
         self.generate_btn = QPushButton("生成")
         self.generate_btn.clicked.connect(self.generate_system)
+        self.reset_btn = QPushButton("恢复预设")
+        self.reset_btn.clicked.connect(
+            lambda: self.on_system_changed(self.system_combo.currentText()))
         self.save_btn = QPushButton("保存")
         self.save_btn.clicked.connect(self.save_image)
-        self.reset_btn = QPushButton("重置")
-        self.reset_btn.clicked.connect(self.reset_parameters)
 
-        hbox.addWidget(self.generate_btn)
-        hbox.addWidget(self.save_btn)
-        hbox.addWidget(self.reset_btn)
+        for b in (self.generate_btn, self.reset_btn, self.save_btn):
+            hbox.addWidget(b)
         layout.addWidget(group)
+
+    def create_stats_section(self, layout):
+        group = QGroupBox("统计")
+        form = QFormLayout()
+        form.setSpacing(3)
+        self.lbl_length = QLabel("–")
+        self.lbl_segments = QLabel("–")
+        self.lbl_time = QLabel("–")
+        form.addRow("字符串长度:", self.lbl_length)
+        form.addRow("线段数:", self.lbl_segments)
+        form.addRow("生成耗时:", self.lbl_time)
+        group.setLayout(form)
+        layout.addWidget(group)
+
+    def on_stats(self, segments, chars, truncated, elapsed):
+        self.lbl_length.setText(f"{chars:,}")
+        self.lbl_segments.setText(f"{segments:,}")
+        self.lbl_time.setText(f"{elapsed * 1000:.0f} ms")
+        self.generate_btn.setEnabled(True)
+        if truncated:
+            self.lbl_status.setText(
+                f"已完成，但字符串超过 {LSystem.MAX_CHARS:,} 字符被截断——降低迭代次数或简化规则")
+        else:
+            self.lbl_status.setText(f"完成：{segments:,} 条线段，{elapsed * 1000:.0f} ms")
 
     def setup_default_systems(self):
         self.systems = {
@@ -393,17 +444,27 @@ class LSystemWindow(QMainWindow):
     def generate_system(self):
         """构建 L-system 并传递给绘图部件（后台生成）"""
         lsys = LSystem()
-        lsys.set_axiom(self.axiom_edit.toPlainText().strip())
+        axiom = self.axiom_edit.toPlainText().strip()
+        if not axiom:
+            self.lbl_status.setText("公理为空，什么都不画")
+            return
+        lsys.set_axiom(axiom)
         rules_text = self.rules_edit.toPlainText().strip()
+        n_rules = 0
         for line in rules_text.split('\n'):
             if '->' in line:
                 pred, succ = line.split('->', 1)
-                lsys.add_rule(pred.strip(), succ.strip())
+                if pred.strip():
+                    lsys.add_rule(pred.strip(), succ.strip())
+                    n_rules += 1
         lsys.set_parameters(
             self.angle_spin.value(),
             self.distance_spin.value(),
             self.iterations_spin.value()
         )
+        self.generate_btn.setEnabled(False)
+        self.lbl_status.setText(
+            f"生成中…（{self.iterations_spin.value()} 代，{n_rules} 条规则）")
         self.canvas.set_lsystem(lsys)
 
     def reset_parameters(self):
