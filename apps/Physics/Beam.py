@@ -400,15 +400,24 @@ class BeamCanvas(QWidget):
         broken = app.broken_mask
         limit = sim.sigma_ult
 
-        for node in (0, sim.nx):
-            sx = margin_x + sim.nodes[node, 0] * scale_x
-            sy = base_y - sim.nodes[node, 1] * scale_x + 6
-            p.setBrush(QColor(90, 90, 96))
+        # 两侧木条支座（钉子钉在端面中高处）
+        post_w = 15.0
+        ground_y = base_y + (sim.h * 0.5 + 0.30) * scale_x
+        for node in (sim.left_node, sim.right_node):
+            sx = margin_x + float(pos[node, 0]) * scale_x
+            top_y = base_y - (float(pos[node, 1]) - sim.h * 0.5) * scale_x
+            wood = QColor(176, 136, 92)
+            p.setBrush(wood)
+            p.setPen(QPen(QColor(122, 92, 58), 1.2))
+            p.drawRect(QRectF(sx - post_w / 2, top_y, post_w, ground_y - top_y))
+            # 木纹
+            p.setPen(QPen(QColor(150, 114, 74), 1))
+            for k in (-4, 0, 4):
+                p.drawLine(QPointF(sx + k, top_y + 3), QPointF(sx + k, ground_y - 3))
+            # 钉子
+            p.setBrush(QColor(70, 70, 75))
             p.setPen(Qt.NoPen)
-            p.drawPolygon(QPolygonF([QPointF(sx, sy), QPointF(sx - 15, sy + 22),
-                                     QPointF(sx + 15, sy + 22)]))
-            p.setPen(QPen(QColor(150, 150, 155), 2))
-            p.drawLine(QPointF(sx - 22, sy + 22), QPointF(sx + 22, sy + 22))
+            p.drawEllipse(QPointF(sx, base_y - float(pos[node, 1]) * scale_x), 4.5, 4.5)
 
         for e, conn in enumerate(sim.conn):
             if broken[e]:
@@ -568,6 +577,7 @@ class BeamApp(QMainWindow):
         self.load_pos = None
         self.running = False
         self.broken = False
+        self.break_load = 0.0
         self.runs = []
         self.sweep_mode = None
         self.sim = None
@@ -615,15 +625,20 @@ class BeamApp(QMainWindow):
     def tick(self):
         if not self.running or self.sim is None:
             return
-        frac = self.load / max(1.0, self.capacity_ref)
-        step = max(6.0, self.capacity_ref * 0.008) * (1.0 if frac < 0.8 else 0.35)
-        self.load += step
-        new_break = self.sim.step(self.load, substeps=self.substeps)
+        if self.broken:
+            # 已经断了：不再加重物，只按断裂时的载荷继续算塌落
+            new_break = self.sim.step(self.break_load, substeps=self.substeps)
+        else:
+            frac = self.load / max(1.0, self.capacity_ref)
+            step = max(6.0, self.capacity_ref * 0.008) * (1.0 if frac < 0.8 else 0.35)
+            self.load += step
+            new_break = self.sim.step(self.load, substeps=self.substeps)
         self.pos = self.sim.positions()
         self.elem_stress = self.sim.stresses()
         self.broken_mask = self.sim.broken_mask()
         if new_break and not self.broken:
             self.broken = True
+            self.break_load = self.load
             self.runs.append({"L": self.beam_length, "h": self.beam_height, "P": self.load,
                               "x": self.beam_height * 100 if self.sweep_mode == "height"
                               else self.beam_length})
