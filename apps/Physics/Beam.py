@@ -414,10 +414,7 @@ class BeamCanvas(QWidget):
             p.setPen(QPen(QColor(150, 114, 74), 1))
             for k in (-4, 0, 4):
                 p.drawLine(QPointF(sx + k, top_y + 3), QPointF(sx + k, ground_y - 3))
-            # 钉子
-            p.setBrush(QColor(70, 70, 75))
-            p.setPen(Qt.NoPen)
-            p.drawEllipse(QPointF(sx, base_y - float(pos[node, 1]) * scale_x), 4.5, 4.5)
+
 
         for e, conn in enumerate(sim.conn):
             if broken[e]:
@@ -430,6 +427,21 @@ class BeamCanvas(QWidget):
             p.setBrush(col)
             p.setPen(QPen(QColor(110, 110, 120, 70), 0.5))
             p.drawPolygon(QPolygonF([QPointF(px[i], py[i]) for i in conn]))
+
+        # 竖直钉：从梁顶穿下去，钉进下面的木桩
+        for node in (sim.left_node, sim.right_node):
+            sx = margin_x + float(pos[node, 0]) * scale_x
+            cy = base_y - float(pos[node, 1]) * scale_x
+            top = cy - (sim.h * 0.5) * scale_x - 9
+            bottom = cy + (sim.h * 0.5) * scale_x + 16
+            p.setPen(QPen(QColor(92, 96, 104), 3.0))
+            p.drawLine(QPointF(sx, top + 3), QPointF(sx, bottom))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(126, 130, 138))
+            p.drawEllipse(QPointF(sx, top), 5.0, 3.2)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(70, 74, 80), 1))
+            p.drawEllipse(QPointF(sx, top), 5.0, 3.2)
 
         if app.load > 0:
             x_pos = app.load_pos if app.load_pos is not None else span / 2.0
@@ -449,13 +461,6 @@ class BeamCanvas(QWidget):
             p.setPen(QPen(QColor(160, 60, 50), 2))
             p.drawLine(QPointF(sx, top + bh), QPointF(sx, surf_y - 1))
 
-        f = p.font()
-        f.setPointSize(8)
-        p.setFont(f)
-        p.setPen(QColor(90, 90, 96))
-        p.drawText(QRectF(16, hh - 26, 660, 18), Qt.AlignLeft | Qt.AlignVCenter,
-                   f"隐式动力学实时求解（Δt = {sim.dt * 1000:.1f} ms）· "
-                   f"失效单元 {int(broken.sum())}/{len(broken)} · 红＝受拉")
         p.end()
 
 
@@ -653,14 +658,28 @@ class BeamApp(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(8)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
 
         panel = QWidget()
-        panel.setFixedWidth(272)
+        panel.setFixedWidth(286)
         pv = QVBoxLayout(panel)
-        pv.setSpacing(6)
+        pv.setSpacing(8)
         pv.setContentsMargins(0, 0, 0, 0)
+
+        title = QLabel("横梁承重")
+        tf = title.font()
+        tf.setPointSize(13)
+        tf.setBold(True)
+        title.setFont(tf)
+        pv.addWidget(title)
+        sub = QLabel("钉子穿过梁端钉进木桩，压重物直到断裂")
+        sub.setStyleSheet("color: #7a7a80;")
+        sf = sub.font()
+        sf.setPointSize(8)
+        sub.setFont(sf)
+        pv.addWidget(sub)
+
         self.canvas = BeamCanvas(self)
         self._build_beam_group(pv)
         self._build_load_group(pv)
@@ -670,27 +689,37 @@ class BeamApp(QMainWindow):
 
         right = QWidget()
         rv = QVBoxLayout(right)
-        rv.setSpacing(6)
+        rv.setSpacing(8)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.addWidget(self.canvas, 1)
         self.chart = SweepChart(self)
+        self.chart.setFixedHeight(208)
         rv.addWidget(self.chart)
         root.addWidget(right, 1)
 
-        self.lbl_status = QLabel("点「开始加载」：载荷实时上升，单元逐个被撕开")
+        self.lbl_status = QLabel("点「开始加载」：重物逐渐加码，应力超限即断裂")
         self.statusBar().addWidget(self.lbl_status, 1)
-        self.lbl_load = QLabel("载荷 0 kg")
-        self.lbl_stress = QLabel("应力 –")
-        self.lbl_defl = QLabel("挠度 –")
+        self.lbl_load = self._stat_label("载荷 0 kg")
+        self.lbl_stress = self._stat_label("应力 –")
+        self.lbl_defl = self._stat_label("挠度 –")
         for wdg in (self.lbl_load, self.lbl_stress, self.lbl_defl):
             self.statusBar().addPermanentWidget(wdg)
 
+    def _stat_label(self, text):
+        lbl = QLabel(text)
+        lbl.setMinimumWidth(118)
+        lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lbl.setStyleSheet("color: #45454a; padding-right: 6px;")
+        return lbl
+
     def _build_beam_group(self, parent):
-        group = QGroupBox("梁")
+        group = QGroupBox("参数")
         form = QFormLayout(group)
-        form.setSpacing(4)
-        form.setContentsMargins(6, 6, 6, 6)
+        form.setSpacing(6)
+        form.setContentsMargins(8, 8, 8, 8)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
         self.mat_combo = QComboBox()
         self.mat_combo.addItems(list(MATERIALS.keys()))
         self.mat_combo.currentTextChanged.connect(lambda _n: self.schedule_rebuild())
@@ -699,10 +728,10 @@ class BeamApp(QMainWindow):
         self.sup_combo.addItems(["简支（钉子可转）", "固支（完全固定）"])
         self.sup_combo.currentIndexChanged.connect(lambda _i: self.schedule_rebuild())
         form.addRow("支承", self.sup_combo)
-        self.len_slider, self.len_label = self._slider(form, "长度 L", 30, 300,
+        self.len_slider, self.len_label = self._slider(form, "长度", 30, 300,
                                                        int(self.beam_length * 100),
                                                        lambda v: v / 100.0, " m")
-        self.hgt_slider, self.hgt_label = self._slider(form, "高度 h", 2, 30,
+        self.hgt_slider, self.hgt_label = self._slider(form, "高度", 2, 30,
                                                        int(self.beam_height * 100),
                                                        lambda v: v / 100.0, " m")
         parent.addWidget(group)
@@ -710,47 +739,58 @@ class BeamApp(QMainWindow):
     def _build_load_group(self, parent):
         group = QGroupBox("加载")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(4)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(8, 8, 8, 8)
         self.run_btn = QPushButton("开始加载")
+        bf = self.run_btn.font()
+        bf.setPointSize(10)
+        self.run_btn.setFont(bf)
+        self.run_btn.setMinimumHeight(32)
         self.run_btn.clicked.connect(self.toggle_run)
         vbox.addWidget(self.run_btn)
+
         row = QHBoxLayout()
-        row.setSpacing(4)
+        row.setSpacing(6)
         btn_reset = QPushButton("复位")
         btn_reset.clicked.connect(self.reset_beam)
         row.addWidget(btn_reset)
-        btn_cap = QPushButton("理论极限")
+        btn_cap = QPushButton("测极限")
         btn_cap.clicked.connect(self.show_capacity)
         row.addWidget(btn_cap)
         vbox.addLayout(row)
-        self.lbl_cap = QLabel(f"理论极限 {self.capacity_ref / 1000:.1f} kN")
+
+        self.lbl_cap = QLabel(f"理论极限 {self.capacity_ref / 1000:.1f} kN"
+                              f"（{self.capacity_ref / G:.0f} kg）")
+        self.lbl_cap.setStyleSheet("color: #4a6a9a;")
         vbox.addWidget(self.lbl_cap)
         parent.addWidget(group)
 
     def _build_sweep_group(self, parent):
-        group = QGroupBox("实验：承重与尺寸的关系")
-        vbox = QVBoxLayout(group)
-        vbox.setSpacing(4)
-        b1 = QPushButton("扫描梁高（固定长度）")
+        group = QGroupBox("实验")
+        grid = QGridLayout(group)
+        grid.setSpacing(6)
+        grid.setContentsMargins(8, 8, 8, 8)
+        b1 = QPushButton("扫描高度")
         b1.clicked.connect(lambda: self.sweep("height"))
-        vbox.addWidget(b1)
-        b2 = QPushButton("扫描梁长（固定高度）")
+        grid.addWidget(b1, 0, 0)
+        b2 = QPushButton("扫描长度")
         b2.clicked.connect(lambda: self.sweep("length"))
-        vbox.addWidget(b2)
+        grid.addWidget(b2, 0, 1)
         b3 = QPushButton("清空数据")
         b3.clicked.connect(self.clear_runs)
-        vbox.addWidget(b3)
+        grid.addWidget(b3, 1, 0, 1, 2)
         parent.addWidget(group)
 
     def _slider(self, form, text, lo, hi, value, transform, suffix=""):
         row = QHBoxLayout()
-        row.setSpacing(4)
+        row.setSpacing(6)
         slider = QSlider(Qt.Horizontal)
         slider.setRange(lo, hi)
         slider.setValue(value)
         label = QLabel(f"{transform(value):.2f}{suffix}")
-        label.setFixedWidth(56)
+        label.setFixedWidth(54)
         label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        label.setStyleSheet("color: #45454a;")
 
         def on_change(v):
             label.setText(f"{transform(v):.2f}{suffix}")
