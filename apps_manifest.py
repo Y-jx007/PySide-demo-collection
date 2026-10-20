@@ -87,9 +87,9 @@ APPS = [
     {
         "title": "Snowflake",
         "description": "Reiter 雪花生长模型，六重对称枝晶",
-        "path": "Physics/Snowflake.py",
+        "path": "Cellular Automata/Snowflake.py",
         "friendly": "雪花生长",
-        "category": "Physics",
+        "category": "Cellular Automata",
     },
     {
         "title": "Ising",

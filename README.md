@@ -26,7 +26,6 @@
 |------|------|
 | **Schrödinger** | Runge-Kutta 模拟二维量子波包演化 |
 | **Turing** | Gray-Scott 等反应扩散系统 |
-| **Snowflake** | Reiter 雪花生长模型，六重对称枝晶，参考 [Reiter 2005](http://www.patarnott.com/pdf/SnowCrystalGrowth.pdf) |
 | **Ising** | 二维伊辛模型，参考 [Ising.js](https://mattbierbaum.github.io/ising.js/) |
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
@@ -49,6 +48,7 @@
 | **Lenia** | 连续元胞自动机，参考 [Lenia](https://chakazul.github.io/Lenia/JavaScript/Lenia.html) |
 | **Conway** | 生命游戏，14 个经典预设（滑翔机枪、脉冲星等）、残影轨迹、滚轮缩放 |
 | **Distill** | 神经网络元胞自动机，参考 [Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)，需要 PyTorch |
+| **Snowflake** | Reiter 雪花生长模型，六重对称枝晶，参考 [Reiter 2005](http://www.patarnott.com/pdf/SnowCrystalGrowth.pdf) |
 
 ### 实验（未完全打磨）
 
