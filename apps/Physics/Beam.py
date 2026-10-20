@@ -9,6 +9,9 @@ import scipy.sparse.linalg as spla
 G = 9.81
 B_WIDTH = 0.06          # 梁宽（出平面方向）
 
+N_X = 64                # 梁长方向单元数
+N_Y = 10                # 梁高方向单元数
+
 MATERIALS = {
     "松木": (10e9, 40e6, 0.30, 600.0),
     "橡木": (12e9, 55e6, 0.30, 700.0),
@@ -21,7 +24,7 @@ MATERIALS = {
 class StaticBeam:
     """平面应力 Q4 + Cholesky；用来快速求极限载荷。"""
 
-    def __init__(self, length, height, E, sigma_ult, support="simple", nx=36, ny=6, nu=0.3):
+    def __init__(self, length, height, E, sigma_ult, support="simple", nx=N_X, ny=N_Y, nu=0.3):
         self.L, self.h, self.E, self.sigma_ult = length, height, E, sigma_ult
         self.nu, self.support, self.nx, self.ny = nu, support, nx, ny
         self._build()
@@ -81,8 +84,17 @@ class StaticBeam:
         self.elem_dof[:, 1::2] = 2 * self.conn + 1
 
     def _apply_bc(self):
+        # 钉子钉在梁端面的中高处（不是底角），更像“两端钉住”
         nx = self.nx
-        fixed = [0, 1] + ([2 * nx, 2 * nx + 1] if self.support == "fixed" else [2 * nx + 1])
+        mid = self.ny // 2
+        left = mid * (nx + 1)
+        right = left + nx
+        fixed = [2 * left, 2 * left + 1]
+        if self.support == "fixed":
+            fixed += [2 * right, 2 * right + 1]
+        else:
+            fixed += [2 * right + 1]
+        self.left_node, self.right_node = left, right
         self.fixed = np.array(sorted(set(fixed)), dtype=np.int32)
 
     def _factor(self):
@@ -143,7 +155,7 @@ class ImplicitBeam:
     时间步可以取毫秒级，一次分解、每步只做回代，才可能实时。
     """
 
-    def __init__(self, length, height, E, sigma_ult, rho, support="simple", nx=36, ny=6,
+    def __init__(self, length, height, E, sigma_ult, rho, support="simple", nx=N_X, ny=N_Y,
                  nu=0.3, dt=1.2e-3):
         self.L, self.h, self.nx, self.ny = length, height, nx, ny
         self.sigma_ult, self.rho, self.dt = sigma_ult, rho, dt
@@ -190,7 +202,12 @@ class ImplicitBeam:
         node_mass = rho * dx * dy * B_WIDTH / 4.0
         self.mass = np.full(self.ndof, node_mass)
 
-        fixed = [0, 1] + ([2 * nx, 2 * nx + 1] if support == "fixed" else [2 * nx + 1])
+        mid = ny // 2
+        left = mid * (nx + 1)
+        right = left + nx
+        fixed = [2 * left, 2 * left + 1]
+        fixed += ([2 * right, 2 * right + 1] if support == "fixed" else [2 * right + 1])
+        self.left_node, self.right_node = left, right
         self.fixed = np.array(sorted(set(fixed)), dtype=np.int32)
 
         self.broken = np.zeros(self.n_elem, dtype=bool)
@@ -216,10 +233,20 @@ class ImplicitBeam:
         K = sp.coo_matrix((vals, (rows, cols)), shape=(self.ndof, self.ndof)).tocsc()
         self.K = K
 
+        # 找出孤立节点（周围没有完好单元）并临时固定，否则它们只有质量没有刚度，
+        # 方程会解出天文数字的位移
+        used = np.zeros(self.n_nodes, dtype=bool)
+        for e in range(self.n_elem):
+            if not self.broken[e]:
+                used[self.conn[e]] = True
+        orphan = np.nonzero(~used)[0]
+        self.orphan_dofs = np.concatenate([2 * orphan, 2 * orphan + 1]) if orphan.size else np.array([], dtype=np.int32)
+
         dt = self.dt
         M = sp.diags(self.mass, format="csc")
         A = (M * (1.0 / dt ** 2) + M * (self.alpha / dt) + K).tolil()
-        for d in self.fixed:
+        self.all_fixed = np.unique(np.concatenate([self.fixed, self.orphan_dofs]))
+        for d in self.all_fixed:
             A.rows[d] = [d]
             A.data[d] = [1.0]
         self.A = A.tocsc()
@@ -279,17 +306,42 @@ class ImplicitBeam:
             rhs = M * (2.0 * self.u - self.u_prev) / dt ** 2
             rhs = rhs + M * (alpha / dt) * self.u
             rhs[2 * self.load_node + 1] -= load
-            rhs[self.fixed] = 0.0
+            rhs[self.all_fixed] = 0.0
             u_new = self._lu.solve(rhs)
             self.u_prev, self.u = self.u, u_new
             self.t_dis.from_numpy(self.u.astype(np.float32))
             self._kern()
             if int((self.t_broken.to_numpy() > 0).sum()) > int(self.broken.sum()):
                 self.broken = self.t_broken.to_numpy() > 0
+                self._relocate_load()
                 self._build_matrices()
                 new_break = True
                 break
         return new_break
+
+    def _relocate_load(self):
+        """断裂后把重物挪到最近的、仍然完好的顶面节点上。
+
+        否则载荷挂在已经失效的节点上，力等于凭空消失，梁会自己弹回去。
+        """
+        nx = self.nx
+        top0 = self.ny * (nx + 1)
+        alive = ~self.broken
+        best, best_cost = self.load_node, 1e30
+        for i in range(nx + 1):
+            # 该顶面节点周围的单元是否还在
+            near = []
+            if i > 0:
+                near.append(top0 - 1 + i - 1)
+            if i < nx:
+                near.append(top0 - 1 + i)
+            cnt = sum(1 for e in near if 0 <= e < self.n_elem and alive[e])
+            if cnt == 0:
+                continue
+            cost = abs(i - nx / 2.0) - 10.0 * cnt
+            if cost < best_cost:
+                best_cost, best = cost, top0 + i
+        self.load_node = best
 
     # ---------- 读回 ----------
     def positions(self):
