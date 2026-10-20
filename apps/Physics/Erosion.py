@@ -9,6 +9,20 @@ def _blur3(a):
             + p[2:, :-2] + p[2:, 1:-1] + p[2:, 2:]) / 9.0
 
 
+CRACK_DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+
+
+def _shift4(mask):
+    """四邻域计数（布尔场的扩散统计）。"""
+    m = mask.astype(np.float32)
+    out = np.zeros_like(m)
+    out[1:, :] += m[:-1, :]
+    out[:-1, :] += m[1:, :]
+    out[:, 1:] += m[:, :-1]
+    out[:, :-1] += m[:, 1:]
+    return out
+
+
 def smoothstep(e0, e1, x):
     t = np.clip((x - e0) / max(1e-6, e1 - e0), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
@@ -77,6 +91,13 @@ class ErosionSim:
         self.evap = 0.02
         self.gravity = 4.0
         self.max_life = 34
+        # 龟裂动力学参数
+        self.nucleate_rate = 0.004
+        self.grow_ratio = 0.8
+        self.stress_gain = 1.6
+        self.strength_base = 0.22
+        self.relief_radius = 12
+        self.relief_gain = 3.0
 
         # 雨滴状态
         self.px = np.zeros(self.MAX_DROPS, dtype=np.float32)
@@ -90,10 +111,16 @@ class ErosionSim:
         self.count = 0
         self.total_drops = 0
 
-        # 龟裂场
-        self.crack_line = None
-        self.crack_noise = None
-        self._build_cracks()
+        # 表层物质：细颗粒占比（黏土/粉砂），由雨水搬运决定
+        self.fines = np.full((size, size), 0.78, dtype=np.float32)
+        self.fines += 0.16 * (value_noise(size, self.rng, octaves=3, base=4) - 0.5)
+        np.clip(self.fines, 0.15, 1.0, out=self.fines)
+        # 干缩拉应力、裂缝张开度
+        self.stress = np.zeros((size, size), dtype=np.float32)
+        self.crack = np.zeros((size, size), dtype=np.float32)
+        # 雨滴携带的细颗粒比例
+        self.sed_fine = np.zeros(self.MAX_DROPS, dtype=np.float32)
+        self._build_texture()
 
     # ---------- 地形 ----------
     def _make_terrain(self):
@@ -120,9 +147,14 @@ class ErosionSim:
         self.h0 = self.h.copy()
         self._update_relief()
         self.moisture[:] = 0.85
+        self.fines[:] = 0.78
+        self.fines += 0.16 * (value_noise(self.size, self.rng, octaves=3, base=4) - 0.5)
+        np.clip(self.fines, 0.15, 1.0, out=self.fines)
+        self.stress[:] = 0.0
+        self.crack[:] = 0.0
         self.count = 0
         self.total_drops = 0
-        self._build_cracks()
+        self._build_texture()
 
     def _update_relief(self):
         h = self.h
@@ -134,21 +166,18 @@ class ErosionSim:
         return float(1.0 - self.moisture.mean())
 
     # ---------- 龟裂 ----------
-    def _build_cracks(self):
-        """抖动网格 Voronoi，记录到板块边界的**垂直距离**（不是 F2-F1）。
+    def _build_texture(self):
+        """板块几何（Voronoi 边界距离）+ 泥沙颗粒 + 起裂缺陷。
 
-        F2-F1 会随板块大小变宽：大板块裂缝是峡谷、小板块是发丝，一眼看出是
-        Voronoi 画的。用 p 到最近两个站点中垂面的距离，裂缝宽度就与板块无关。
+        裂缝的**位置**来自板块边界：泥在收缩时向各自的收缩中心坍缩，边界处受拉，
+        这正是干缩龟裂成多边形的物理来源。开裂的**强弱**则由应力场决定。
         """
         n = self.size
         rng = self.rng
-        cell = max(12.0, n / 9.0)           # 板块边长（像素）
+        cell = max(12.0, n / 9.0)
         gr = int(np.ceil(n / cell)) + 1
-
-        # 站点网格向四周各扩一圈，保证边界像素也能找到 3×3 个不同的站点，
-        # 否则边缘一圈会因为邻居被裁剪成同一个点而算不出裂缝
-        jitter = 0.85
         gsz = gr + 2
+        jitter = 0.85
         site_x = ((np.arange(gsz)[None, :] - 0.5) + (rng.random((gsz, gsz)) - 0.5) * jitter) * cell
         site_y = ((np.arange(gsz)[:, None] - 0.5) + (rng.random((gsz, gsz)) - 0.5) * jitter) * cell
 
@@ -158,12 +187,8 @@ class ErosionSim:
 
         d1 = np.full((n, n), 1e9, np.float32)
         d2 = np.full((n, n), 1e9, np.float32)
-        x1 = np.zeros((n, n), np.float32)
-        y1 = np.zeros((n, n), np.float32)
-        x2 = np.zeros((n, n), np.float32)
-        y2 = np.zeros((n, n), np.float32)
-        cell_id = np.zeros((n, n), np.int32)
-
+        x1 = np.zeros((n, n), np.float32); y1 = np.zeros((n, n), np.float32)
+        x2 = np.zeros((n, n), np.float32); y2 = np.zeros((n, n), np.float32)
         for dj in (-1, 0, 1):
             for di in (-1, 0, 1):
                 j = cj + dj
@@ -172,33 +197,20 @@ class ErosionSim:
                 sy = site_y[j, i]
                 d = np.hypot(xs - sx, ys - sy)
                 closer = d < d1
-                # 更近：原来的最近降为第二近
                 d2 = np.where(closer, d1, np.minimum(d2, d))
-                x2 = np.where(closer, x1, x2)
-                y2 = np.where(closer, y1, y2)
+                x2 = np.where(closer, x1, x2); y2 = np.where(closer, y1, y2)
                 d1 = np.where(closer, d, d1)
-                x1 = np.where(closer, sx, x1)
-                y1 = np.where(closer, sy, y1)
-                cell_id = np.where(closer, (j * gsz + i).astype(np.int32), cell_id)
+                x1 = np.where(closer, sx, x1); y1 = np.where(closer, sy, y1)
 
-        # p 到中垂面的距离
-        ab = np.hypot(x2 - x1, y2 - y1)
-        ab = np.maximum(ab, 1e-3)
+        ab = np.maximum(np.hypot(x2 - x1, y2 - y1), 1e-3)
         self.crack_edge = ((d2 * d2 - d1 * d1) / (2.0 * ab)).astype(np.float32)
-        self.crack_cell = cell_id
-
-        # 每块板自己的干湿色差
-        flat_id = cell_id.ravel()
-        plate_rand = rng.random(int(flat_id.max()) + 1).astype(np.float32)
-        self.plate_tint = plate_rand[flat_id].reshape(n, n)
-
-        # 开裂传播噪声：低频噪声让裂纹一片片出现
-        noise = value_noise(n, rng, octaves=4, base=5)
-        self.crack_noise = (0.55 * noise + 0.45 * _blur3(_blur3(noise))).astype(np.float32)
 
         # 泥沙颗粒
         grain = value_noise(n, rng, octaves=2, base=n // 8)
         self.grain = (grain - 0.5).astype(np.float32)
+        # 起裂缺陷：真实泥面总有划痕、石子、干缩点，那里强度更低
+        flaws = value_noise(n, rng, octaves=3, base=6)
+        self.flaws = (flaws ** 2).astype(np.float32)
 
     # ---------- 雨滴 ----------
     def add_rain(self, count, cx=None, cy=None, radius=0):
@@ -224,6 +236,7 @@ class ErosionSim:
         self.spd[i0:i1] = 1.0
         self.wat[i0:i1] = 1.0
         self.sed[i0:i1] = 0.0
+        self.sed_fine[i0:i1] = 0.5
         self.life[i0:i1] = self.max_life
         self.count = i1
         self.total_drops += count
@@ -270,9 +283,20 @@ class ErosionSim:
         dep = np.maximum(self.sed[:n] - cap, 0.0) * self.deposit
         ero = np.minimum((cap - self.sed[:n]) * self.erode, np.maximum(-dh, 0.0))
 
+        # 细颗粒优先被冲走：侵蚀带走的是当地的细泥，沉积下来的也按携带比例归还
+        f_loc = self.fines[yi, xi]
+        fine_ero = ero * (0.30 + 1.4 * f_loc)          # 细泥更容易被冲走
+        fine_dep = dep * self.sed_fine[:n] * 0.8       # 沉积物按携带比例落回
+
         delta = dep - ero
         np.add.at(self.h, (yi, xi), delta)
+        np.add.at(self.fines, (yi, xi), fine_dep - fine_ero)
+        np.clip(self.fines, 0.42, 1.0, out=self.fines)   # 冲沟里仍是泥质，能干裂
+
+        carried = self.sed[:n] * self.sed_fine[:n]
         self.sed[:n] = np.clip(self.sed[:n] + ero - dep, 0.0, 4.0)
+        carried = np.clip(carried + fine_ero - fine_dep, 0.0, 4.0)
+        self.sed_fine[:n] = np.where(self.sed[:n] > 1e-4, carried / np.maximum(self.sed[:n], 1e-4), 0.5)
 
         self.spd[:n] = np.sqrt(np.maximum(0.0, self.spd[:n] ** 2 + dh * self.gravity))
         self.wat[:n] = self.wat[:n] * (1.0 - self.evap)
@@ -289,12 +313,14 @@ class ErosionSim:
         if dead.any():
             keep = ~dead
             m = int(keep.sum())
-            for arr in (self.px, self.py, self.dx, self.dy, self.spd, self.wat, self.sed, self.life):
+            for arr in (self.px, self.py, self.dx, self.dy, self.spd, self.wat,
+                        self.sed, self.sed_fine, self.life):
                 arr[:m] = arr[:n][keep]
             self.count = m
 
     # ---------- 每帧 ----------
     def step(self):
+        loss = np.float32(0.0)
         if self.raining:
             self.add_rain(self.rain_rate)
             # 下雨时地面趋近饱和，雨水在低洼处积得更多
@@ -302,12 +328,38 @@ class ErosionSim:
         elif self.drying:
             # 逐格蒸发：高处、坡地干得快，低洼处保留水分
             rate = 0.0035 * (0.65 + 0.75 * np.clip(self._relief, 0.0, 1.0))
+            loss = rate
             self.moisture -= rate
         else:
             self.moisture -= 0.0004
         np.clip(self.moisture, 0.0, 1.0, out=self.moisture)
         self.step_drops()
         np.clip(self.h, 0.0, 3.0, out=self.h)
+        self._update_cracks(loss)
+
+    # ---------- 龟裂（几何来自板块边界，开合由应力决定） ----------
+    def _update_cracks(self, loss):
+        """准静态干缩应力：干得越透、细泥越多，拉应力越大。
+
+        裂缝的几何来自板块边界（`crack_edge`——泥向各自收缩中心坍缩，边界处受拉，
+        这正是干缩龟裂成多边形的物理来源）；但**开不开裂、开多宽**由这里的应力决定。
+        所以被雨水冲刷过的沟床只要还是泥质、只要干了，一样会裂。
+        """
+        dry = np.clip(1.0 - self.moisture, 0.0, 1.0)
+        self.stress = self.stress_gain * self.fines * dry
+
+        # 几何：板块边界处受拉；宽度随干燥程度增加
+        mean_dry = float(dry.mean())
+        w = 0.55 + 1.15 * mean_dry
+        edge_mask = 1.0 - smoothstep(w * 0.5, w * 1.9, self.crack_edge)
+        # 只有应力足够大（干透、细泥多）的地方才真正裂开
+        opening = np.clip((self.stress - 0.20) * 2.2, 0.0, 1.0)
+        self.crack = np.clip(edge_mask * opening, 0.0, 1.0)
+
+        # 裂缝里的水分蒸发更快
+        wet_crack = self.crack > 0.35
+        self.moisture[wet_crack] -= 0.010
+        np.clip(self.moisture, 0.0, 1.0, out=self.moisture)
 
 
 # ==================== 画布 ====================
@@ -350,18 +402,15 @@ class TerrainCanvas(QWidget):
         sim = self.sim
         n = sim.size
         h = _blur3(_blur3(sim.h))     # 显示用平滑：抹掉单格开凿痕迹
-        wetfield = _blur3(sim.moisture)
-        dry = np.clip(1.0 - wetfield, 0.0, 1.0)
 
-        # 干泥板会向四周裂缝处翘起：只影响显示高度，不动模拟的高度场
-        if sim.dryness > 0.02:
-            prox = np.clip(1.0 - sim.crack_edge / 9.0, 0.0, 1.0) ** 2
-            h = h + prox * 0.006 * dry * 3.0
+        # 裂缝两侧的泥板会翘起：用裂缝场的晕边做抬升（只影响显示）
+        rim = np.clip(_blur3(sim.crack) - sim.crack, 0.0, 1.0)
+        h = h + rim * 0.02
 
         hmin, hmax = float(h.min()), float(h.max())
         hn = (h - hmin) / max(1e-6, hmax - hmin)
 
-        # 光影：梯度按格子尺寸放大成真实坡度，再用法线点乘光向
+        # 光影
         gy, gx = np.gradient(h)
         exag = n * 0.30
         nx, ny, nz = -gx * exag, -gy * exag, np.ones_like(hn)
@@ -369,36 +418,31 @@ class TerrainCanvas(QWidget):
         light = (nx * -0.48 + ny * -0.48 + nz * 0.73) * inv
         shade = np.clip(0.74 + 0.52 * light, 0.40, 1.3)
 
-        # 干土 / 湿泥 + 高处露岩：查表（以高度和湿度为索引），省掉多次浮点混合
+        wetfield = _blur3(sim.moisture)
+
         if self._soil_lut is None:
             self._build_soil_lut()
-        wetv = np.clip(wetfield * 1.15, 0.0, 1.0)
-        idx = (hn * 255.0).astype(np.int32) * 256 + (wetv * 255.0).astype(np.int32)
+        idx = (hn * 255.0).astype(np.int32) * 256 + (np.clip(wetfield * 1.15, 0, 1) * 255.0).astype(np.int32)
         rgb = self._soil_lut[idx].astype(np.float32)
 
         if self.show_shade:
             rgb *= shade[..., None]
 
-        # 每块板干燥后的色差 + 泥沙颗粒
-        rgb += (sim.plate_tint[..., None] - 0.5) * 10.0 * dry[..., None]
-        rgb += sim.grain[..., None] * 9.0
+        # 粗砂（细颗粒被冲走的地方）偏灰、颗粒感强；细泥偏暖
+        coarse = np.clip((0.62 - sim.fines) * 1.8, 0.0, 1.0)[..., None]
+        rgb = rgb * (1 - coarse * 0.45) + np.array([172, 168, 160], np.float32) * (coarse * 0.45)
+        rgb += sim.grain[..., None] * (7.0 + 10.0 * coarse)
 
-        # 积水 / 湿润：低洼处偏蓝
+        # 积水 / 湿润
         if self.show_water:
             pond = np.clip((0.16 - hn) / 0.16, 0.0, 1.0) * np.clip((wetfield - 0.90) * 8.0, 0, 1)
             water = np.clip(pond, 0.0, 1.0)[..., None]
             rgb = rgb * (1 - water * 0.75) + np.array([70, 118, 165], np.float32) * (water * 0.75)
 
-        # 龟裂：宽度由「到板块边界的垂直距离」决定，不随板块大小变化
-        if self.show_cracks and sim.dryness > 0.02:
-            dw = 0.7 + 1.9 * sim.dryness
-            crack = 1.0 - smoothstep(dw, dw * 2.8, sim.crack_edge)
-            # 逐格干度决定开裂缝，噪声让它成片出现
-            reveal = np.clip((dry - 0.32 - sim.crack_noise * 0.22) * 3.2, 0.0, 1.0)
-            slope = np.hypot(gx, gy) * exag
-            flat = np.clip(1.0 - slope * 0.5, 0.0, 1.0)
-            crack = _blur3(crack * reveal * flat)[..., None] * 0.92
-            rgb = rgb * (1 - crack) + np.array([46, 36, 28], np.float32) * crack
+        # 龟裂：直接读应力模型产出的裂缝场
+        if self.show_cracks:
+            crack = np.clip(_blur3(sim.crack) * 1.2, 0.0, 1.0)[..., None]
+            rgb = rgb * (1 - crack * 0.85) + np.array([40, 32, 25], np.float32) * (crack * 0.85)
 
         out = np.clip(rgb, 0, 255).astype(np.uint8)
         self._image = QImage(out.data, n, n, n * 3, QImage.Format_RGB888).copy()
@@ -623,6 +667,7 @@ class ErosionApp(QMainWindow):
         if sim.raining:
             sim.step()          # 下雨时每帧推进两步，视觉速度不变但重绘次数少一半
         self.canvas.invalidate()
+        self.update_stats()
         self._frames += 1
 
     def update_stats(self):
