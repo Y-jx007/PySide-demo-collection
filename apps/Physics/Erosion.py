@@ -9,33 +9,42 @@ def _blur3(a):
             + p[2:, :-2] + p[2:, 1:-1] + p[2:, 2:]) / 9.0
 
 
-def _upsample(g, n):
-    """双线性 + smoothstep 插值放大到 n×n。"""
-    f = g.shape[0]
-    x = np.linspace(0, f - 1, n)
-    i0 = np.floor(x).astype(np.int32)
-    i1 = np.minimum(i0 + 1, f - 1)
-    t = x - i0
-    t = t * t * (3 - 2 * t)                      # smoothstep
-    rows = g[i0, :] * (1 - t)[:, None] + g[i1, :] * t[:, None]
-    return rows[:, i0] * (1 - t)[None, :] + rows[:, i1] * t[None, :]
+def smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / max(1e-6, e1 - e0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
-def value_noise(n, rng, octaves=6, base=3):
-    """多倍频值噪声，用来生成山地初始地形。"""
+def _box_blur(a, r):
+    """可分离滑动平均（半径 r 像素）。"""
+    if r < 1:
+        return a
+    k = 2 * r + 1
+    p = np.pad(a, ((0, 0), (r, r)), mode="edge")
+    cs = np.cumsum(p, axis=1, dtype=np.float32)
+    cs = np.concatenate([np.zeros((cs.shape[0], 1), np.float32), cs], axis=1)
+    a = (cs[:, k:] - cs[:, :-k]) / k
+    p = np.pad(a, ((r, r), (0, 0)), mode="edge")
+    cs = np.cumsum(p, axis=0, dtype=np.float32)
+    cs = np.concatenate([np.zeros((1, cs.shape[1]), np.float32), cs], axis=0)
+    return (cs[k:, :] - cs[:-k, :]) / k
+
+
+def value_noise(n, rng, octaves=5, base=3):
+    """多倍频平滑噪声：白噪声反复模糊，没有网格折痕。"""
     total = np.zeros((n, n), dtype=np.float32)
     amp = 1.0
     for i in range(octaves):
         f = base * (2 ** i)
         if f > n:
             break
-        g = rng.random((f, f)).astype(np.float32)
-        total += amp * _upsample(g, n)
-        amp *= 0.45
+        r = max(1, int(round(n / f / 3.0)))
+        g = rng.random((n, n)).astype(np.float32)
+        for _ in range(3):
+            g = _box_blur(g, r)
+        total += amp * g
+        amp *= 0.42
     total -= total.min()
     total /= max(1e-6, total.max())
-    for _ in range(2):
-        total = _blur3(total)
     return total
 
 
@@ -89,27 +98,22 @@ class ErosionSim:
 
     # ---------- 地形 ----------
     def _make_terrain(self):
+        """平滑的多倍频山脉：低频做主体，ridged 项做山脊。"""
         n = self.size
         rng = self.rng
         yy, xx = np.mgrid[0:n, 0:n].astype(np.float32)
-        h = np.zeros((n, n), dtype=np.float32)
 
-        # 几条随机走向的山脊叠成山脉，侵蚀出的沟谷才能在起伏上看出来
-        for _ in range(5):
-            theta = rng.random() * np.pi
-            cx = n * rng.uniform(0.3, 0.7)
-            cy = n * rng.uniform(0.3, 0.7)
-            along = (xx - cx) * -np.sin(theta) + (yy - cy) * np.cos(theta)
-            across = (xx - cx) * np.cos(theta) + (yy - cy) * np.sin(theta)
-            across = np.abs(across) - rng.uniform(0.0, 0.12) * n
-            ridge = np.exp(-(across ** 2) / (2 * (n * 0.11) ** 2)) \
-                * np.exp(-(along ** 2) / (2 * (n * 0.5) ** 2))
-            h += ridge * rng.uniform(0.6, 1.2)
+        base = value_noise(n, rng, octaves=4, base=3)
+        h = 0.85 * base
 
-        h /= max(1e-6, h.max())
-        h += 0.30 * value_noise(n, rng, octaves=4, base=3)
+        dome = np.exp(-(((xx - n * 0.5) ** 2 + (yy - n * 0.45) ** 2) / (2 * (n * 0.32) ** 2)))
+        h = h * 0.55 + 0.95 * dome
+        h += 0.25 * value_noise(n, rng, octaves=3, base=2)
+
         h -= h.min()
         h /= max(1e-6, h.max())
+        for _ in range(3):
+            h = _blur3(h)
         return (h * 1.6).astype(np.float32)
 
     def reset(self):
@@ -124,27 +128,70 @@ class ErosionSim:
 
     # ---------- 龟裂 ----------
     def _build_cracks(self):
+        """抖动网格 Voronoi，记录到板块边界的**垂直距离**（不是 F2-F1）。
+
+        F2-F1 会随板块大小变宽：大板块裂缝是峡谷、小板块是发丝，一眼看出是
+        Voronoi 画的。用 p 到最近两个站点中垂面的距离，裂缝宽度就与板块无关。
+        """
         n = self.size
         rng = self.rng
-        n_sites = int(n / 3) + rng.integers(0, n // 6)
-        sites = rng.random((n_sites, 2)) * (n - 1)
+        cell = max(12.0, n / 9.0)           # 板块边长（像素）
+        gr = int(np.ceil(n / cell)) + 1
 
-        ys = np.arange(n, dtype=np.float32)[:, None]
-        xs = np.arange(n, dtype=np.float32)[None, :]
-        d1 = np.full((n, n), 1e9, dtype=np.float32)
-        d2 = np.full((n, n), 1e9, dtype=np.float32)
-        for sx, sy in sites:
-            d = np.hypot(xs - sx, ys - sy)
-            closer = d < d1
-            d2 = np.where(closer, d1, np.minimum(d2, d))
-            d1 = np.where(closer, d, d1)
+        # 站点网格向四周各扩一圈，保证边界像素也能找到 3×3 个不同的站点，
+        # 否则边缘一圈会因为邻居被裁剪成同一个点而算不出裂缝
+        jitter = 0.85
+        gsz = gr + 2
+        site_x = ((np.arange(gsz)[None, :] - 0.5) + (rng.random((gsz, gsz)) - 0.5) * jitter) * cell
+        site_y = ((np.arange(gsz)[:, None] - 0.5) + (rng.random((gsz, gsz)) - 0.5) * jitter) * cell
 
-        width = 2.2
-        self.crack_line = np.clip(1.0 - (d2 - d1) / width, 0.0, 1.0).astype(np.float32)
+        ys, xs = np.mgrid[0:n, 0:n].astype(np.float32)
+        ci = np.clip((xs / cell).astype(np.int32), 0, gr - 1) + 1
+        cj = np.clip((ys / cell).astype(np.int32), 0, gr - 1) + 1
 
-        # 开裂的"传播噪声"：低频率噪声，让裂纹一片片出现
+        d1 = np.full((n, n), 1e9, np.float32)
+        d2 = np.full((n, n), 1e9, np.float32)
+        x1 = np.zeros((n, n), np.float32)
+        y1 = np.zeros((n, n), np.float32)
+        x2 = np.zeros((n, n), np.float32)
+        y2 = np.zeros((n, n), np.float32)
+        cell_id = np.zeros((n, n), np.int32)
+
+        for dj in (-1, 0, 1):
+            for di in (-1, 0, 1):
+                j = cj + dj
+                i = ci + di
+                sx = site_x[j, i]
+                sy = site_y[j, i]
+                d = np.hypot(xs - sx, ys - sy)
+                closer = d < d1
+                # 更近：原来的最近降为第二近
+                d2 = np.where(closer, d1, np.minimum(d2, d))
+                x2 = np.where(closer, x1, x2)
+                y2 = np.where(closer, y1, y2)
+                d1 = np.where(closer, d, d1)
+                x1 = np.where(closer, sx, x1)
+                y1 = np.where(closer, sy, y1)
+                cell_id = np.where(closer, (j * gsz + i).astype(np.int32), cell_id)
+
+        # p 到中垂面的距离
+        ab = np.hypot(x2 - x1, y2 - y1)
+        ab = np.maximum(ab, 1e-3)
+        self.crack_edge = ((d2 * d2 - d1 * d1) / (2.0 * ab)).astype(np.float32)
+        self.crack_cell = cell_id
+
+        # 每块板自己的干湿色差
+        flat_id = cell_id.ravel()
+        plate_rand = rng.random(int(flat_id.max()) + 1).astype(np.float32)
+        self.plate_tint = plate_rand[flat_id].reshape(n, n)
+
+        # 开裂传播噪声：低频噪声让裂纹一片片出现
         noise = value_noise(n, rng, octaves=4, base=5)
         self.crack_noise = (0.55 * noise + 0.45 * _blur3(_blur3(noise))).astype(np.float32)
+
+        # 泥沙颗粒
+        grain = value_noise(n, rng, octaves=2, base=n // 8)
+        self.grain = (grain - 0.5).astype(np.float32)
 
     # ---------- 雨滴 ----------
     def add_rain(self, count, cx=None, cy=None, radius=0):
@@ -294,18 +341,24 @@ class TerrainCanvas(QWidget):
     def _render_image(self):
         sim = self.sim
         n = sim.size
-        h = _blur3(sim.h)     # 显示用平滑：抹掉单格开凿痕迹
+        h = _blur3(_blur3(sim.h))     # 显示用平滑：抹掉单格开凿痕迹
+        dry = sim.dry
+
+        # 干泥板会向四周裂缝处翘起：只影响显示高度，不动模拟的高度场
+        if dry > 0.02:
+            prox = np.clip(1.0 - sim.crack_edge / 9.0, 0.0, 1.0) ** 2
+            h = h + prox * 0.006 * dry
 
         hmin, hmax = float(h.min()), float(h.max())
         hn = (h - hmin) / max(1e-6, hmax - hmin)
 
         # 光影：梯度按格子尺寸放大成真实坡度，再用法线点乘光向
         gy, gx = np.gradient(h)
-        exag = n * 0.40
+        exag = n * 0.30
         nx, ny, nz = -gx * exag, -gy * exag, np.ones_like(hn)
         inv = 1.0 / np.sqrt(nx * nx + ny * ny + nz * nz)
         light = (nx * -0.48 + ny * -0.48 + nz * 0.73) * inv
-        shade = np.clip(0.62 + 0.75 * light, 0.30, 1.45)
+        shade = np.clip(0.74 + 0.52 * light, 0.40, 1.3)
 
         # 干土 / 湿泥 + 高处露岩：查表（以高度和湿度为索引），省掉多次浮点混合
         if self._soil_lut is None:
@@ -317,20 +370,24 @@ class TerrainCanvas(QWidget):
         if self.show_shade:
             rgb *= shade[..., None]
 
+        # 每块板干燥后的色差 + 泥沙颗粒
+        rgb += (sim.plate_tint[..., None] - 0.5) * 10.0 * dry
+        rgb += sim.grain[..., None] * 9.0
+
         # 积水 / 湿润：低洼处偏蓝
         if self.show_water:
             pond = np.clip((0.16 - hn) / 0.16, 0.0, 1.0) * np.clip((sim.wet - 0.10) * 2.5, 0, 1)
             water = np.clip(pond, 0.0, 1.0)[..., None]
             rgb = rgb * (1 - water * 0.75) + np.array([70, 118, 165], np.float32) * (water * 0.75)
 
-        # 龟裂：平缓、且已经干透的地方张开
-        if self.show_cracks and sim.dry > 0.02:
+        # 龟裂：宽度由「到板块边界的垂直距离」决定，不随板块大小变化
+        if self.show_cracks and dry > 0.02:
+            crack = 1.0 - smoothstep(1.1, 3.6, sim.crack_edge)
+            reveal = np.clip((dry - sim.crack_noise * 0.5) * 4.0, 0.0, 1.0)
             slope = np.hypot(gx, gy) * exag
-            flat = np.clip(1.0 - slope * 0.55, 0.0, 1.0)
-            reveal = np.clip((sim.dry * 1.35 - sim.crack_noise) * 2.8, 0.0, 1.0)
-            crack = sim.crack_line * reveal * flat * np.clip((sim.dry - 0.15) * 1.8, 0.0, 1.0)
-            crack = _blur3(crack)[..., None]
-            rgb = rgb * (1 - crack * 0.88) + np.array([58, 46, 38], np.float32) * (crack * 0.88)
+            flat = np.clip(1.0 - slope * 0.5, 0.0, 1.0)
+            crack = _blur3(crack * reveal * flat)[..., None] * 0.92
+            rgb = rgb * (1 - crack) + np.array([46, 36, 28], np.float32) * crack
 
         out = np.clip(rgb, 0, 255).astype(np.uint8)
         self._image = QImage(out.data, n, n, n * 3, QImage.Format_RGB888).copy()
