@@ -1,10 +1,11 @@
 from custom_import import *
+from array import array
 from PySide6.QtCore import QLineF
 
 # ========== L-system 核心 ==========
 class LSystem:
     """优化后的 L-system，字符串生成使用列表拼接，O(n) 复杂度"""
-    MAX_CHARS = 1_200_000      # 超过就截断，避免指数爆炸把进程拖死
+    MAX_CHARS = 6_000_000      # 超过就截断：路径用 numpy 存，600 万字符约 200MB 以内
 
     def __init__(self):
         self.axiom = ""
@@ -68,16 +69,19 @@ class LSystemGenerator(QThread):
         string, truncated = self.lsystem.generate()
         if self._cancelled:
             return
-        path = []
+
+        # 用 array('f') 累积坐标，最后零拷贝转成 numpy（比逐行写数组快得多）
+        buf = array('f')
+        seg = 0
         stack = []
         x, y = self.start_x, self.start_y
-        angle = -90.0
-        distance = self.lsystem.distance
-        angle_rad = math.radians(self.lsystem.angle)
 
-        cos_a = math.cos
-        sin_a = math.sin
-        append = path.append
+        # 用方向向量代替每步求 sin/cos：转角固定，只需一次三角函数
+        step_angle = math.radians(self.lsystem.angle)
+        cs = math.cos(step_angle)
+        sn = math.sin(step_angle)
+        distance = self.lsystem.distance
+        dx, dy = 0.0, -1.0          # 初始朝上（屏幕坐标 y 向下）
 
         min_x = max_x = x
         min_y = max_y = y
@@ -86,32 +90,32 @@ class LSystemGenerator(QThread):
             if index % 4096 == 0 and self._cancelled:
                 return
             if char == 'F':
-                new_x = x + distance * cos_a(math.radians(angle))
-                new_y = y + distance * sin_a(math.radians(angle))
-                # 更新包围盒
+                new_x = x + dx * distance
+                new_y = y + dy * distance
                 if new_x < min_x: min_x = new_x
                 if new_x > max_x: max_x = new_x
                 if new_y < min_y: min_y = new_y
                 if new_y > max_y: max_y = new_y
-                append(( (x, y), (new_x, new_y) ))
+                buf.extend((x, y, new_x, new_y))
                 x, y = new_x, new_y
             elif char == 'f':
-                x += distance * cos_a(math.radians(angle))
-                y += distance * sin_a(math.radians(angle))
-                # 移动也可能影响包围盒（虽然不画线，但影响后续起点，安全起见也更新）
+                x += dx * distance
+                y += dy * distance
                 if x < min_x: min_x = x
                 if x > max_x: max_x = x
                 if y < min_y: min_y = y
                 if y > max_y: max_y = y
             elif char == '+':
-                angle += self.lsystem.angle
+                dx, dy = dx * cs - dy * sn, dx * sn + dy * cs
             elif char == '-':
-                angle -= self.lsystem.angle
+                dx, dy = dx * cs + dy * sn, -dx * sn + dy * cs
             elif char == '[':
-                stack.append((x, y, angle))
+                stack.append((x, y, dx, dy))
             elif char == ']':
                 if stack:
-                    x, y, angle = stack.pop()
+                    x, y, dx, dy = stack.pop()
+
+        path = np.frombuffer(buf, dtype=np.float32).reshape(-1, 4).copy()
         self.pathReady.emit({
             "path": path,
             "bbox": (min_x, min_y, max_x, max_y),
@@ -128,11 +132,12 @@ class LSystemWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.lsystem = None
-        self.path = []              # [( (x1,y1), (x2,y2) ), ...]
+        self.path = np.empty((0, 4), dtype=np.float32)   # 每行 (x1,y1,x2,y2)
         self.bounding_rect = QRectF()  # 包围盒
         self.scale = 1.0
         self.offset_x = 0.0
         self.offset_y = 0.0
+        self._pixmap = None             # 渲染缓存
 
         self.start_color = QColor(139, 69, 19)
         self.end_color = QColor(34, 139, 34)
@@ -171,13 +176,14 @@ class LSystemWidget(QWidget):
         self.path = path
         self.bounding_rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
         self._update_transform()
+        self._pixmap = None
         self.update()
-        self.statsReady.emit(len(path), int(result["chars"]),
+        self.statsReady.emit(int(path.shape[0]), int(result["chars"]),
                              bool(result["truncated"]), float(result["elapsed"]))
 
     def _update_transform(self):
         """根据当前包围盒和窗口大小计算缩放和平移（居中）"""
-        if not self.path:
+        if self.path.shape[0] == 0:
             return
         rect = self.bounding_rect
         if rect.width() < 0.01 or rect.height() < 0.01:
@@ -197,72 +203,115 @@ class LSystemWidget(QWidget):
         self.start_color = start
         self.end_color = end
         self.bg_color = bg
+        self._pixmap = None
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), self.bg_color)
-        if not self.path:
+        if self.path.shape[0] == 0:
             return
+        if self._pixmap is None or self._pixmap.size() != self.size():
+            self._pixmap = self._render_pixmap()
+        painter.drawPixmap(0, 0, self._pixmap)
+
+    def _render_pixmap(self):
+        """线段很多时用 numpy 直接打点（快两个数量级），否则走矢量线（更细腻）。"""
+        n = self.path.shape[0]
+        if n > 300_000:
+            image = self._render_scatter()
+            if image is not None:
+                return QPixmap.fromImage(image)
+
+        pm = QPixmap(self.size())
+        pm.fill(self.bg_color)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing)
         self._draw_path(painter)
+        painter.end()
+        return pm
+
+    def _render_scatter(self):
+        """把每个线段终点画成一个像素；几十万段以上时肉眼与矢量线几乎无差别。"""
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+        arr = self.path
+        n = arr.shape[0]
+
+        xs = arr[:, 2] * self.scale + self.offset_x
+        ys = arr[:, 3] * self.scale + self.offset_y
+        px = np.rint(xs).astype(np.int32)
+        py = np.rint(ys).astype(np.int32)
+        mask = (px >= 0) & (px < w) & (py >= 0) & (py < h)
+        if not mask.any():
+            return None
+        idx = np.nonzero(mask)[0]
+
+        t = idx / max(1, n - 1)
+        sr, sg, sb = self.start_color.red(), self.start_color.green(), self.start_color.blue()
+        er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
+        cols = np.empty((idx.size, 3), dtype=np.uint8)
+        cols[:, 0] = np.clip(sr + (er - sr) * t, 0, 255)
+        cols[:, 1] = np.clip(sg + (eg - sg) * t, 0, 255)
+        cols[:, 2] = np.clip(sb + (eb - sb) * t, 0, 255)
+
+        img = np.empty((h, w, 3), dtype=np.uint8)
+        img[:, :] = (self.bg_color.red(), self.bg_color.green(), self.bg_color.blue())
+        img[py[mask], px[mask]] = cols
+
+        # 起点单独补一个像素，避免整条路径缺头
+        sx = int(round(arr[0, 0] * self.scale + self.offset_x))
+        sy = int(round(arr[0, 1] * self.scale + self.offset_y))
+        if 0 <= sx < w and 0 <= sy < h:
+            img[sy, sx] = (sr, sg, sb)
+
+        return QImage(img.data, w, h, w * 3, QImage.Format_RGB888).copy()
 
     def _draw_path(self, painter):
-        """公共绘制方法，供 paintEvent 和 save_image 复用
-
-        颜色按进度分成若干档，同档线段一次性 drawLines —— 几十万条线段也不会卡。
-        """
-        if not self.path:
+        """按进度分 48 档颜色，逐档 drawLines；路径来自 numpy 数组，内存很小。"""
+        n = self.path.shape[0]
+        if n == 0:
             return
         scale = self.scale
         off_x = self.offset_x
         off_y = self.offset_y
-        path_len = len(self.path)
         sr, sg, sb = self.start_color.red(), self.start_color.green(), self.start_color.blue()
         er, eg, eb = self.end_color.red(), self.end_color.green(), self.end_color.blue()
 
         pen = QPen()
         pen.setWidth(max(1, min(3, int(round(2 * scale)))))
         buckets = 48
-        batch = []
-        current = -1
 
-        for i, ((x1, y1), (x2, y2)) in enumerate(self.path):
-            t = i / (path_len - 1) if path_len > 1 else 0.0
-            b = int(t * (buckets - 1))
-            if b != current:
-                if batch:
-                    painter.setPen(pen)
-                    painter.drawLines(batch)
-                    batch = []
-                k = b / (buckets - 1)
-                pen.setColor(QColor(int(sr + (er - sr) * k),
-                                    int(sg + (eg - sg) * k),
-                                    int(sb + (eb - sb) * k)))
-                current = b
-            batch.append(QLineF(x1 * scale + off_x, y1 * scale + off_y,
-                                x2 * scale + off_x, y2 * scale + off_y))
-
-        if batch:
+        for b in range(buckets):
+            i0 = b * n // buckets
+            i1 = (b + 1) * n // buckets
+            if i1 <= i0:
+                continue
+            chunk = self.path[i0:i1]
+            xs = (chunk[:, 0] * scale + off_x).tolist()
+            ys = (chunk[:, 1] * scale + off_y).tolist()
+            xe = (chunk[:, 2] * scale + off_x).tolist()
+            ye = (chunk[:, 3] * scale + off_y).tolist()
+            lines = [QLineF(a, c, d, e) for a, c, d, e in zip(xs, ys, xe, ye)]
+            k = b / (buckets - 1)
+            pen.setColor(QColor(int(sr + (er - sr) * k),
+                                int(sg + (eg - sg) * k),
+                                int(sb + (eb - sb) * k)))
             painter.setPen(pen)
-            painter.drawLines(batch)
+            painter.drawLines(lines)
 
     def save_image(self, filename):
         """将当前图形保存为图片文件"""
-        if not self.path:
+        if self.path.shape[0] == 0:
             return False
-        image = QImage(self.size(), QImage.Format_ARGB32)
-        image.fill(self.bg_color)
-        painter = QPainter(image)
-        painter.setRenderHint(QPainter.Antialiasing)
-        self._draw_path(painter)
-        painter.end()
-        return image.save(filename)
+        return self._render_pixmap().save(filename)
 
     def resizeEvent(self, event):
         """窗口大小变化时重新计算变换"""
         super().resizeEvent(event)
-        if self.path:
+        self._pixmap = None
+        if self.path.shape[0] > 0:
             self._update_transform()
 
 # ========== 主窗口 ==========
@@ -476,7 +525,8 @@ class LSystemWindow(QMainWindow):
         self.angle_spin.setValue(25)
         self.distance_spin.setValue(10)
         self.iterations_spin.setValue(4)
-        self.canvas.path.clear()
+        self.canvas.path = np.empty((0, 4), dtype=np.float32)
+        self.canvas._pixmap = None
         self.canvas.update()
 
     def on_start_color_changed(self, color):
