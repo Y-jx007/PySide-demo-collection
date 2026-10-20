@@ -254,6 +254,25 @@ def update_custom_potential_field(potential_array: ti.types.ndarray()):
         custom_potential_field[i, j] = potential_array[i, j]
 
 # ── OpenGL 渲染画布 ───────────────────────
+def cover_texcoords(w, h, dpr, target):
+    """把纹理按「填满视口」的方式裁切，返回 (u0, v0, u1, v1)。
+
+    视口比目标比例更宽就裁上下，更窄就裁左右——不拉伸、也不留黑边。
+    w/h 是逻辑像素，计算前换算成设备像素。
+    """
+    W = max(1, int(round(w * dpr)))
+    H = max(1, int(round(h * dpr)))
+    if W / H > target:
+        th = target / (W / H)      # 高度方向保留的比例
+        tw = 1.0
+    else:
+        tw = (W / H) / target      # 宽度方向保留的比例
+        th = 1.0
+    u0 = (1.0 - tw) / 2.0
+    v0 = (1.0 - th) / 2.0
+    return u0, v0, 1.0 - u0, 1.0 - v0
+
+
 class TaichiCanvas(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -288,14 +307,12 @@ class TaichiCanvas(QOpenGLWidget):
         data = np.transpose(data, (1, 0, 2))
         data = np.ascontiguousarray(data)
 
-        # 保持模拟的分辨率比例，绝不拉伸：窗口比例不对时用黑边补齐
-        w, h = self.width(), self.height()
-        target = resolution[0] / resolution[1]
-        if w / max(1, h) > target:
-            vw, vh = int(h * target), h
-        else:
-            vw, vh = w, int(w / target)
-        glViewport((w - vw) // 2, (h - vh) // 2, max(1, vw), max(1, vh))
+        # 视口铺满整个画布（设备像素），由 UV 裁剪保证不拉伸
+        dpr = self.devicePixelRatioF()
+        glViewport(0, 0, max(1, int(round(self.width() * dpr))),
+                   max(1, int(round(self.height() * dpr))))
+        u0, v0, u1, v1 = cover_texcoords(self.width(), self.height(), dpr,
+                                         resolution[0] / resolution[1])
 
         glClear(GL_COLOR_BUFFER_BIT)
         glBindTexture(GL_TEXTURE_2D, self.texture_id)
@@ -303,14 +320,15 @@ class TaichiCanvas(QOpenGLWidget):
                      0, GL_RGBA, GL_UNSIGNED_BYTE, data)
 
         glBegin(GL_QUADS)
-        glTexCoord2f(0, 1); glVertex2f(-1, -1)
-        glTexCoord2f(1, 1); glVertex2f( 1, -1)
-        glTexCoord2f(1, 0); glVertex2f( 1,  1)
-        glTexCoord2f(0, 0); glVertex2f(-1,  1)
+        glTexCoord2f(u0, v1); glVertex2f(-1, -1)
+        glTexCoord2f(u1, v1); glVertex2f( 1, -1)
+        glTexCoord2f(u1, v0); glVertex2f( 1,  1)
+        glTexCoord2f(u0, v0); glVertex2f(-1,  1)
         glEnd()
 
     def resizeGL(self, w, h):
-        glViewport(0, 0, w, h)
+        dpr = self.devicePixelRatioF()
+        glViewport(0, 0, max(1, int(w * dpr)), max(1, int(h * dpr)))
 
 
 # ── 控制面板 ─────────────────────────────
