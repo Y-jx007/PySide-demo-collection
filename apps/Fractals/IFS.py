@@ -105,6 +105,7 @@ class FractalWidget(QWidget):
         self._cached_image = None
         self.color_start = QColor(218, 247, 166)
         self.color_end = QColor(34, 139, 34)
+        self.bg_color = QColor(255, 255, 255)
         self.setMinimumSize(400, 400)
 
     def set_points(self, points):
@@ -118,6 +119,11 @@ class FractalWidget(QWidget):
         self._cached_image = None
         if self.points is not None:
             self.update()
+
+    def set_background(self, color):
+        self.bg_color = color
+        self._cached_image = None
+        self.update()
 
     def _render_to_image(self):
         """将点集渲染为 QImage（使用 numpy 批量计算替代逐点 Qt 绘制）"""
@@ -160,8 +166,10 @@ class FractalWidget(QWidget):
         g = np.clip(sg + (eg - sg) * t, 0, 255).astype(np.uint8)
         b = np.clip(sb + (eb - sb) * t, 0, 255).astype(np.uint8)
 
-        # 创建 RGB 图像
-        img = np.full((h, w, 3), 255, dtype=np.uint8)  # 白色背景
+        # 创建 RGB 图像（用画布背景色填充）
+        bg = (self.bg_color.red(), self.bg_color.green(), self.bg_color.blue())
+        img = np.empty((h, w, 3), dtype=np.uint8)
+        img[:, :] = bg
         img[py, px, 0] = r
         img[py, px, 1] = g
         img[py, px, 2] = b
@@ -172,8 +180,8 @@ class FractalWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         if self.points is None:
-            painter.fillRect(self.rect(), Qt.white)
-            painter.setPen(QColor(180, 180, 180))
+            painter.fillRect(self.rect(), self.bg_color)
+            painter.setPen(QColor(160, 160, 160))
             painter.drawText(self.rect(), Qt.AlignCenter, "选择分形类型并点击生成")
             painter.end()
             return
@@ -184,7 +192,7 @@ class FractalWidget(QWidget):
         if self._cached_image:
             painter.drawImage(self.rect(), self._cached_image)
         else:
-            painter.fillRect(self.rect(), Qt.white)
+            painter.fillRect(self.rect(), self.bg_color)
         painter.end()
 
     def resizeEvent(self, event):
@@ -222,6 +230,8 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(6, 6, 6, 6)
         main_layout.setSpacing(8)
 
+        self.fractal_widget = FractalWidget()
+
         panel = QWidget()
         panel.setFixedWidth(310)
         panel_layout = QVBoxLayout(panel)
@@ -233,9 +243,7 @@ class MainWindow(QMainWindow):
         self.create_transform_section(panel_layout)
         self.create_buttons_section(panel_layout)
         self.create_stats_section(panel_layout)
-        panel_layout.addStretch()
 
-        self.fractal_widget = FractalWidget()
         main_layout.addWidget(panel)
         main_layout.addWidget(self.fractal_widget, 1)
 
@@ -279,6 +287,16 @@ class MainWindow(QMainWindow):
         h.addWidget(self.end_color_btn)
         h.addStretch()
         form.addRow("颜色:", color_row)
+
+        bg_row = QWidget()
+        hb = QHBoxLayout(bg_row)
+        hb.setContentsMargins(0, 0, 0, 0)
+        hb.setSpacing(6)
+        self.bg_color_btn = ColorButton(self.fractal_widget.bg_color)
+        self.bg_color_btn.colorChanged.connect(self.on_bg_color_changed)
+        hb.addWidget(self.bg_color_btn)
+        hb.addStretch()
+        form.addRow("背景:", bg_row)
 
         group.setLayout(form)
         layout.addWidget(group)
@@ -343,6 +361,9 @@ class MainWindow(QMainWindow):
     def on_end_color_changed(self, color):
         self.color_end = color
         self.fractal_widget.set_colors(self.color_start, self.color_end)
+
+    def on_bg_color_changed(self, color):
+        self.fractal_widget.set_background(color)
 
     def generate_fractal(self):
         if self.worker and self.worker.isRunning():

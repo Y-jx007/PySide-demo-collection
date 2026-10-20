@@ -136,7 +136,7 @@ class LSystemWidget(QWidget):
 
         self.start_color = QColor(139, 69, 19)
         self.end_color = QColor(34, 139, 34)
-        self.bg_color = QColor(240, 240, 240)
+        self.bg_color = QColor(255, 255, 255)
 
         self.setMinimumSize(400, 400)
         self._generator = None          # 当前后台线程
@@ -176,18 +176,22 @@ class LSystemWidget(QWidget):
                              bool(result["truncated"]), float(result["elapsed"]))
 
     def _update_transform(self):
-        """根据当前包围盒和窗口大小计算缩放和平移"""
+        """根据当前包围盒和窗口大小计算缩放和平移（居中）"""
         if not self.path:
             return
         rect = self.bounding_rect
         if rect.width() < 0.01 or rect.height() < 0.01:
             return
-        margin = 50
-        scale_x = (self.width() - 2 * margin) / rect.width()
-        scale_y = (self.height() - 2 * margin) / rect.height()
+        margin = 24
+        avail_w = max(1.0, self.width() - 2 * margin)
+        avail_h = max(1.0, self.height() - 2 * margin)
+        scale_x = avail_w / rect.width() if rect.width() > 0 else 1.0
+        scale_y = avail_h / rect.height() if rect.height() > 0 else 1.0
         self.scale = min(scale_x, scale_y)
-        self.offset_x = margin - rect.left() * self.scale
-        self.offset_y = margin - rect.top() * self.scale
+        draw_w = rect.width() * self.scale
+        draw_h = rect.height() * self.scale
+        self.offset_x = (self.width() - draw_w) / 2.0 - rect.left() * self.scale
+        self.offset_y = (self.height() - draw_h) / 2.0 - rect.top() * self.scale
 
     def set_colors(self, start, end, bg):
         self.start_color = start
@@ -292,7 +296,6 @@ class LSystemWindow(QMainWindow):
         self.create_rules_section(panel_layout)
         self.create_buttons_section(panel_layout)
         self.create_stats_section(panel_layout)
-        panel_layout.addStretch()
 
         main_layout.addWidget(panel)
         main_layout.addWidget(self.canvas, 1)
