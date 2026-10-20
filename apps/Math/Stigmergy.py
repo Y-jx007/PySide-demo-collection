@@ -25,6 +25,9 @@ class StigmergySimulation:
         self.pos = ti.Vector.field(2, dtype=ti.f32, shape=MAX_PARTICLES)
         self.ang = ti.field(dtype=ti.f32, shape=MAX_PARTICLES)
         self.species = ti.field(dtype=ti.i32, shape=MAX_PARTICLES)
+        # 蚁群模式：0 = 觅食（离巢），1 = 返程（携带食物）
+        self.ant_state = ti.field(dtype=ti.i32, shape=MAX_PARTICLES)
+        self.nest = ti.Vector.field(2, dtype=ti.f32, shape=())
 
         # 两种信息素（双缓冲），外加一张静态食物图
         self.trail_a = ti.field(dtype=ti.f32, shape=(size, size))
@@ -43,6 +46,8 @@ class StigmergySimulation:
         self.diffuse = 0.12
         self.food_weight = 0.6
         self.dual_species = True
+        self.mode = 0                    # 0 = 黏菌，1 = 蚁群
+        self.nest[None] = ti.Vector([size * 0.5, size * 0.5])
 
         self.seed()
         self.clear()
@@ -54,6 +59,7 @@ class StigmergySimulation:
             self.pos[i] = ti.Vector([ti.random() * size, ti.random() * size])
             self.ang[i] = ti.random() * 6.2831853
             self.species[i] = i % 2
+            self.ant_state[i] = 0
 
     @ti.kernel
     def _clear_kernel(self):
@@ -78,15 +84,15 @@ class StigmergySimulation:
     # ---------- 单步演化 ----------
     @ti.func
     def _sense(self, x: ti.f32, y: ti.f32, sp: ti.i32, size: ti.i32, fw: ti.f32) -> ti.f32:
-        """在 (x, y) 处采样气味（含食物加成）。"""
+        """在 (x, y) 处采样气味（含食物加成）。场按 [行=y, 列=x] 存储。"""
         xi = ti.cast(x, ti.i32) % size
         yi = ti.cast(y, ti.i32) % size
         val = 0.0
         if sp == 0:
-            val = self.trail_a[xi, yi]
+            val = self.trail_a[yi, xi]
         else:
-            val = self.trail_b[xi, yi]
-        return val + fw * self.food[xi, yi]
+            val = self.trail_b[yi, xi]
+        return val + fw * self.food[yi, xi]
 
     @ti.kernel
     def step(self, n: ti.i32, size: ti.i32, sense_dist: ti.f32, sense_angle: ti.f32,
@@ -122,9 +128,79 @@ class StigmergySimulation:
             xi = ti.cast(p.x, ti.i32) % size
             yi = ti.cast(p.y, ti.i32) % size
             if sp == 0:
-                ti.atomic_add(self.trail_a[xi, yi], deposit)
+                ti.atomic_add(self.trail_a[yi, xi], deposit)
             else:
-                ti.atomic_add(self.trail_b[xi, yi], deposit)
+                ti.atomic_add(self.trail_b[yi, xi], deposit)
+
+    @ti.func
+    def _sample(self, x: ti.f32, y: ti.f32, size: ti.i32, which: ti.i32) -> ti.f32:
+        xi = ti.cast(x, ti.i32) % size
+        yi = ti.cast(y, ti.i32) % size
+        v = 0.0
+        if which == 0:
+            v = self.trail_a[yi, xi]      # 食物信息素
+        else:
+            v = self.trail_b[yi, xi]      # 归巢信息素
+        return v
+
+    @ti.kernel
+    def ant_step(self, n: ti.i32, size: ti.i32, sense_dist: ti.f32, sense_angle: ti.f32,
+                 turn_angle: ti.f32, speed: ti.f32, deposit: ti.f32, food_hit: ti.f32):
+        nest = self.nest[None]
+        for i in range(n):
+            p = self.pos[i]
+            a = self.ang[i]
+            if self.ant_state[i] == 0:
+                # ---- 觅食：跟随食物信息素，留下归巢信息素 ----
+                f_c = self._sample(p.x + ti.cos(a) * sense_dist,
+                                   p.y + ti.sin(a) * sense_dist, size, 0)
+                f_l = self._sample(p.x + ti.cos(a - sense_angle) * sense_dist,
+                                   p.y + ti.sin(a - sense_angle) * sense_dist, size, 0)
+                f_r = self._sample(p.x + ti.cos(a + sense_angle) * sense_dist,
+                                   p.y + ti.sin(a + sense_angle) * sense_dist, size, 0)
+                if f_c > 1e-3 or f_l > 1e-3 or f_r > 1e-3:
+                    # 闻到信息素：按梯度走
+                    if f_c > f_l and f_c > f_r:
+                        a += (ti.random() - 0.5) * turn_angle * 0.3
+                    elif f_l > f_r:
+                        a += turn_angle
+                    else:
+                        a -= turn_angle
+                else:
+                    # 场上没有信息素：保持大致直线地扫场，靠这个走出巢穴
+                    a += (ti.random() - 0.5) * turn_angle * 0.25
+
+                p.x = (p.x + ti.cos(a) * speed) % size
+                p.y = (p.y + ti.sin(a) * speed) % size
+                xi = ti.cast(p.x, ti.i32) % size
+                yi = ti.cast(p.y, ti.i32) % size
+                ti.atomic_add(self.trail_b[yi, xi], deposit * 0.06)
+
+                if self.food[yi, xi] > food_hit:      # 找到食物 -> 返程
+                    self.ant_state[i] = 1
+                    a += 3.14159265
+            else:
+                # ---- 返程：朝巢穴走，沿途留下食物信息素 ----
+                dx = (nest.x - p.x + size * 0.5) % size - size * 0.5
+                dy = (nest.y - p.y + size * 0.5) % size - size * 0.5
+                d = ti.atan2(dy, dx) - a
+                d = (d + 3.14159265) % 6.2831853 - 3.14159265
+                a += d * 0.35 + (ti.random() - 0.5) * turn_angle * 0.3
+
+                p.x = (p.x + ti.cos(a) * speed) % size
+                p.y = (p.y + ti.sin(a) * speed) % size
+                xi = ti.cast(p.x, ti.i32) % size
+                yi = ti.cast(p.y, ti.i32) % size
+                ti.atomic_add(self.trail_a[yi, xi], deposit)
+
+                if ti.abs(dx) < 7.0 and ti.abs(dy) < 7.0:   # 回到巢穴 -> 再出发
+                    self.ant_state[i] = 0
+                    a = ti.random() * 6.2831853            # 随机方向离巢
+                    p.x = (nest.x + ti.cos(a) * 8.0) % size
+                    p.y = (nest.y + ti.sin(a) * 8.0) % size
+
+            self.pos[i] = p
+            self.ang[i] = a
 
     @ti.kernel
     def diffuse_decay(self, size: ti.i32, decay: ti.f32, diffuse: ti.f32):
@@ -164,8 +240,8 @@ class StigmergySimulation:
                     xi = (cx_i + di) % size
                     yi = (cy_i + dj) % size
                     falloff = 1.0 - ti.sqrt(ti.cast(d2, ti.f32)) / (radius + 1.0)
-                    v = self.food[xi, yi] + amount * ti.max(falloff, 0.0)
-                    self.food[xi, yi] = ti.max(v, 0.0)
+                    v = self.food[yi, xi] + amount * ti.max(falloff, 0.0)
+                    self.food[yi, xi] = ti.max(v, 0.0)
 
     @ti.kernel
     def _total_kernel(self) -> ti.f32:
@@ -175,11 +251,31 @@ class StigmergySimulation:
         return s
 
     def update(self):
-        self.step(self.n, self.size, self.sense_dist, self.sense_angle,
-                  self.turn_angle, self.speed, self.deposit,
-                  self.food_weight, 1 if self.dual_species else 0)
-        self.diffuse_decay(self.size, self.decay, self.diffuse)
+        if self.mode == 0:
+            self.step(self.n, self.size, self.sense_dist, self.sense_angle,
+                      self.turn_angle, self.speed, self.deposit,
+                      self.food_weight, 1 if self.dual_species else 0)
+            self.diffuse_decay(self.size, self.decay, self.diffuse)
+        else:
+            # 蚁群的信息素要留得久一些，否则路径来不及被强化
+            self.ant_step(self.n, self.size, self.sense_dist, self.sense_angle,
+                          self.turn_angle, max(0.2, self.speed), max(0.3, self.deposit * 0.6),
+                          0.4)
+            ant_decay = 1.0 - (1.0 - self.decay) * 0.12
+            self.diffuse_decay(self.size, min(0.9995, ant_decay), self.diffuse * 0.5)
         self._swap_kernel()
+
+    def set_mode(self, mode):
+        self.mode = int(mode)
+        self.clear_trails()
+        self.seed()
+
+    def set_nest(self, x, y):
+        self.nest[None] = ti.Vector([float(x) % self.size, float(y) % self.size])
+
+    def get_nest(self):
+        n = self.nest[None]
+        return float(n[0]), float(n[1])
 
     def add_food(self, cx, cy, radius, amount=6.0):
         self._add_food_kernel(float(cx) % self.size, float(cy) % self.size,
@@ -196,19 +292,33 @@ class StigmergySimulation:
 
         # 分位数归一 + gamma：既不会过曝，也能保住静脉状结构的对比度
         # 分位数在子采样上算，省掉一大半时间
-        sample = (a + b)[::4, ::4]
-        scale = 1.0 / (float(np.percentile(sample, 99.0)) + 1e-4) * gain
-        a = np.sqrt(np.clip(a * scale, 0.0, 1.0))
-        b = np.sqrt(np.clip(b * scale, 0.0, 1.0))
+        if self.mode == 1:
+            # 蚁群：两种信息素量级差很多，各归一各的
+            sa = 1.0 / (float(np.percentile(a[::4, ::4], 99.5)) + 1e-4) * gain
+            sb = 1.0 / (float(np.percentile(b[::4, ::4], 99.5)) + 1e-4) * gain
+            cool = 0.45
+        else:
+            sa = sb = 1.0 / (float(np.percentile((a + b)[::4, ::4], 99.0)) + 1e-4) * gain
+            cool = 1.0
+        a = np.sqrt(np.clip(a * sa, 0.0, 1.0))
+        b = np.sqrt(np.clip(b * sb, 0.0, 1.0))
 
         img = np.zeros((self.size, self.size, 3), dtype=np.float32)
         img[..., 0] += a * 255.0
         img[..., 1] += a * 165.0
         img[..., 2] += a * 50.0
-        img[..., 0] += b * 60.0
-        img[..., 1] += b * 185.0
-        img[..., 2] += b * 255.0
+        img[..., 0] += b * 60.0 * cool
+        img[..., 1] += b * 185.0 * cool
+        img[..., 2] += b * 255.0 * cool
         img += np.clip(food, 0.0, 1.0)[..., None] * np.array([12.0, 22.0, 20.0])
+
+        if self.mode == 1:      # 蚁群：标出巢穴
+            nx, ny = self.get_nest()
+            yy, xx = np.ogrid[:self.size, :self.size]
+            dist = np.sqrt((xx - nx) ** 2 + (yy - ny) ** 2)
+            ring = (dist > 5.0) & (dist < 8.0)
+            img[ring] = [255.0, 245.0, 205.0]
+
         return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -253,6 +363,11 @@ class StigmergyCanvas(QWidget):
         return fx * self.sim.size, fy * self.sim.size
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ShiftModifier):
+            x, y = self._to_sim(event.position())
+            self.sim.set_nest(x, y)
+            self.update_display()
+            return
         self._drawing = True
         self._erase = event.button() == Qt.RightButton
         self._paint_food(event.position())
@@ -384,6 +499,16 @@ class StigmergyApp(QMainWindow):
         group = QGroupBox("显示 / 交互")
         layout = QVBoxLayout()
 
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["黏菌 Physarum", "蚁群 Ant colony"])
+        self.mode_combo.currentIndexChanged.connect(self._set_mode)
+        row0 = QWidget()
+        h0 = QHBoxLayout(row0)
+        h0.setContentsMargins(0, 0, 0, 0)
+        h0.addWidget(QLabel("模式:"))
+        h0.addWidget(self.mode_combo, 1)
+        layout.addWidget(row0)
+
         self.steps_spin = QSpinBox()
         self.steps_spin.setRange(1, 8)
         self.steps_spin.setValue(1)
@@ -405,11 +530,16 @@ class StigmergyApp(QMainWindow):
         h2.addWidget(self.brush_spin)
         layout.addWidget(row2)
 
-        tip = QLabel("左键拖拽放食物，右键擦除")
+        tip = QLabel("左键拖拽放食物，右键擦除\n蚁群模式：Shift+左键设置巢穴")
         tip.setStyleSheet("color:#888;")
         layout.addWidget(tip)
         group.setLayout(layout)
         return group
+
+    def _set_mode(self, idx):
+        self.sim.set_mode(idx)
+        self.canvas.update_display()
+        self.lbl_mass.setText("0")
 
     def _create_stats_group(self):
         group = QGroupBox("统计")
