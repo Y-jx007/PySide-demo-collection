@@ -362,7 +362,7 @@ class BeamCanvas(QWidget):
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.setMinimumSize(560, 320)
+        self.setMinimumSize(560, 300)
 
     def _top_surface_y(self, sim, x_pos, mx, sx, base_y):
         """梁顶面在给定 x 处的像素 y（跟着变形走）。"""
@@ -400,20 +400,21 @@ class BeamCanvas(QWidget):
         broken = app.broken_mask
         limit = sim.sigma_ult
 
-        # 两侧木条支座（钉子钉在端面中高处）
-        post_w = 15.0
+        # 木桩垫在梁端下方：桩的外缘与梁端平齐
+        post_w = 16.0
         ground_y = base_y + (sim.h * 0.5 + 0.30) * scale_x
-        for node in (sim.left_node, sim.right_node):
-            sx = margin_x + float(pos[node, 0]) * scale_x
+        post_x = []
+        for node, side in ((sim.left_node, +1), (sim.right_node, -1)):
+            ex = margin_x + float(pos[node, 0]) * scale_x      # 梁端位置
+            x0 = ex if side > 0 else ex - post_w
             top_y = base_y - (float(pos[node, 1]) - sim.h * 0.5) * scale_x
-            wood = QColor(176, 136, 92)
-            p.setBrush(wood)
-            p.setPen(QPen(QColor(122, 92, 58), 1.2))
-            p.drawRect(QRectF(sx - post_w / 2, top_y, post_w, ground_y - top_y))
-            # 木纹
-            p.setPen(QPen(QColor(150, 114, 74), 1))
-            for k in (-4, 0, 4):
-                p.drawLine(QPointF(sx + k, top_y + 3), QPointF(sx + k, ground_y - 3))
+            p.setBrush(QColor(178, 138, 94))
+            p.setPen(QPen(QColor(120, 90, 56), 1.2))
+            p.drawRect(QRectF(x0, top_y, post_w, ground_y - top_y))
+            p.setPen(QPen(QColor(154, 118, 78), 1))
+            for k in (5, 10):
+                p.drawLine(QPointF(x0 + k, top_y + 3), QPointF(x0 + k, ground_y - 3))
+            post_x.append(x0 + post_w / 2)
 
 
         for e, conn in enumerate(sim.conn):
@@ -428,20 +429,18 @@ class BeamCanvas(QWidget):
             p.setPen(QPen(QColor(110, 110, 120, 70), 0.5))
             p.drawPolygon(QPolygonF([QPointF(px[i], py[i]) for i in conn]))
 
-        # 竖直钉：从梁顶穿下去，钉进下面的木桩
-        for node in (sim.left_node, sim.right_node):
-            sx = margin_x + float(pos[node, 0]) * scale_x
-            cy = base_y - float(pos[node, 1]) * scale_x
-            top = cy - (sim.h * 0.5) * scale_x - 9
-            bottom = cy + (sim.h * 0.5) * scale_x + 16
-            p.setPen(QPen(QColor(92, 96, 104), 3.0))
-            p.drawLine(QPointF(sx, top + 3), QPointF(sx, bottom))
+        # 钢钉：细杆 + 小钉帽，穿过梁体钉进木桩
+        for sx in post_x:
+            surf = self._top_surface_y(sim, (sx - margin_x) / scale_x, margin_x, scale_x, base_y)
+            top = surf - 3.0
+            bottom = base_y + (sim.h * 0.5) * scale_x + 12
+            p.setPen(QPen(QColor(118, 122, 130), 2.0))
+            p.drawLine(QPointF(sx, top), QPointF(sx, bottom))
+            p.setPen(QPen(QColor(168, 172, 180), 0.8))
+            p.drawLine(QPointF(sx - 0.5, top), QPointF(sx - 0.5, bottom - 2))
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(126, 130, 138))
-            p.drawEllipse(QPointF(sx, top), 5.0, 3.2)
-            p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(QColor(70, 74, 80), 1))
-            p.drawEllipse(QPointF(sx, top), 5.0, 3.2)
+            p.setBrush(QColor(146, 150, 158))
+            p.drawRoundedRect(QRectF(sx - 3.2, top - 2.6, 6.4, 3.2), 1.4, 1.4)
 
         if app.load > 0:
             x_pos = app.load_pos if app.load_pos is not None else span / 2.0
@@ -469,7 +468,7 @@ class SweepChart(QWidget):
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.setMinimumHeight(210)
+        self.setMinimumHeight(150)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -572,7 +571,7 @@ class BeamApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("横梁承重 · Taichi 实时破坏模拟")
-        self.setGeometry(110, 60, 1200, 840)
+        self.setGeometry(140, 90, 1180, 700)
 
         self.material = "松木"
         self.support = "simple"
@@ -693,7 +692,7 @@ class BeamApp(QMainWindow):
         rv.setContentsMargins(0, 0, 0, 0)
         rv.addWidget(self.canvas, 1)
         self.chart = SweepChart(self)
-        self.chart.setFixedHeight(208)
+        self.chart.setFixedHeight(168)
         rv.addWidget(self.chart)
         root.addWidget(right, 1)
 
