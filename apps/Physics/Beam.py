@@ -838,14 +838,21 @@ class BeamApp(QMainWindow):
         self.sweep_mode = mode
         self.runs = []
         E, sig, nu, _rho = MATERIALS[self.material]
+        # 只取细长梁范围（跨高比 8~40）：再矮就是深梁、剪切主导，再高就
+        # 偏离 h² 的梁理论，拟合出来的指数会跑偏
+        aspects = np.array([40.0, 34.0, 29.0, 24.5, 21.0, 18.0, 15.0, 12.5, 10.0])
         if mode == "height":
-            for v in np.linspace(0.02, 0.30, 9):
-                sim = StaticBeam(self.beam_length, v, E, sig, self.support, nu=nu)
-                self.runs.append({"L": self.beam_length, "h": v, "P": sim.capacity(), "x": v * 100})
+            for a in aspects:
+                h = self.beam_length / a
+                sim = StaticBeam(self.beam_length, h, E, sig, self.support, nu=nu)
+                self.runs.append({"L": self.beam_length, "h": h,
+                                  "P": sim.capacity(), "x": h * 100})
         else:
-            for v in np.linspace(0.5, 3.0, 9):
-                sim = StaticBeam(v, self.beam_height, E, sig, self.support, nu=nu)
-                self.runs.append({"L": v, "h": self.beam_height, "P": sim.capacity(), "x": v})
+            for a in aspects[::-1]:          # 跨高比由小到大 → 梁长递增
+                L = float(np.clip(self.beam_height * a, 0.3, 4.0))
+                sim = StaticBeam(L, self.beam_height, E, sig, self.support, nu=nu)
+                self.runs.append({"L": L, "h": self.beam_height,
+                                  "P": sim.capacity(), "x": L})
         self.chart.update()
         self.lbl_status.setText(f"已扫描 {len(self.runs)} 组数据")
 
