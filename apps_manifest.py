@@ -92,6 +92,13 @@ APPS = [
         "category": "Cellular Automata",
     },
     {
+        "title": "Atmosphere",
+        "description": "大气对流：气温、气流、气压同屏，铅直剖面",
+        "path": "Physics/Atmosphere.py",
+        "friendly": "大气对流",
+        "category": "Physics",
+    },
+    {
         "title": "Beam",
         "description": "横梁承重：有限元算弯曲应力，超强度即断裂",
         "path": "Physics/Beam.py",
