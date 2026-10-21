@@ -55,16 +55,14 @@
 
 | 应用 | 说明 |
 |------|------|
-| **SoftRobot** | MPM 软体机器人：460 个粒子、4 个驱动器，用进化策略在 700 步模拟里搜索让身体前进的正弦控制参数 |
-| **SoftEvolution** | 演化软体：24 条软体虫子用位置约束物理模拟，肌肉相位由基因决定，按跑动距离选择、杂交、变异，逐代学会爬行 |
 | **Circulation** | 全球风场：解析式海平面气压 + 地转风，Taichi 并行算在 360×180 网格上，海岸线用 Natural Earth 720×360 数据；可叠加气压配色 |
 | **Erosion** | 降雨冲刷地形（雨滴侵蚀），干燥后按 Voronoi 板块边界张开泥土龟裂 |
+| **Caustic** | 焦散/光线折射模拟 |
 | **2D Boids** | Boids 群体行为 |
 | **2D Noise** | 麦克风实时噪声频谱（需要 sounddevice） |
 | **2D Qusicrystal** | 二维准晶衍射图样 |
 | **Mass Spring** | 质点-弹簧系统 |
 | **Particle Lenia** | 粒子化 Lenia |
-| **Caustic** | 焦散/光线折射模拟 |
 | **Deformation** | 网格形变可视化 |
 | **KAM** | KAM 环面与标准映射 |
 

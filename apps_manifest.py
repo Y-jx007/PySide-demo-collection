@@ -187,6 +187,27 @@ APPS = [
     },
     # ---------------- 实验 ----------------
     {
+        "title": "Circulation",
+        "description": "全球环流：气压梯度推风，风应力旋度推海洋环流",
+        "path": "Physics/Circulation.py",
+        "friendly": "全球环流",
+        "category": "实验",
+    },
+    {
+        "title": "Erosion",
+        "description": "降雨冲刷地形，干后泥土龟裂",
+        "path": "Physics/Erosion.py",
+        "friendly": "水力侵蚀",
+        "category": "实验",
+    },
+    {
+        "title": "Caustic",
+        "description": "焦散/光线折射模拟",
+        "path": "Physics/Caustic.py",
+        "friendly": "焦散模拟",
+        "category": "实验",
+    },
+    {
         "title": "2D Boids",
         "description": "Boids 群体行为模拟",
         "path": "2D Boids.py",
@@ -223,13 +244,6 @@ APPS = [
         "category": "实验",
     },
     {
-        "title": "Caustic",
-        "description": "焦散/光线折射模拟",
-        "path": "Physics/Caustic.py",
-        "friendly": "焦散模拟",
-        "category": "实验",
-    },
-    {
         "title": "Deformation",
         "description": "网格形变可视化",
         "path": "Physics/Deformation.py",
@@ -241,34 +255,6 @@ APPS = [
         "description": "KAM 环面与标准映射",
         "path": "Physics/KAM.py",
         "friendly": "KAM环面",
-        "category": "实验",
-    },
-    {
-        "title": "SoftRobot",
-        "description": "MPM 软体机器人：460 个粒子构成的软体，进化策略搜索步态",
-        "path": "Physics/SoftRobot.py",
-        "friendly": "软体机器人",
-        "category": "实验",
-    },
-    {
-        "title": "SoftEvolution",
-        "description": "演化软体：软体虫子+遗传算法，几十代后学会爬行",
-        "path": "Physics/SoftEvolution.py",
-        "friendly": "演化软体",
-        "category": "实验",
-    },
-    {
-        "title": "Circulation",
-        "description": "全球环流：气压梯度推风，风应力旋度推海洋环流",
-        "path": "Physics/Circulation.py",
-        "friendly": "全球环流",
-        "category": "实验",
-    },
-    {
-        "title": "Erosion",
-        "description": "降雨冲刷地形，干后泥土龟裂",
-        "path": "Physics/Erosion.py",
-        "friendly": "水力侵蚀",
         "category": "实验",
     },
 ]
