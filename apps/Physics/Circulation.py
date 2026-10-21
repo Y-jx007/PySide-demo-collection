@@ -109,123 +109,124 @@ def _display_speed(u, v, v_ref):
     return u * k, v * k
 
 
-class Circulation:
-    """理想化全球大气环流 + 风生洋流。
+class WindSim:
+    """气压场与风场，用 Taichi 并行算在 360×180 网格上。
 
-    气压：按纬度给一条解析式剖面，海陆取不同参数，再各向异性高斯模糊；
-    风：地转风（气压梯度旋转 90°）叠加科里奥利参数 f = 15·sin(lat)；
-    洋流：风应力旋度做强迫，解泊松方程 ∇²ψ = -curl(τ) 得到流函数，
-          u = -∂ψ/∂y, v = ∂ψ/∂x，陆地为狄利克雷边界。
+    参考 shader 在 144×72 上算，这里提高 2.5 倍；高斯模糊是可分离的，
+    两个方向各一个 kernel，每个格点并行累加。
     """
 
+    NW, NH = 360, 180
+
     def __init__(self):
-        self.land = load_land()
-        self.ocean = ~self.land
-        ys = np.arange(H)[:, None] * np.ones((1, W))
-        self.lat = 180.0 * ys / H - 90.0            # 第 0 行是南极
-        self.lon = 360.0 * np.ones((H, 1)) * np.arange(W)[None, :] / W - 180.0
-        self.month = 1
-        self._solve_psi_setup()
-        self.update(1)
+        self.land = _land_at(self.NW, self.NH)          # 第 0 行是南
+        self.lats = (180.0 * np.arange(self.NH) / self.NH - 90.0).astype(np.float32)
 
-    # ---------- 气压 ----------
-    def _mslp(self):
-        lat = self.lat
-        land = self.land
-        p = np.where(
-            land,
-            1012.5 - 6.0 * np.cos(lat * np.pi / 45.0),
-            1014.5 - 20.0 * np.cos(lat * np.pi / 30.0),
-        )
-        d = np.where(
-            land,
-            15.0 * np.sin(lat * np.pi / 90.0),
-            20.0 * np.sin(lat * np.pi / 35.0) * np.abs(lat) / 90.0,
-        )
-        return p, d
+        ti.reset()
+        ti.init(arch=ti.cpu, default_fp=ti.f32)
+        self.f_land = ti.field(ti.i32, (self.NH, self.NW))
+        self.f_p0 = ti.field(ti.f32, (self.NH, self.NW))
+        self.f_pd = ti.field(ti.f32, (self.NH, self.NW))
+        self.f_p = ti.field(ti.f32, (self.NH, self.NW))
+        self.f_b1 = ti.field(ti.f32, (self.NH, self.NW))
+        self.f_b2 = ti.field(ti.f32, (self.NH, self.NW))
+        self.f_wind = ti.Vector.field(2, ti.f32, (self.NH, self.NW))
+        self.f_land.from_numpy(self.land.astype(np.int32))
+        self._compile()
+        self.t = 1.0
+        self.update(1.0)
 
-    def update(self, month):
-        self.month = month          # 允许浮点：季节是连续量
-        p0, d = self._mslp()
-        # 参考里 mslp 返回 vec4（年均值 + 季节差），pass1/pass2 把两个分量
-        # 一起模糊；只糊年均值会让季节项保留海陆硬边界，看起来像横条被截断
-        p = _blur_y(_blur_x(p0, 6.0), 4.0)
-        d = _blur_y(_blur_x(d, 6.0), 4.0)
-        # 季节项：1/7 月反相
-        t = float(month)
-        delta = d * (1.0 - 2.0 * _smoothstep(1.5, 4.5, t) + 2.0 * _smoothstep(7.5, 10.5, t))
-        self.p = p + delta
+    def _compile(self):
+        NH, NW = self.NH, self.NW
+        land, p0, pd, p, b1, b2 = (self.f_land, self.f_p0, self.f_pd,
+                                   self.f_p, self.f_b1, self.f_b2)
+        wind = self.f_wind
+
+        # 半径 45 的高斯核 = 3σ，σ=15 格（对应参考在 144 宽下的 σ=6）
+        R = 45
+        SIG = 15.0
+
+        @ti.kernel
+        def make_mslp(t: ti.f32):
+            for i, j in p0:
+                lat = 180.0 * i / NH - 90.0
+                if land[i, j] != 0:
+                    p0[i, j] = 1012.5 - 6.0 * ti.cos(lat * 3.14159265 / 45.0)
+                    pd[i, j] = 15.0 * ti.sin(lat * 3.14159265 / 90.0)
+                else:
+                    p0[i, j] = 1014.5 - 20.0 * ti.cos(lat * 3.14159265 / 30.0)
+                    pd[i, j] = 20.0 * ti.sin(lat * 3.14159265 / 35.0) * ti.abs(lat) / 90.0
+                # 季节项：1/7 月反相
+                amp = 1.0 - 2.0 * _ss(1.5, 4.5, t) + 2.0 * _ss(7.5, 10.5, t)
+                p[i, j] = p0[i, j] + pd[i, j] * amp
+
+        @ti.kernel
+        def blur_x(r: ti.i32, sig: ti.f32):
+            for i, j in p:
+                acc = 0.0
+                wsum = 0.0
+                for k in range(-r, r + 1):
+                    w = ti.exp(-0.5 * (k / sig) ** 2)
+                    acc += p[i, (j + k + NW) % NW] * w
+                    wsum += w
+                b1[i, j] = acc / wsum
+
+        @ti.kernel
+        def blur_y(r: ti.i32, sig: ti.f32):
+            for i, j in p:
+                acc = 0.0
+                wsum = 0.0
+                for k in range(-r, r + 1):
+                    w = ti.exp(-0.5 * (k / sig) ** 2)
+                    ii = ti.min(ti.max(i + k, 0), NH - 1)
+                    acc += b1[ii, j] * w
+                    wsum += w
+                b2[i, j] = acc / wsum
+
+        @ti.kernel
+        def wind_field():
+            for i, j in wind:
+                im = ti.max(i - 1, 0)
+                ip = ti.min(i + 1, NH - 1)
+                jm = (j - 1 + NW) % NW
+                jp = (j + 1) % NW
+                dpdy = (b2[ip, j] - b2[im, j]) * 0.5
+                dpdx = (b2[i, jp] - b2[i, jm]) * 0.5
+                lat = 180.0 * i / NH - 90.0
+                f = 15.0 * ti.sin(lat * 3.14159265 / 180.0)
+                wind[i, j] = ti.Vector([-f * dpdy - dpdx, f * dpdx - dpdy])
+
+        self._make_mslp = make_mslp
+        self._blur_x = blur_x
+        self._blur_y = blur_y
+        self._wind = wind_field
+
+    def update(self, t):
+        self.t = float(t)
+        self._make_mslp(float(t))
+        self._blur_x(45, 15.0)
+        self._blur_y(45, 15.0)
         self._wind()
-        self._currents()
 
-    def _wind(self):
-        dp_dy, dp_dx = np.gradient(self.p)
-        f = 15.0 * np.sin(np.deg2rad(self.lat))
-        # 地转分量（旋转 90°）+ 直接的梯度项（摩擦/越赤道流）
-        wx = -f * dp_dy - dp_dx
-        wy = f * dp_dx - dp_dy
-        self.wind = np.stack([wx, wy])
+    # ---------- 读回 ----------
+    def pressure(self):
+        return self.f_b2.to_numpy()
 
-    # ---------- 洋流：风应力旋度 → 流函数 ----------
-    def _solve_psi_setup(self):
-        import scipy.sparse as sp
-        import scipy.sparse.linalg as spla
-        # 海洋格点编号
-        self.idx = -np.ones((H, W), np.int32)
-        oy, ox = np.nonzero(self.ocean)
-        self.idx[oy, ox] = np.arange(len(oy))
-        n = len(oy)
-        k = np.arange(n)
-        rows = [k]
-        cols = [k]
-        vals = [np.full(n, -4.0)]
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            yy = oy + dy
-            xx = (ox + dx) % W
-            ok = (yy >= 0) & (yy < H) & self.ocean[np.clip(yy, 0, H - 1), xx]
-            rows.append(k[ok])
-            cols.append(self.idx[yy[ok], xx[ok]])
-            vals.append(np.ones(int(ok.sum())))
-        self._A = sp.csc_matrix((np.concatenate(vals),
-                                 (np.concatenate(rows), np.concatenate(cols))),
-                                shape=(n, n))
-        self._lu = spla.splu(self._A)
-        self._oy, self._ox = oy, ox
-        self._n_ocean = n
+    def wind_numpy(self):
+        return self.f_wind.to_numpy()
 
-    def _currents(self):
-        t_x, t_y = self.wind
-        dty_dx = np.roll(t_y, -1, axis=1) - np.roll(t_y, 1, axis=1)
-        dtx_dy = np.zeros_like(t_x)
-        dtx_dy[1:-1] = 0.5 * (t_x[2:] - t_x[:-2])
-        curl = 0.5 * dty_dx - dtx_dy
-        rhs = np.zeros(self._n_ocean)
-        rhs = curl[self._oy, self._ox]
-        psi = self._lu.solve(rhs)
-        full = np.zeros((H, W))
-        full[self._oy, self._ox] = psi
-        dpsi_dy, dpsi_dx = np.gradient(full)
-        self.psi = full
-        self.ocean_u = -dpsi_dy
-        self.ocean_v = dpsi_dx
 
-        # 赤道流系：正压 Sverdrup 解给不出赤道逆流，这里按观测把三条带叠上去
-        #   NEC  10–20°N  向西
-        #   NECC 5–10°N   向东（赤道逆流）
-        #   SEC  5°S–5°N  向西
-        lat = self.lat
-        ref = np.abs(self.ocean_u).mean() + 1e-9
-        band = (0.85 * np.exp(-((lat - 14.0) / 6.0) ** 2) * -1.0
-                + 1.15 * np.exp(-((lat - 7.0) / 2.6) ** 2)
-                + 0.95 * np.exp(-((lat + 1.5) / 4.0) ** 2) * -1.0)
-        self.ocean_u = self.ocean_u + band * ref * 2.2
-        scale = np.abs(self.ocean_u).max()
-        if scale > 1e-9:
-            # 归一到与风速可比的量级，方便同一套粒子参数显示
-            wmax = max(1e-9, np.abs(self.wind).max())
-            k = 0.55 * wmax / scale
-            self.ocean_u *= k
-            self.ocean_v *= k
+def _ss(a, b, x):
+    t = min(max((x - a) / (b - a), 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _land_at(nw, nh):
+    """把 720×360 的海岸线掩膜抽到 nw×nh（第 0 行仍是南）。"""
+    fine = load_land_fine()[::-1]
+    ys = (np.arange(nh) * fine.shape[0] / nh).astype(int)
+    xs = (np.arange(nw) * fine.shape[1] / nw).astype(int)
+    return fine[np.ix_(ys, xs)]
 
 
 # ==================== 画布 ====================
@@ -266,12 +267,11 @@ class CirculationApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("全球环流 · 气压 / 风 / 洋流")
+        self.setWindowTitle("全球风场 · 气压 / 流线")
         self.setGeometry(110, 60, 1180, 780)
 
-        self.model = Circulation()
+        self.wind = WindSim()
         self.show_wind = True
-        self.show_ocean = True
         self.show_pressure = False
         self.show_grid = True
         self.auto_season = True
@@ -283,13 +283,10 @@ class CirculationApp(QMainWindow):
         self.frame = None
         self._base = None
         self._dens_w = np.zeros((self.BH, self.BW), np.float32)
-        self._dens_o = np.zeros((self.BH, self.BW), np.float32)
         self._buf_i = np.full((self.BH, self.BW), -1.0, np.float32)
         self._buf_j = np.full((self.BH, self.BW), -1.0, np.float32)
         self._px_w = np.full((self.BH, self.BW), -1.0, np.float32)
         self._py_w = np.full((self.BH, self.BW), -1.0, np.float32)
-        self._px_o = np.full((self.BH, self.BW), -1.0, np.float32)
-        self._py_o = np.full((self.BH, self.BW), -1.0, np.float32)
 
         self._build_velocity()
         self._build_base()
@@ -303,33 +300,24 @@ class CirculationApp(QMainWindow):
 
     # ---------- 速度场放大到缓冲分辨率 ----------
     def _build_velocity(self):
-        wx, wy = self.model.wind
-        ou = np.where(self.model.land, 0.0, self.model.ocean_u)
-        ov = np.where(self.model.land, 0.0, self.model.ocean_v)
+        w = self.wind.wind_numpy()                    # (180, 360, 2)，第 0 行是南
+        vx = np.flipud(w[:, :, 0])
+        vy = np.flipud(w[:, :, 1])
+        BH, BW = self.BH, self.BW
 
         def up(f):
-            # 模型第 0 行是南极；缓冲第 0 行是北，所以先翻转
-            g = np.flipud(f)
-            ys = (np.arange(self.BH) * g.shape[0] / self.BH).astype(np.int32)
-            xs = (np.arange(self.BW) * g.shape[1] / self.BW).astype(np.int32)
-            return g[np.clip(ys, 0, g.shape[0] - 1)][:, np.clip(xs, 0, g.shape[1] - 1)]
+            ys = (np.arange(BH) * f.shape[0] / BH).astype(np.int32)
+            xs = (np.arange(BW) * f.shape[1] / BW).astype(np.int32)
+            return f[np.ix_(ys, xs)]
 
-        # 参考里 getVelocity 把速度归一到 ≤1 像素/帧
-        def norm(u, v, ref):
-            mag = np.hypot(u, v)
-            k = np.clip(mag / max(1e-6, ref), 0.0, 1.0) / np.maximum(mag, 1e-6)
-            return (u * k).astype(np.float32), (v * k).astype(np.float32)
-
-        # 参考里 |v| ≤ 1 像素/帧，是相对 144 宽的缓冲说的；
-        # 我们的缓冲宽得多，按比例放大才有同样的速度感
-        gain = self.BW / 144.0 * 0.30
-        vxu, vyu = norm(up(wx), up(wy), np.percentile(np.hypot(wx, wy), 80))
-        vox, voy = norm(up(ou), up(ov), max(1e-6, np.percentile(np.hypot(ou, ov), 80)))
-        # 缓冲 y 向下，模型 v 向北 → 取负
-        self._vx_w, self._vy_w = vxu * gain, -vyu * gain
-        self._vx_o, self._vy_o = vox * gain * 1.15, -voy * gain * 1.15
-        fine_ocean = ~load_land_fine()
-        self._ocean_mask = up(fine_ocean.astype(np.float32))
+        mag = np.hypot(w[:, :, 0], w[:, :, 1])
+        ref = max(1e-6, np.percentile(mag, 80))
+        ux, uy = up(vx), up(vy)
+        m = np.hypot(ux, uy)
+        k = np.clip(m / ref, 0.0, 1.0) / np.maximum(m, 1e-9)
+        gain = BW / 144.0 * 0.30                      # 参考的 1 像素/帧是相对 144 宽
+        self._vx_w = (ux * k * gain).astype(np.float32)
+        self._vy_w = (-uy * k * gain).astype(np.float32)
 
     # ---------- 静态底图 ----------
     def _build_base(self):
@@ -366,7 +354,7 @@ class CirculationApp(QMainWindow):
     def _build_pressure(self):
         """LOW = 蓝，HIGH = 橙；经过 0.9-0.8*rgb 反相后，
         低压呈暖橙色、高压呈淡蓝色，和参考的观测图一致。"""
-        p = np.flipud(self.model.p)
+        p = np.flipud(self.wind.pressure())
         BH, BW = self.BH, self.BW
         ys = (np.arange(BH) * p.shape[0] / BH).astype(np.int32)
         xs = (np.arange(BW) * p.shape[1] / BW).astype(np.int32)
@@ -437,13 +425,6 @@ class CirculationApp(QMainWindow):
                 ch = out[:, :, c]
                 ch *= inv
                 ch += _STREAK_W[c] * a
-        if self.show_ocean:
-            a = self._dens_o * 0.9 * self._ocean_mask
-            inv = 1.0 - a
-            for c in range(3):
-                ch = out[:, :, c]
-                ch *= inv
-                ch += _STREAK_O[c] * a
         self._compose_u8[:] = np.clip(out, 0, 255)
         self.frame = QImage(self._compose_u8.data, self.BW, self.BH,
                             self.BW * 3, QImage.Format_RGB888).copy()
@@ -460,8 +441,8 @@ class CirculationApp(QMainWindow):
             if self._season_t >= 13.0:
                 self._season_t -= 12.0
         self._season_tick += 1
-        if self._season_tick % 4 == 0:
-            self.model.update(self._season_t)
+        if self._season_tick % 6 == 0:
+            self.wind.update(self._season_t)
             self._build_velocity()
             if self.show_pressure:
                 self._build_pressure()
@@ -473,12 +454,6 @@ class CirculationApp(QMainWindow):
                 self._vx_w, self._vy_w, self._px_w, self._py_w, self._dens_w, 1.3e-4, 5e-3)
         else:
             self._dens_w *= 0.9
-        if self.show_ocean:
-            self._px_o, self._py_o, self._dens_o = self._step_particles(
-                self._vx_o, self._vy_o, self._px_o, self._py_o, self._dens_o, 5.0e-5, 7e-3)
-        else:
-            self._dens_o *= 0.9
-
         self._compose()
         self.canvas.update()
         if hasattr(self, "lbl_fps"):
@@ -540,7 +515,6 @@ class CirculationApp(QMainWindow):
         v2.setSpacing(4)
         v2.setContentsMargins(8, 8, 8, 8)
         for text, attr, checked in (("风场流线", "show_wind", True),
-                                    ("洋流流线", "show_ocean", True),
                                     ("气压分布", "show_pressure", False),
                                     ("经纬网", "show_grid", True)):
             cb = QCheckBox(text)
@@ -562,7 +536,7 @@ class CirculationApp(QMainWindow):
         rv.addWidget(self.canvas, 1)
         root.addWidget(right, 1)
 
-        self.lbl_status = QLabel("细线是气流（每像素一个粒子，一步移动不到一格，拖尾 0.9 衰减）")
+        self.lbl_status = QLabel("细线是气流：每像素一个粒子，拖尾 0.9 衰减；勾选「气压分布」看高压低压区")
         self.statusBar().addWidget(self.lbl_status, 1)
         self.lbl_fps = QLabel("–")
         self.lbl_fps.setMinimumWidth(70)
@@ -572,7 +546,7 @@ class CirculationApp(QMainWindow):
     def _on_month(self, v):
         self.chk_auto.setChecked(False)
         self._season_t = float(v)
-        self.model.update(float(v))
+        self.wind.update(float(v))
         self._build_velocity()
         if self.show_pressure:
             self._build_pressure()
@@ -591,10 +565,9 @@ class CirculationApp(QMainWindow):
         self.canvas.update()
 
     def _reseed(self):
-        for a in ("_px_w", "_py_w", "_px_o", "_py_o"):
+        for a in ("_px_w", "_py_w"):
             getattr(self, a)[:] = -1
         self._dens_w[:] = 0
-        self._dens_o[:] = 0
         self.canvas.update()
 
     def closeEvent(self, event):

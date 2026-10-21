@@ -28,7 +28,7 @@
 | **Turing** | Gray-Scott 等反应扩散系统 |
 | **Beam** | 横梁承重：欧拉-伯努利梁有限元，应力超材料强度即断裂，可扫描承重与梁高/梁长的关系 |
 | **Atmosphere** | 大气对流：底部受热顶部冷却的二维不可压 Boussinesq 流体，气温作底色、气流作流线、投影步解出的气压作等压线，三者同屏 |
-| **Circulation** | 全球环流：解析式海平面气压 + 地转风，风应力旋度解泊松方程得到风生洋流，叠加赤道流系（NEC／赤道逆流／SEC），海岸线用 Natural Earth 720×360 数据 |
+| **Circulation** | 全球风场：解析式海平面气压 + 地转风，Taichi 并行算在 360×180 网格上，海岸线用 Natural Earth 720×360 数据；可叠加气压配色 |
 | **Erosion** | 降雨冲刷地形（雨滴侵蚀），干燥后按 Voronoi 板块边界张开泥土龟裂 |
 | **Ising** | 二维伊辛模型，参考 [Ising.js](https://mattbierbaum.github.io/ising.js/) |
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
