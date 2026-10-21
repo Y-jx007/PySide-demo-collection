@@ -210,8 +210,8 @@ class WindSim:
     def update(self, t):
         self.t = float(t)
         self._make_mslp(float(t))
-        self._blur_x(30, 15.0)
-        self._blur_y(30, 15.0)
+        self._blur_x(45, 15.0)
+        self._blur_y(45, 15.0)
         self._wind()
 
     # ---------- 读回 ----------
@@ -274,7 +274,7 @@ class CirculationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("全球风场 · 气压 / 流线")
-        self.setGeometry(110, 60, 1180, 780)
+        self.setGeometry(140, 90, 1180, 500)
 
         self.wind = WindSim()
         self.show_wind = True
@@ -307,11 +307,30 @@ class CirculationApp(QMainWindow):
     # ---------- 速度场（直接采样模型网格，不预放大） ----------
     def _build_velocity(self):
         w = self.wind.wind_numpy()                     # (180, 360, 2)，第 0 行是南
-        self._wu = w[:, :, 0].astype(np.float32)
-        self._wv = w[:, :, 1].astype(np.float32)
+        nu = w[:, :, 0].astype(np.float32)
+        nv = w[:, :, 1].astype(np.float32)
+        if getattr(self, "_wu", None) is None:
+            self._wu, self._wv = nu, nv
+            self._wu_a, self._wv_a = nu.copy(), nv.copy()
+        else:
+            # 目标场存起来，之后逐帧插值，季节变化才丝滑
+            self._wu_a, self._wv_a = self._wu.copy(), self._wv.copy()
+            self._wu_t, self._wv_t = nu, nv
+            self._wphase = 0.0
         mag = np.hypot(self._wu, self._wv)
         self._wref = max(1e-6, float(np.percentile(mag, 80)))
-        self._wgain = self.BW / 144.0 * 0.60           # 参考的 1 像素/帧是相对 144 宽
+        self._wgain = self.BW / 144.0 * 0.45           # 参考的 1 像素/帧是相对 144 宽
+
+    def _blend_wind(self):
+        """每帧把风场从 a 平滑推向 t，避免整场跳变。"""
+        if getattr(self, "_wu_t", None) is None:
+            return
+        self._wphase = min(1.0, self._wphase + 1.0 / 15.0)
+        f = self._wphase
+        np.multiply(self._wu_t - self._wu_a, f, out=self._wu)
+        self._wu += self._wu_a
+        np.multiply(self._wv_t - self._wv_a, f, out=self._wv)
+        self._wv += self._wv_a
 
     # ---------- 静态底图 ----------
     def _build_base(self):
