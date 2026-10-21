@@ -237,6 +237,7 @@ def _land_at(nw, nh):
 
 # ==================== 画布 ====================
 _STREAK_W = (26.0, 77.0, 128.0)
+_LINE_RGB = (196.0, 84.0, 58.0)
 _STREAK_O = (24.0, 110.0, 128.0)
 
 
@@ -260,6 +261,16 @@ class MapCanvas(QWidget):
         x0 = (w - mw) / 2.0
         y0 = (h - mh) / 2.0
         p.drawImage(QRectF(x0, y0, mw, mh), app.frame)
+
+        # 特殊纬线标注
+        f = p.font()
+        f.setPointSize(8)
+        p.setFont(f)
+        for lat, text in ((66.5, "北极圈"), (23.5, "北回归线"), (0.0, "赤道"),
+                          (-23.5, "南回归线"), (-66.5, "南极圈")):
+            yy = y0 + (90.0 - lat) / 180.0 * mh
+            p.setPen(QPen(QColor(196, 84, 58, 220), 1))
+            p.drawText(QPointF(x0 + 4, yy - 2), text)
         p.end()
 
 
@@ -278,13 +289,14 @@ class CirculationApp(QMainWindow):
 
         self.wind = WindSim()
         self.show_wind = True
-        self.show_pressure = False
+        self.show_pressure = True
         self.show_grid = True
         self.auto_season = True
         self._season_t = 1.0
         self._season_tick = 0
         self._pressure_rgb = None
         self._rng = np.random.default_rng(7)
+        self.substeps = 3      # 每帧推进的子步数
 
         self.frame = None
         self._base = None
@@ -304,26 +316,21 @@ class CirculationApp(QMainWindow):
         self._t_prev = time.perf_counter()
         self._fps = 0.0
 
-    # ---------- 速度场放大到缓冲分辨率 ----------
+    # ---------- 风场（粒子直接采样，不再预放大到缓冲） ----------
     def _build_velocity(self):
-        w = self.wind.wind_numpy()                    # (180, 360, 2)，第 0 行是南
-        vx = np.flipud(w[:, :, 0])
-        vy = np.flipud(w[:, :, 1])
-        BH, BW = self.BH, self.BW
-
-        def up(f):
-            ys = (np.arange(BH) * f.shape[0] / BH).astype(np.int32)
-            xs = (np.arange(BW) * f.shape[1] / BW).astype(np.int32)
-            return f[np.ix_(ys, xs)]
-
-        mag = np.hypot(w[:, :, 0], w[:, :, 1])
-        ref = max(1e-6, np.percentile(mag, 80))
-        ux, uy = up(vx), up(vy)
-        m = np.hypot(ux, uy)
-        k = np.clip(m / ref, 0.0, 1.0) / np.maximum(m, 1e-9)
-        gain = BW / 144.0 * 0.30                      # 参考的 1 像素/帧是相对 144 宽
-        self._vx_w = (ux * k * gain).astype(np.float32)
-        self._vy_w = (-uy * k * gain).astype(np.float32)
+        w = self.wind.wind_numpy()                    # (180,360,2)，第 0 行是南
+        nu = w[:, :, 0].astype(np.float32)
+        nv = w[:, :, 1].astype(np.float32)
+        if getattr(self, "_wu", None) is None:
+            self._wu, self._wv = nu, nv
+            self._wu_a, self._wv_a = nu.copy(), nv.copy()
+        else:
+            self._wu_a, self._wv_a = self._wu.copy(), self._wv.copy()
+            self._wu_t, self._wv_t = nu, nv
+            self._wphase = 0.0
+        mag = np.hypot(self._wu, self._wv)
+        self._wref = max(1e-6, float(np.percentile(mag, 80)))
+        self._wgain = self.BW / 144.0 * 0.30          # 参考的 1 像素/帧是相对 144 宽
 
     # ---------- 静态底图 ----------
     def _build_base(self):
@@ -343,12 +350,21 @@ class CirculationApp(QMainWindow):
 
         if self.show_grid:
             g = np.zeros((BH, BW), np.float32)
-            for k in range(1, 12):
+            for k in range(1, 12):                    # 经线每 30°
                 g[:, int(BW * k / 12)] = 1.0
-            for k in range(1, 6):
+            for k in range(1, 6):                     # 纬线每 30°
                 g[int(BH * k / 6), :] = 1.0
             g = g[..., None]
-            rgb = np.where(g > 0, rgb * 0.8 + np.array([0, 128, 255], np.float32) * 0.2, rgb)
+            rgb = np.where(g > 0, rgb * 0.82 + np.array([0, 128, 255], np.float32) * 0.18, rgb)
+
+        # 特殊纬线做成独立遮罩，最后盖在气压层之上
+        self._line_a = np.zeros((BH, BW, 1), np.float32)
+        for lat, strength in ((0.0, 0.62), (23.5, 0.34), (-23.5, 0.34),
+                              (66.5, 0.24), (-66.5, 0.24)):
+            y = int((90.0 - lat) / 180.0 * BH)
+            y = min(max(y, 0), BH - 1)
+            thick = 2 if lat == 0.0 else 1
+            self._line_a[max(0, y - thick + 1):y + 1, :, 0] = strength
 
         self._base = np.clip(rgb, 0, 255).astype(np.uint8)
         self._base_f = self._base.astype(np.float32)
@@ -358,26 +374,22 @@ class CirculationApp(QMainWindow):
 
     # ---------- 气压层（照参考 shader 的配色） ----------
     def _build_pressure(self):
-        """LOW = 蓝，HIGH = 橙；经过 0.9-0.8*rgb 反相后，
-        低压呈暖橙色、高压呈淡蓝色，和参考的观测图一致。"""
+        """LOW = 蓝，HIGH = 橙；经 0.9-0.8*rgb 反相后低压暖橙、高压淡蓝。
+        配色在 360×180 上算完再放大，避免在大图上做浮点运算。"""
         p = np.flipud(self.wind.pressure())
-        BH, BW = self.BH, self.BW
-        ys = (np.arange(BH) * p.shape[0] / BH).astype(np.int32)
-        xs = (np.arange(BW) * p.shape[1] / BW).astype(np.int32)
-        pb = p[np.clip(ys, 0, p.shape[0] - 1)][:, np.clip(xs, 0, p.shape[1] - 1)]
-
-        floor_p = np.floor(pb)
-        t1 = _smoothstep(1000.0, 1012.0, floor_p)
-        t2 = _smoothstep(1012.0, 1024.0, floor_p)
+        floor_p = np.floor(p)
+        t1 = _smoothstep(1000.0, 1012.0, floor_p)[..., None]
+        t2 = _smoothstep(1012.0, 1024.0, floor_p)[..., None]
         low = np.array([0.0, 0.5, 1.0], np.float32)
         high = np.array([1.0, 0.5, 0.0], np.float32)
-        r = low * (1.0 - t1)[..., None]
-        r = r * (1.0 - t2[..., None]) + high * t2[..., None]
+        r = low * (1.0 - t1)
+        r = r * (1.0 - t2) + high * t2
         rgb = 0.9 - 0.8 * (0.5 * r)
         small = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-        from scipy.ndimage import zoom
-        big = zoom(small.astype(np.float32), (BH / small.shape[0], BW / small.shape[1], 1), order=1)
-        self._pressure_rgb = np.clip(big, 0, 255).astype(np.uint8)
+        BH, BW = self.BH, self.BW
+        ys = (np.arange(BH) * small.shape[0] / BH).astype(np.int32)
+        xs = (np.arange(BW) * small.shape[1] / BW).astype(np.int32)
+        self._pressure_rgb = small[ys][:, xs]
 
     def _apply_pressure(self):
         base = self._base_f
@@ -385,11 +397,14 @@ class CirculationApp(QMainWindow):
             return base
         pr = self._pressure_rgb.astype(np.float32)
         # 气压层只做 62% 叠加，海岸线和纸面纹理仍然保留
-        return base * 0.38 + pr * 0.62
+        return base * 0.48 + pr * 0.52
 
     # ---------- 粒子推进（照 getPosition 的规则） ----------
-    def _step_particles(self, vx, vy, px, py, dens, spawn, die):
-        """每个像素最多一个粒子；粒子一步移动 |v|≤1 像素，拖尾 0.9 衰减。"""
+    def _step_particles(self, px, py, dens, spawn, die):
+        """每个像素最多一个粒子；一步移动 <1 格，拖尾 0.9 衰减。
+
+        速度直接对风场双线性采样，这样季节插值才真正作用到粒子上。
+        """
         BH, BW = self.BH, self.BW
         alive = px >= 0
         ys, xs = np.nonzero(alive)
@@ -399,14 +414,19 @@ class CirculationApp(QMainWindow):
         if len(ys):
             keep = self._rng.random(len(ys)) > die
             ys, xs = ys[keep], xs[keep]
-            nx = np.mod(px[ys, xs] + vx[ys, xs], BW)
-            ny = np.clip(py[ys, xs] + vy[ys, xs], 0, BH - 1)
+            mx = px[ys, xs] / BW * W
+            my = (1.0 - py[ys, xs] / BH) * H
+            uu = _bilinear(self._wu, mx, my)
+            vv = _bilinear(self._wv, mx, my)
+            m = np.hypot(uu, vv)
+            k = np.clip(m / self._wref, 0.0, 1.0) / np.maximum(m, 1e-9)
+            nx = np.mod(px[ys, xs] + uu * k * self._wgain, BW)
+            ny = np.clip(py[ys, xs] - vv * k * self._wgain, 0, BH - 1)
             tx = np.clip(nx.astype(np.int32), 0, BW - 1)
             ty = np.clip(ny.astype(np.int32), 0, BH - 1)
             new_px[ty, tx] = nx
             new_py[ty, tx] = ny
 
-        # 空白像素里稀疏地诞生新粒子（用泊松抽样，避免每帧生成整屏随机数）
         empty = (new_px < 0).sum()
         k = self._rng.poisson(spawn * empty)
         if k > 0:
@@ -420,6 +440,17 @@ class CirculationApp(QMainWindow):
         return new_px, new_py, dens
 
     # ---------- 合成 ----------
+    def _blend_wind(self):
+        """每帧把风场从上一版平滑推向新版，季节才是连续变化而不是跳变。"""
+        if getattr(self, "_wu_t", None) is None:
+            return
+        self._wphase = min(1.0, self._wphase + 1.0 / 10.0)
+        f = self._wphase
+        np.multiply(self._wu_t - self._wu_a, f, out=self._wu)
+        self._wu += self._wu_a
+        np.multiply(self._wv_t - self._wv_a, f, out=self._wv)
+        self._wv += self._wv_a
+
     def _compose(self):
         out = self._compose_buf
         out[:] = self._apply_pressure() if self.show_pressure else self._base_f
@@ -431,6 +462,13 @@ class CirculationApp(QMainWindow):
                 ch = out[:, :, c]
                 ch *= inv
                 ch += _STREAK_W[c] * a
+        if getattr(self, "_line_a", None) is not None:
+            a = self._line_a
+            inv = 1.0 - a
+            for c, v in enumerate(_LINE_RGB):
+                ch = out[:, :, c]
+                ch *= inv[:, :, 0]
+                ch += v * a[:, :, 0]
         self._compose_u8[:] = np.clip(out, 0, 255)
         self.frame = QImage(self._compose_u8.data, self.BW, self.BH,
                             self.BW * 3, QImage.Format_RGB888).copy()
@@ -447,7 +485,8 @@ class CirculationApp(QMainWindow):
             if self._season_t >= 13.0:
                 self._season_t -= 12.0
         self._season_tick += 1
-        if self._season_tick % 6 == 0:
+        self._blend_wind()
+        if self._season_tick % 10 == 0:
             self.wind.update(self._season_t)
             self._build_velocity()
             if self.show_pressure:
@@ -456,8 +495,11 @@ class CirculationApp(QMainWindow):
                 self.lbl_month.setText(f"{self._season_t % 12.0 + 0.5:.1f} 月")
 
         if self.show_wind:
-            self._px_w, self._py_w, self._dens_w = self._step_particles(
-                self._vx_w, self._vy_w, self._px_w, self._py_w, self._dens_w, 1.3e-4, 5e-3)
+            # 每帧走多步：步数上去，粒子看起来才够快
+            for _k in range(self.substeps):
+                self._px_w, self._py_w, self._dens_w = self._step_particles(
+                    self._px_w, self._py_w, self._dens_w,
+                    0.0 if _k else 2.0e-4, 5e-3)
         else:
             self._dens_w *= 0.9
         self._compose()
@@ -521,7 +563,7 @@ class CirculationApp(QMainWindow):
         v2.setSpacing(4)
         v2.setContentsMargins(8, 8, 8, 8)
         for text, attr, checked in (("风场流线", "show_wind", True),
-                                    ("气压分布", "show_pressure", False),
+                                    ("气压分布", "show_pressure", True),
                                     ("经纬网", "show_grid", True)):
             cb = QCheckBox(text)
             cb.setChecked(checked)
