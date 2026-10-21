@@ -127,7 +127,10 @@ class Circulation:
     def update(self, month):
         self.month = month          # 允许浮点：季节是连续量
         p0, d = self._mslp()
+        # 参考里 mslp 返回 vec4（年均值 + 季节差），pass1/pass2 把两个分量
+        # 一起模糊；只糊年均值会让季节项保留海陆硬边界，看起来像横条被截断
         p = _blur_y(_blur_x(p0, 6.0), 4.0)
+        d = _blur_y(_blur_x(d, 6.0), 4.0)
         # 季节项：1/7 月反相
         t = float(month)
         delta = d * (1.0 - 2.0 * _smoothstep(1.5, 4.5, t) + 2.0 * _smoothstep(7.5, 10.5, t))
