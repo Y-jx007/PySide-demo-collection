@@ -292,25 +292,27 @@ class CirculationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("全球风场 · 气压 / 流线")
-        self.setGeometry(140, 90, 1180, 560)
+        self.setGeometry(150, 110, 1180, 472)
 
         self.wind = WindSim()
         self.show_wind = True
         self.show_pressure = True
         self.show_grid = True
         self.auto_season = True
+        self._day = 0.0            # 一年中的第几天
         self._season_t = 1.0
         self._season_tick = 0
         self._pressure_rgb = None
         self._pressure_cur = None
         self._compose_p = np.empty((self.BH, self.BW, 3), np.float32)
         self._rng = np.random.default_rng(7)
-        self._contrast = 1.0
+        self._contrast = 1.5
+        self.speed_scale = 5.0
         self._land_timer = QTimer(self)
         self._land_timer.setSingleShot(True)
         self._land_timer.timeout.connect(self._apply_contrast)
         self.substeps = 4
-        self.speed_scale = 1.0        # 风速调控倍数      # 每帧推进的子步数（每步 dt 很小）
+        # speed_scale 由滑杆设置      # 每帧推进的子步数（每步 dt 很小）
         self._buf_x = np.full((self.BH, self.BW), -1.0, np.float32)
         self._buf_y = np.full((self.BH, self.BW), -1.0, np.float32)
 
@@ -537,11 +539,17 @@ class CirculationApp(QMainWindow):
         self._fps = 0.9 * self._fps + 0.1 * (1.0 / max(1e-3, now - self._t_prev))
         self._t_prev = now
 
-        # 季节连续演化：参考里 t = mod(iTime,12.) 是连续的，不能按月跳变
+        # 季节按天连续推进
         if self.auto_season:
-            self._season_t += 0.018
-            if self._season_t >= 13.0:
-                self._season_t -= 12.0
+            self._day += 1.2                        # 每帧 1.2 天，一年约 300 帧
+            if self._day >= 365.0:
+                self._day -= 365.0
+            self._season_t = 1.0 + self._day / 365.0 * 12.0
+        if hasattr(self, "lbl_month"):
+            m = int(self._day // 30.44) + 1
+            d = int(self._day - (m - 1) * 30.44) + 1
+            self.lbl_month.setText(f"{m} 月 {d} 日")
+
         self._season_tick += 1
         self._blend_wind()
         if self.show_pressure:
@@ -551,9 +559,6 @@ class CirculationApp(QMainWindow):
             self._build_velocity()
             if self.show_pressure:
                 self._build_pressure()
-            if hasattr(self, "lbl_month"):
-                self.lbl_month.setText(f"{self._season_t % 12.0 + 0.5:.1f} 月")
-
         if self.show_wind:
             # 每帧走多步：步数上去，粒子看起来才够快
             self._px_w, self._py_w, self._dens_w = self._step_particles(
@@ -594,22 +599,13 @@ class CirculationApp(QMainWindow):
 
         self.canvas = MapCanvas(self)
 
-        g1 = QGroupBox("季节")
+        g1 = QGroupBox("时间")
         f1 = QFormLayout(g1)
         f1.setSpacing(6)
         f1.setContentsMargins(8, 8, 8, 8)
-        self.month_s = QSlider(Qt.Horizontal)
-        self.month_s.setRange(1, 12)
-        self.month_s.setValue(1)
-        self.lbl_month = QLabel("1 月")
-        self.lbl_month.setFixedWidth(44)
-        self.lbl_month.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.month_s.valueChanged.connect(self._on_month)
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        row.addWidget(self.month_s, 1)
-        row.addWidget(self.lbl_month)
-        f1.addRow("月份", row)
+        self.lbl_month = QLabel("1 月 1 日")
+        self.lbl_month.setStyleSheet("color: #45454a; font-size: 12px;")
+        f1.addRow("日期", self.lbl_month)
         self.chk_auto = QCheckBox("自动推演")
         self.chk_auto.setChecked(True)
         self.chk_auto.toggled.connect(self._on_auto)
@@ -622,8 +618,8 @@ class CirculationApp(QMainWindow):
         f_land.setContentsMargins(8, 8, 8, 8)
         self.land_slider = QSlider(Qt.Horizontal)
         self.land_slider.setRange(0, 300)
-        self.land_slider.setValue(100)
-        self.land_lbl = QLabel("100%")
+        self.land_slider.setValue(150)
+        self.land_lbl = QLabel("150%")
         self.land_lbl.setFixedWidth(46)
         self.land_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.land_slider.valueChanged.connect(self._on_land)
@@ -640,8 +636,8 @@ class CirculationApp(QMainWindow):
         f_speed.setContentsMargins(8, 8, 8, 8)
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setRange(0, 1000)
-        self.speed_slider.setValue(100)
-        self.speed_lbl = QLabel("100%")
+        self.speed_slider.setValue(500)
+        self.speed_lbl = QLabel("500%")
         self.speed_lbl.setFixedWidth(46)
         self.speed_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.speed_slider.valueChanged.connect(self._on_speed)
@@ -684,16 +680,6 @@ class CirculationApp(QMainWindow):
         self.lbl_fps.setMinimumWidth(70)
         self.lbl_fps.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.statusBar().addPermanentWidget(self.lbl_fps)
-
-    def _on_month(self, v):
-        self.chk_auto.setChecked(False)
-        self._season_t = float(v)
-        self.wind.update(float(v), self._contrast)
-        self._build_velocity()
-        if self.show_pressure:
-            self._build_pressure()
-        self.lbl_month.setText(f"{v} 月")
-        self.canvas.update()
 
     def _on_land(self, v):
         self.land_lbl.setText(f"{v}%")
