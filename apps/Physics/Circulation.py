@@ -154,15 +154,20 @@ class WindSim:
         SIG = 15.0
 
         @ti.kernel
-        def make_mslp(t: ti.f32):
+        def make_mslp(t: ti.f32, contrast: ti.f32):
             for i, j in p0:
                 lat = 180.0 * i / NH - 90.0
+                # 先算海洋（连续场），再按 contrast 把陆地拉离海洋
+                po = 1014.5 - 20.0 * ti.cos(lat * 3.14159265 / 30.0)
+                do = 20.0 * ti.sin(lat * 3.14159265 / 35.0) * ti.abs(lat) / 90.0
+                pl = 1012.5 - 6.0 * ti.cos(lat * 3.14159265 / 45.0)
+                dl = 15.0 * ti.sin(lat * 3.14159265 / 90.0)
                 if land[i, j] != 0:
-                    p0[i, j] = 1012.5 - 6.0 * ti.cos(lat * 3.14159265 / 45.0)
-                    pd[i, j] = 15.0 * ti.sin(lat * 3.14159265 / 90.0)
+                    p0[i, j] = po + contrast * (pl - po)
+                    pd[i, j] = do + contrast * (dl - do)
                 else:
-                    p0[i, j] = 1014.5 - 20.0 * ti.cos(lat * 3.14159265 / 30.0)
-                    pd[i, j] = 20.0 * ti.sin(lat * 3.14159265 / 35.0) * ti.abs(lat) / 90.0
+                    p0[i, j] = po
+                    pd[i, j] = do
                 # 季节项：1/7 月反相（必须是 ti.func，普通 Python 函数会被当成常数）
                 amp = 1.0 - 2.0 * _ssf(1.5, 4.5, t) + 2.0 * _ssf(7.5, 10.5, t)
                 p[i, j] = p0[i, j] + pd[i, j] * amp
@@ -208,9 +213,10 @@ class WindSim:
         self._blur_y = blur_y
         self._wind = wind_field
 
-    def update(self, t):
+    def update(self, t, contrast=1.0):
         self.t = float(t)
-        self._make_mslp(float(t))
+        self.contrast = float(contrast)
+        self._make_mslp(float(t), float(contrast))
         self._blur_x(45, 15.0)
         self._blur_y(45, 15.0)
         self._wind()
@@ -299,6 +305,10 @@ class CirculationApp(QMainWindow):
         self._pressure_cur = None
         self._compose_p = np.empty((self.BH, self.BW, 3), np.float32)
         self._rng = np.random.default_rng(7)
+        self._contrast = 1.0
+        self._land_timer = QTimer(self)
+        self._land_timer.setSingleShot(True)
+        self._land_timer.timeout.connect(self._apply_contrast)
         self.substeps = 4
         self.speed_scale = 1.0        # 风速调控倍数      # 每帧推进的子步数（每步 dt 很小）
         self._buf_x = np.full((self.BH, self.BW), -1.0, np.float32)
@@ -537,7 +547,7 @@ class CirculationApp(QMainWindow):
         if self.show_pressure:
             self._blend_pressure()
         if self._season_tick % 10 == 0:
-            self.wind.update(self._season_t)
+            self.wind.update(self._season_t, self._contrast)
             self._build_velocity()
             if self.show_pressure:
                 self._build_pressure()
@@ -606,12 +616,30 @@ class CirculationApp(QMainWindow):
         f1.addRow(self.chk_auto)
         pv.addWidget(g1)
 
+        g_land = QGroupBox("海陆差距")
+        f_land = QFormLayout(g_land)
+        f_land.setSpacing(6)
+        f_land.setContentsMargins(8, 8, 8, 8)
+        self.land_slider = QSlider(Qt.Horizontal)
+        self.land_slider.setRange(0, 300)
+        self.land_slider.setValue(100)
+        self.land_lbl = QLabel("100%")
+        self.land_lbl.setFixedWidth(46)
+        self.land_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.land_slider.valueChanged.connect(self._on_land)
+        row_l = QHBoxLayout()
+        row_l.setSpacing(6)
+        row_l.addWidget(self.land_slider, 1)
+        row_l.addWidget(self.land_lbl)
+        f_land.addRow("强度", row_l)
+        pv.addWidget(g_land)
+
         g_speed = QGroupBox("风速")
         f_speed = QFormLayout(g_speed)
         f_speed.setSpacing(6)
         f_speed.setContentsMargins(8, 8, 8, 8)
         self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(10, 300)
+        self.speed_slider.setRange(0, 1000)
         self.speed_slider.setValue(100)
         self.speed_lbl = QLabel("100%")
         self.speed_lbl.setFixedWidth(46)
@@ -660,11 +688,23 @@ class CirculationApp(QMainWindow):
     def _on_month(self, v):
         self.chk_auto.setChecked(False)
         self._season_t = float(v)
-        self.wind.update(float(v))
+        self.wind.update(float(v), self._contrast)
         self._build_velocity()
         if self.show_pressure:
             self._build_pressure()
         self.lbl_month.setText(f"{v} 月")
+        self.canvas.update()
+
+    def _on_land(self, v):
+        self.land_lbl.setText(f"{v}%")
+        self._contrast = v / 100.0
+        self._land_timer.start(160)          # 拖动时先攒着，松手再重算
+
+    def _apply_contrast(self):
+        self.wind.update(self._season_t, self._contrast)
+        self._build_velocity()
+        if self.show_pressure:
+            self._build_pressure()
         self.canvas.update()
 
     def _on_speed(self, v):
