@@ -6,7 +6,7 @@ import numpy as np
 
 # ==================== 可微 MPM 软体机器人 ====================
 N_GRID = 48
-MAX_STEPS = 180
+MAX_STEPS = 300
 DT = 2e-3
 E = 10.0
 MU = E
@@ -251,19 +251,22 @@ class RobotCanvas(QWidget):
         pos = traj[idx]
         # 相机跟随：视野宽度约 0.55 个网格单位
         cx = float(pos[:, 0].mean())
-        view_w = 0.58
-        scale = min(w / view_w, (h - 80) / (view_w * 0.62))
+        view_w = 1.35
+        scale = min(w / view_w, (h - 90) / (view_w * 0.55))
         left = cx - view_w / 2.0
 
         def X(v):
             return (v - left) * scale
 
-        def Y(v):
-            return h - 42 - v * scale
+        floor_y0 = 3.0 / self.app.robot.n_grid
 
-        # 地面
+        def Y(v):
+            return h * 0.80 - (v - floor_y0) * scale
+
+        # 地板：MPM 的墙是网格底部 3 格
+        floor_y = floor_y0
         p.setPen(QPen(QColor(120, 116, 110), 2))
-        p.drawLine(QPointF(0, Y(0.0)), QPointF(w, Y(0.0)))
+        p.drawLine(QPointF(0, Y(floor_y)), QPointF(w, Y(floor_y)))
         # 米尺
         p.setPen(QColor(160, 155, 148))
         f = p.font()
@@ -276,7 +279,7 @@ class RobotCanvas(QWidget):
             xx = X(v)
             if 0 < xx < w:
                 p.setPen(QPen(QColor(226, 222, 214), 1))
-                p.drawLine(QPointF(xx, Y(0.0)), QPointF(xx, Y(0.0) + 6))
+                p.drawLine(QPointF(xx, Y(floor_y)), QPointF(xx, Y(floor_y) + 6))
                 if abs(v * 10 - round(v * 10)) < 1e-6:
                     p.setPen(QColor(150, 145, 138))
                     p.drawText(QPointF(xx + 2, Y(0.0) + 18), f"{v:.1f}")
