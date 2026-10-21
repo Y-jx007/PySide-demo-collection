@@ -5,9 +5,9 @@ from PySide6.QtGui import QPolygonF
 import numpy as np
 
 # ==================== 可微 MPM 软体机器人 ====================
-N_GRID = 64
-MAX_STEPS = 700
-DT = 1e-3
+N_GRID = 48
+MAX_STEPS = 180
+DT = 2e-3
 E = 10.0
 MU = E
 LA = E
@@ -109,13 +109,10 @@ class SoftRobot:
         bound, coeff = 3, 0.6
 
         @ti.kernel
-        def clear_grid():
+        def clear_and_act(t: ti.i32):
             for i, j in gmi:
                 gvi[i, j] = ti.Vector([0.0, 0.0])
                 gmi[i, j] = 0.0
-
-        @ti.kernel
-        def compute_actuation(t: ti.i32):
             for i in range(4):
                 s = 0.0
                 for j in ti.static(range(N_SIN)):
@@ -188,8 +185,7 @@ class SoftRobot:
             for i in range(n_particles):
                 ti.atomic_add(x_avg[None], (1.0 / n_particles) * x[steps - 1, i])
 
-        self._clear_grid = clear_grid
-        self._compute_actuation = compute_actuation
+        self._clear_and_act = clear_and_act
         self._p2g = p2g
         self._grid_op = grid_op
         self._g2p = g2p
@@ -198,8 +194,7 @@ class SoftRobot:
     # ---------- 前向 ----------
     def forward(self):
         for s in range(self.steps - 1):
-            self._clear_grid()
-            self._compute_actuation(s)
+            self._clear_and_act(s)
             self._p2g(s)
             self._grid_op()
             self._g2p(s)
@@ -290,13 +285,17 @@ class RobotCanvas(QWidget):
         aid = app.aid
         p.setPen(Qt.NoPen)
         for i in range(len(pos)):
-            a = 0.0 if aid[i] < 0 else float(acts[idx, aid[i]]) if acts is not None else 0.0
-            if aid[i] < 0:
-                col = QColor(40, 42, 48)
+            if aid[i] < 0 or acts is None:
+                col = QColor(46, 48, 54)
             else:
-                col = QColor(int((0.5 - a) * 255), int((0.5 - abs(a)) * 255), int((0.5 + a) * 255))
+                a = float(acts[idx, aid[i]])
+                a = max(-1.0, min(1.0, a))
+                rr = max(0.0, min(1.0, 0.5 - a))
+                gg = max(0.0, min(1.0, 0.5 - abs(a)))
+                bb = max(0.0, min(1.0, 0.5 + a))
+                col = QColor(int(rr * 255), int(gg * 255), int(bb * 255))
             p.setBrush(col)
-            r = 2.2
+            r = 2.0
             p.drawEllipse(QPointF(X(float(pos[i][0])), Y(float(pos[i][1]))), r, r)
 
         p.setPen(QColor(196, 84, 58))
@@ -311,7 +310,7 @@ class RobotCanvas(QWidget):
 class ESTrainer(QThread):
     progress = Signal(int, float, float, object)
 
-    def __init__(self, robot, pop=8, sigma=0.10, lr=0.12):
+    def __init__(self, robot, pop=6, sigma=0.10, lr=0.12):
         super().__init__()
         self.robot = robot
         self.pop = pop
@@ -326,11 +325,16 @@ class ESTrainer(QThread):
         while self.running:
             eps = self.rng.normal(0, 1, (self.pop, self.theta.size)).astype(np.float32)
             fits = np.zeros(self.pop, np.float32)
+            snaps = [None] * self.pop
+            actsnap = [None] * self.pop
             for k in range(self.pop):
                 if not self.running:
                     return
                 self.robot.set_theta(self.theta + self.sigma * eps[k])
                 fits[k] = self.robot.forward()
+                if fits[k] >= fits.max():
+                    snaps[k] = self.robot.rollout()
+                    actsnap[k] = self.robot.actuation.to_numpy()
             # 用排名做权重（比原始适应度稳）
             order = np.argsort(fits)
             w = np.zeros(self.pop, np.float32)
