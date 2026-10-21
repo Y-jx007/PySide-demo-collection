@@ -237,8 +237,8 @@ def _land_at(nw, nh):
 
 
 # ==================== 画布 ====================
-_STREAK_W = (26.0, 77.0, 128.0)
-_LINE_RGB = (196.0, 84.0, 58.0)
+_STREAK_W = (104.0, 134.0, 166.0)
+_LINE_RGB = (228.0, 156.0, 132.0)
 _STREAK_O = (24.0, 110.0, 128.0)
 
 
@@ -270,7 +270,7 @@ class MapCanvas(QWidget):
         for lat, text in ((66.5, "北极圈"), (23.5, "北回归线"), (0.0, "赤道"),
                           (-23.5, "南回归线"), (-66.5, "南极圈")):
             yy = y0 + (90.0 - lat) / 180.0 * mh
-            p.setPen(QPen(QColor(196, 84, 58, 220), 1))
+            p.setPen(QPen(QColor(196, 132, 112, 170), 1))
             p.drawText(QPointF(x0 + 4, yy - 2), text)
         p.end()
 
@@ -299,7 +299,8 @@ class CirculationApp(QMainWindow):
         self._pressure_cur = None
         self._compose_p = np.empty((self.BH, self.BW, 3), np.float32)
         self._rng = np.random.default_rng(7)
-        self.substeps = 4      # 每帧推进的子步数（每步 dt 很小）
+        self.substeps = 4
+        self.speed_scale = 1.0        # 风速调控倍数      # 每帧推进的子步数（每步 dt 很小）
         self._buf_x = np.full((self.BH, self.BW), -1.0, np.float32)
         self._buf_y = np.full((self.BH, self.BW), -1.0, np.float32)
 
@@ -351,7 +352,7 @@ class CirculationApp(QMainWindow):
         coast[1:, :] |= land[1:, :] != land[:-1, :]
         coast[:, 1:] |= land[:, 1:] != land[:, :-1]
         cb = coast[..., None].astype(np.float32)
-        rgb = rgb * (1 - 0.9 * cb) + np.array([120, 118, 114], np.float32) * (0.9 * cb)
+        rgb = rgb * (1 - 0.95 * cb) + np.array([72, 68, 62], np.float32) * (0.95 * cb)
 
         if self.show_grid:
             g = np.zeros((BH, BW), np.float32)
@@ -364,8 +365,8 @@ class CirculationApp(QMainWindow):
 
         # 特殊纬线做成独立遮罩，最后盖在气压层之上
         self._line_a = np.zeros((BH, BW, 1), np.float32)
-        for lat, strength in ((0.0, 0.62), (23.5, 0.34), (-23.5, 0.34),
-                              (66.5, 0.24), (-66.5, 0.24)):
+        for lat, strength in ((0.0, 0.30), (23.5, 0.16), (-23.5, 0.16),
+                              (66.5, 0.11), (-66.5, 0.11)):
             y = int((90.0 - lat) / 180.0 * BH)
             y = min(max(y, 0), BH - 1)
             thick = 2 if lat == 0.0 else 1
@@ -456,8 +457,9 @@ class CirculationApp(QMainWindow):
                 vv = _bilinear(self._wv, mx, my)
                 m = np.hypot(uu, vv)
                 k = np.clip(m / self._wref, 0.0, 1.0) / np.maximum(m, 1e-9)
-                nx = np.mod(px[ys, xs] + uu * k * dt, BW)
-                ny = np.clip(py[ys, xs] - vv * k * dt, 0, BH - 1)
+                dt_s = dt * self.speed_scale
+                nx = np.mod(px[ys, xs] + uu * k * dt_s, BW)
+                ny = np.clip(py[ys, xs] - vv * k * dt_s, 0, BH - 1)
                 tx = np.clip(nx.astype(np.int32), 0, BW - 1)
                 ty = np.clip(ny.astype(np.int32), 0, BH - 1)
                 nx_buf[ty, tx] = nx
@@ -604,6 +606,24 @@ class CirculationApp(QMainWindow):
         f1.addRow(self.chk_auto)
         pv.addWidget(g1)
 
+        g_speed = QGroupBox("风速")
+        f_speed = QFormLayout(g_speed)
+        f_speed.setSpacing(6)
+        f_speed.setContentsMargins(8, 8, 8, 8)
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(10, 300)
+        self.speed_slider.setValue(100)
+        self.speed_lbl = QLabel("100%")
+        self.speed_lbl.setFixedWidth(46)
+        self.speed_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.speed_slider.valueChanged.connect(self._on_speed)
+        row_s = QHBoxLayout()
+        row_s.setSpacing(6)
+        row_s.addWidget(self.speed_slider, 1)
+        row_s.addWidget(self.speed_lbl)
+        f_speed.addRow("倍率", row_s)
+        pv.addWidget(g_speed)
+
         g2 = QGroupBox("显示")
         v2 = QVBoxLayout(g2)
         v2.setSpacing(4)
@@ -646,6 +666,10 @@ class CirculationApp(QMainWindow):
             self._build_pressure()
         self.lbl_month.setText(f"{v} 月")
         self.canvas.update()
+
+    def _on_speed(self, v):
+        self.speed_scale = v / 100.0
+        self.speed_lbl.setText(f"{v}%")
 
     def _on_auto(self, on):
         self.auto_season = bool(on)
