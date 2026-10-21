@@ -51,6 +51,37 @@ def _blur_y(a, sigma):
     return out
 
 
+def _bilinear(field, x, y):
+    x = np.mod(x, W - 1e-6)
+    y = np.clip(y, 0.0, H - 1.001)
+    x0 = x.astype(np.int32)
+    y0 = y.astype(np.int32)
+    fx = x - x0
+    fy = y - y0
+    x1 = (x0 + 1) % W
+    y1 = np.minimum(y0 + 1, H - 1)
+    return (field[y0, x0] * (1 - fx) * (1 - fy) + field[y0, x1] * fx * (1 - fy)
+            + field[y1, x0] * (1 - fx) * fy + field[y1, x1] * fx * fy)
+
+
+def _lic(u, v, iters=26, step=0.85, seed=5):
+    """线积分卷积：把噪声沿流场来回拖，得到连续的流线纹理。"""
+    rng = np.random.default_rng(seed)
+    noise = rng.random((H, W)).astype(np.float32)
+    noise = _blur_x(_blur_y(noise, 0.9), 0.9)
+    acc = np.zeros((H, W), np.float32)
+    for sgn in (1.0, -1.0):
+        x = np.tile(np.arange(W, dtype=np.float32), (H, 1))
+        y = np.repeat(np.arange(H, dtype=np.float32)[:, None], W, axis=1)
+        for _ in range(iters):
+            x = np.mod(x + _bilinear(u, x, y) * sgn * step, W)
+            y = np.clip(y + _bilinear(v, x, y) * sgn * step, 0, H - 1)
+            acc += _bilinear(noise, x, y)
+    acc /= (2.0 * iters)
+    lo, hi = np.percentile(acc, 3), np.percentile(acc, 97)
+    return np.clip((acc - lo) / max(1e-6, hi - lo), 0, 1)
+
+
 def _display_speed(u, v, v_ref):
     "保留方向，把速度压到可显示的区间：慢风也看得见，快风不会糊成一片。"
     mag = np.hypot(u, v)
@@ -73,9 +104,9 @@ class Circulation:
         ys = np.arange(H)[:, None] * np.ones((1, W))
         self.lat = 180.0 * ys / H - 90.0            # 第 0 行是南极
         self.lon = 360.0 * np.ones((H, 1)) * np.arange(W)[None, :] / W - 180.0
-        self.month = 4
+        self.month = 1
         self._solve_psi_setup()
-        self.update(4)
+        self.update(1)
 
     # ---------- 气压 ----------
     def _mslp(self):
@@ -190,9 +221,9 @@ class MapCanvas(QWidget):
 
         sx, sy = mw / W, mh / H
         if app.show_wind and app.wind_hist:
-            self._draw_trails(p, app.wind_hist, x0, y0, sx, sy, QColor(48, 60, 84, 165), 1.0)
+            self._draw_trails(p, app.wind_hist, x0, y0, sx, sy, QColor(38, 48, 70, 170), 1.0)
         if app.show_ocean and app.ocean_hist:
-            self._draw_trails(p, app.ocean_hist, x0, y0, sx, sy, QColor(20, 126, 148, 185), 1.2)
+            self._draw_trails(p, app.ocean_hist, x0, y0, sx, sy, QColor(12, 118, 140, 165), 1.2)
 
         p.setPen(QPen(QColor(120, 120, 126, 160), 1))
         p.setBrush(Qt.NoBrush)
@@ -212,9 +243,9 @@ class MapCanvas(QWidget):
             ys = arr[:, k, 1]
             if np.abs(np.diff(xs)).max() > W * 0.5:
                 continue                     # 跨日界线断开
-            path.moveTo(x0 + xs[0] * sx, y0 + ys[0] * sy)
+            path.moveTo(x0 + xs[0] * sx, y0 + (H - 1 - ys[0]) * sy)
             for i in range(1, K):
-                path.lineTo(x0 + xs[i] * sx, y0 + ys[i] * sy)
+                path.lineTo(x0 + xs[i] * sx, y0 + (H - 1 - ys[i]) * sy)
         p.drawPath(path)
 
 
@@ -228,15 +259,17 @@ class CirculationApp(QMainWindow):
         self.model = Circulation()
         self.image = None
         self.image_big = None
+        self._flow_wind = None
+        self._flow_ocean = None
         self.show_wind = True
         self.show_ocean = True
         self.show_pressure = True
         self.show_grid = True
         self.wind_hist = []
         self.ocean_hist = []
-        self.trail = 9
+        self.trail = 8
         self.auto_season = True
-        self._month_f = 4.0
+        self._month_f = 1.0
         self._rng = np.random.default_rng(11)
         self._init_particles()
         self._rebuild_image()
@@ -251,7 +284,7 @@ class CirculationApp(QMainWindow):
     # ---------- 粒子 ----------
     def _init_particles(self):
         oy, ox = np.nonzero(self.model.ocean)
-        n_w, n_o = 500, 280
+        n_w, n_o = 620, 320
         wi = self._rng.integers(0, len(ox), n_w)
         self.wx = ox[wi].astype(np.float64) + self._rng.random(n_w)
         self.wy = oy[wi].astype(np.float64) + self._rng.random(n_w)
@@ -287,7 +320,7 @@ class CirculationApp(QMainWindow):
         wv = self._sample(v, self.wx, self.wy)
         wu, wv = _display_speed(wu, wv, 6.0)
         self.wx = np.mod(self.wx + wu * sp, W)
-        self.wy = np.clip(self.wy - wv * sp, 0.5, H - 1.5)
+        self.wy = np.clip(self.wy + wv * sp, 0.5, H - 1.5)
         bad = (self._rng.random(len(self.wx)) < 0.006) | \
               (self.wy <= 0.51) | (self.wy >= H - 1.51)
         oy, ox = np.nonzero(self.model.ocean)
@@ -307,7 +340,7 @@ class CirculationApp(QMainWindow):
         cv = self._sample(ov, self.ox_, self.oy_)
         cu, cv = _display_speed(cu, cv, 3.5)
         self.ox_ = np.mod(self.ox_ + cu * sp, W)
-        self.oy_ = np.clip(self.oy_ - cv * sp, 1.0, H - 2.0)
+        self.oy_ = np.clip(self.oy_ + cv * sp, 1.0, H - 2.0)
         ox0 = self.ox_.astype(np.int32) % W
         oy0 = self.oy_.astype(np.int32).clip(0, H - 1)
         landed = self.model.land[oy0, ox0] | (self._rng.random(len(self.ox_)) < 0.004)
@@ -328,6 +361,37 @@ class CirculationApp(QMainWindow):
             self.ocean_hist.pop(0)
 
     # ---------- 底图 ----------
+    def _build_flow_layer(self):
+        """把风场和洋流的 LIC 纹理烘成 RGBA 图层，颜色按流向取。"""
+        def layer(u, v, ref, hue_shift, rgb):
+            mag = np.hypot(u, v)
+            ang = np.arctan2(v, u)
+            lic = _lic(u, v, seed=hash(hue_shift) % 997)
+            inten = lic * np.clip(mag / max(1e-6, ref), 0.15, 1.0)
+            inten = np.clip(inten / max(1e-6, np.percentile(inten, 99)), 0, 1)
+            # 方向决定色相：沿流向有冷暖变化，和参考实现一致
+            base = 0.62 + 0.38 * np.cos(ang[..., None] + np.array(hue_shift))
+            col = np.array(rgb, np.float32) * base
+            return np.dstack([col, (inten * 255.0)])          # RGBA
+
+        wu, wv = self.model.wind
+        wind_a = layer(wu, wv, np.percentile(np.hypot(wu, wv), 96), (0.0, 2.1, 4.2),
+                       (52, 62, 88))
+        ou = np.where(self.model.land, 0.0, self.model.ocean_u)
+        ov = np.where(self.model.land, 0.0, self.model.ocean_v)
+        ocean_a = layer(ou, ov, max(1e-6, np.percentile(np.hypot(ou, ov), 96)),
+                        (1.2, 3.0, 5.2), (16, 108, 132))
+        self._flow_wind = self._to_qimage_rgba(wind_a)
+        self._flow_ocean = self._to_qimage_rgba(ocean_a)
+
+    @staticmethod
+    def _to_qimage_rgba(a):
+        from scipy.ndimage import zoom
+        big = zoom(a, (6, 6, 1), order=1)
+        big = np.clip(big, 0, 255).astype(np.uint8)
+        big = np.ascontiguousarray(big)
+        return QImage(big.data, W * 6, H * 6, W * 24, QImage.Format_RGBA8888).copy()
+
     def _rebuild_image(self):
         land = np.flipud(self.model.land)          # 北在上
         p = np.flipud(self.model.p)
@@ -337,12 +401,20 @@ class CirculationApp(QMainWindow):
         rgb = np.where(land[..., None], land_rgb, ocean_rgb).astype(np.float32)
 
         if self.show_pressure:
-            lo, hi = 985.0, 1030.0
-            t = np.clip((p - lo) / (hi - lo), 0.0, 1.0)[..., None]
+            # 以 1013 为中心的发散色标：把陆地高/低压、海洋低压都凸显出来
+            t = np.clip((p - 1013.0) / 10.0, -1.0, 1.0)[..., None]
+            t = (t + 1.0) * 0.5
             cold = np.array([70, 130, 200], np.float32)
             warm = np.array([214, 132, 74], np.float32)
             tint = cold * (1 - t) + warm * t
-            rgb = rgb * 0.62 + tint * 0.38
+            rgb = rgb * 0.55 + tint * 0.45
+
+        # 等压线：每 4 hPa 一条
+        iso = np.zeros_like(p)
+        for lv in np.arange(980.0, 1050.0, 2.0):
+            iso = np.maximum(iso, np.clip(1.0 - np.abs(p - lv) / 0.55, 0.0, 1.0))
+        iso = _blur_x(iso, 0.7)
+        rgb = rgb * (1 - 0.55 * iso[..., None]) + np.array([36, 40, 48], np.float32) * (0.55 * iso[..., None])
 
         # 海岸线
         coast = np.zeros_like(land)
@@ -416,8 +488,8 @@ class CirculationApp(QMainWindow):
         f1.setContentsMargins(8, 8, 8, 8)
         self.month_s = QSlider(Qt.Horizontal)
         self.month_s.setRange(1, 12)
-        self.month_s.setValue(4)
-        self.lbl_month = QLabel("4 月")
+        self.month_s.setValue(1)
+        self.lbl_month = QLabel("1 月")
         self.lbl_month.setFixedWidth(44)
         self.lbl_month.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.month_s.valueChanged.connect(self._on_month)
