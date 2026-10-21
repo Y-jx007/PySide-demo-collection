@@ -281,12 +281,12 @@ class CirculationApp(QMainWindow):
     |v|≤1 像素，拖尾值每帧乘 0.9，粒子落到的像素置 1，最后按参考的 PAPER 配色
     反相成米白纸面 + 蓝灰细流线。"""
 
-    BW, BH = 840, 420          # 缓冲分辨率（2:1，和地图一致）
+    BW, BH = 800, 400          # 缓冲分辨率（2:1，和地图一致）
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("全球风场 · 气压 / 流线")
-        self.setGeometry(110, 60, 1180, 780)
+        self.setGeometry(140, 90, 1180, 560)
 
         self.wind = WindSim()
         self.show_wind = True
@@ -296,8 +296,10 @@ class CirculationApp(QMainWindow):
         self._season_t = 1.0
         self._season_tick = 0
         self._pressure_rgb = None
+        self._pressure_cur = None
+        self._compose_p = np.empty((self.BH, self.BW, 3), np.float32)
         self._rng = np.random.default_rng(7)
-        self.substeps = 5      # 每帧推进的子步数（每步 dt 很小）
+        self.substeps = 4      # 每帧推进的子步数（每步 dt 很小）
         self._buf_x = np.full((self.BH, self.BW), -1.0, np.float32)
         self._buf_y = np.full((self.BH, self.BW), -1.0, np.float32)
 
@@ -392,7 +394,30 @@ class CirculationApp(QMainWindow):
         BH, BW = self.BH, self.BW
         ys = (np.arange(BH) * small.shape[0] / BH).astype(np.int32)
         xs = (np.arange(BW) * small.shape[1] / BW).astype(np.int32)
-        self._pressure_rgb = small[ys][:, xs]
+        big = small[ys][:, xs]
+        if getattr(self, "_prv_b", None) is None:
+            self._prv_a = big.astype(np.float32)
+            self._prv_b = self._prv_a
+        else:
+            self._prv_a = self._pressure_rgb.astype(np.float32) if self._pressure_rgb is not None else big.astype(np.float32)
+            self._prv_b = big.astype(np.float32)
+        self._prv_phase = 0.0
+        self._pressure_rgb = big.astype(np.float32)
+
+    def _blend_pressure(self):
+        """气压层每帧向目标淡入，季节变化不会一跳一跳。"""
+        if getattr(self, "_prv_b", None) is None or self._prv_phase >= 1.0:
+            return
+        self._prv_phase = min(1.0, self._prv_phase + 1.0 / 10.0)
+        f = self._prv_phase
+        cur = self._compose_p
+        a = self._prv_a
+        b = self._prv_b
+        np.subtract(b, a, out=cur)
+        cur *= f
+        cur += a
+        self._pressure_cur = cur
+        self._pressure_rgb = cur
 
     def _apply_pressure(self):
         base = self._base_f
@@ -411,7 +436,7 @@ class CirculationApp(QMainWindow):
         """
         BH, BW = self.BH, self.BW
         dt = self._wgain / steps                      # 每步位移（像素）
-        decay = 0.90 ** (1.0 / steps)                 # 每步衰减，整帧仍是 0.9
+        dens *= 0.82                                  # 每帧衰减一次即可
 
         for _ in range(steps):
             alive = px >= 0
@@ -447,7 +472,6 @@ class CirculationApp(QMainWindow):
                 nx_buf[cy, cx] = cx + self._rng.random(k)
                 ny_buf[cy, cx] = cy + self._rng.random(k)
 
-            dens *= decay
             dens[nx_buf >= 0] = 1.0
             px, nx_buf = nx_buf, px                    # 交换缓冲，避免每次分配
             py, ny_buf = ny_buf, py
@@ -469,7 +493,13 @@ class CirculationApp(QMainWindow):
 
     def _compose(self):
         out = self._compose_buf
-        out[:] = self._apply_pressure() if self.show_pressure else self._base_f
+        if self.show_pressure and self._pressure_cur is not None:
+            base = self._base_f
+            pr = self._pressure_cur
+            for c in range(3):
+                out[:, :, c] = base[:, :, c] * 0.48 + pr[:, :, c] * 0.52
+        else:
+            out[:] = self._base_f
         # 逐通道就地混合，(H,W,1) 广播到 (H,W,3) 太慢
         if self.show_wind:
             a = self._dens_w
@@ -502,6 +532,8 @@ class CirculationApp(QMainWindow):
                 self._season_t -= 12.0
         self._season_tick += 1
         self._blend_wind()
+        if self.show_pressure:
+            self._blend_pressure()
         if self._season_tick % 10 == 0:
             self.wind.update(self._season_t)
             self._build_velocity()
@@ -513,7 +545,7 @@ class CirculationApp(QMainWindow):
         if self.show_wind:
             # 每帧走多步：步数上去，粒子看起来才够快
             self._px_w, self._py_w, self._dens_w = self._step_particles(
-                self._px_w, self._py_w, self._dens_w, 7.0e-5, self.substeps)
+                self._px_w, self._py_w, self._dens_w, 2.2e-4, self.substeps)
         else:
             self._dens_w *= 0.9
         self._compose()
