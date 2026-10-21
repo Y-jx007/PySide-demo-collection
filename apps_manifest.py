@@ -92,31 +92,10 @@ APPS = [
         "category": "Cellular Automata",
     },
     {
-        "title": "Circulation",
-        "description": "全球环流：气压梯度推风，风应力旋度推海洋环流",
-        "path": "Physics/Circulation.py",
-        "friendly": "全球环流",
-        "category": "Physics",
-    },
-    {
-        "title": "Atmosphere",
-        "description": "大气对流：气温、气流、气压同屏，铅直剖面",
-        "path": "Physics/Atmosphere.py",
-        "friendly": "大气对流",
-        "category": "Physics",
-    },
-    {
         "title": "Beam",
         "description": "横梁承重：有限元算弯曲应力，超强度即断裂",
         "path": "Physics/Beam.py",
         "friendly": "横梁承重",
-        "category": "Physics",
-    },
-    {
-        "title": "Erosion",
-        "description": "降雨冲刷地形，干后泥土龟裂",
-        "path": "Physics/Erosion.py",
-        "friendly": "水力侵蚀",
         "category": "Physics",
     },
     {
@@ -262,6 +241,20 @@ APPS = [
         "description": "KAM 环面与标准映射",
         "path": "Physics/KAM.py",
         "friendly": "KAM环面",
+        "category": "实验",
+    },
+    {
+        "title": "Circulation",
+        "description": "全球环流：气压梯度推风，风应力旋度推海洋环流",
+        "path": "Physics/Circulation.py",
+        "friendly": "全球环流",
+        "category": "实验",
+    },
+    {
+        "title": "Erosion",
+        "description": "降雨冲刷地形，干后泥土龟裂",
+        "path": "Physics/Erosion.py",
+        "friendly": "水力侵蚀",
         "category": "实验",
     },
 ]
