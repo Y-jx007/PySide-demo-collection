@@ -244,6 +244,13 @@ APPS = [
         "category": "实验",
     },
     {
+        "title": "SoftEvolution",
+        "description": "演化软体：软体虫子+遗传算法，几十代后学会爬行",
+        "path": "Physics/SoftEvolution.py",
+        "friendly": "演化软体",
+        "category": "实验",
+    },
+    {
         "title": "Circulation",
         "description": "全球环流：气压梯度推风，风应力旋度推海洋环流",
         "path": "Physics/Circulation.py",
