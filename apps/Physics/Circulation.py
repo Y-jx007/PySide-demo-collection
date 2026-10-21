@@ -109,6 +109,12 @@ def _display_speed(u, v, v_ref):
     return u * k, v * k
 
 
+@ti.func
+def _ssf(a: ti.f32, b: ti.f32, x: ti.f32) -> ti.f32:
+    t = ti.min(ti.max((x - a) / (b - a), 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
 class WindSim:
     """气压场与风场，用 Taichi 并行算在 360×180 网格上。
 
@@ -156,8 +162,8 @@ class WindSim:
                 else:
                     p0[i, j] = 1014.5 - 20.0 * ti.cos(lat * 3.14159265 / 30.0)
                     pd[i, j] = 20.0 * ti.sin(lat * 3.14159265 / 35.0) * ti.abs(lat) / 90.0
-                # 季节项：1/7 月反相
-                amp = 1.0 - 2.0 * _ss(1.5, 4.5, t) + 2.0 * _ss(7.5, 10.5, t)
+                # 季节项：1/7 月反相（必须是 ti.func，普通 Python 函数会被当成常数）
+                amp = 1.0 - 2.0 * _ssf(1.5, 4.5, t) + 2.0 * _ssf(7.5, 10.5, t)
                 p[i, j] = p0[i, j] + pd[i, j] * amp
 
         @ti.kernel
