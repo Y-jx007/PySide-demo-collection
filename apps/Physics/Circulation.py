@@ -14,10 +14,30 @@ _LAND_B64 = (
 )
 
 
-def load_land():
+def load_land_fine():
+    """720×360 的 Natural Earth 海岸线（第 0 行是北）。"""
+    import os as _os
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "worldmask.npz")
+    try:
+        d = np.load(path)["land"]
+        if d.shape == (360, 720):
+            return d
+    except Exception:
+        pass
+    # 没有文件时退回内嵌的 160×72 位图（放大）
     raw = zlib.decompress(base64.b64decode(_LAND_B64))
-    bits = np.unpackbits(np.frombuffer(raw, np.uint8))
-    return bits[: 160 * 72].reshape(72, 160).astype(bool)
+    bits = np.unpackbits(np.frombuffer(raw, np.uint8)).reshape(72, 160)
+    ys = (np.arange(360) * 72 / 360).astype(int)
+    xs = (np.arange(720) * 160 / 720).astype(int)
+    return bits[np.ix_(ys, xs)].astype(bool)
+
+
+def load_land():
+    """物理网格用 160×72（第 0 行是南），从高精度掩膜抽样得到。"""
+    fine = load_land_fine()[::-1]                 # 翻成南在下
+    ys = (np.arange(72) * fine.shape[0] / 72).astype(int)
+    xs = (np.arange(160) * fine.shape[1] / 160).astype(int)
+    return fine[np.ix_(ys, xs)].astype(bool)
 
 
 # ==================== 环流模型 ====================
@@ -188,6 +208,17 @@ class Circulation:
         self.psi = full
         self.ocean_u = -dpsi_dy
         self.ocean_v = dpsi_dx
+
+        # 赤道流系：正压 Sverdrup 解给不出赤道逆流，这里按观测把三条带叠上去
+        #   NEC  10–20°N  向西
+        #   NECC 5–10°N   向东（赤道逆流）
+        #   SEC  5°S–5°N  向西
+        lat = self.lat
+        ref = np.abs(self.ocean_u).mean() + 1e-9
+        band = (0.85 * np.exp(-((lat - 14.0) / 6.0) ** 2) * -1.0
+                + 1.15 * np.exp(-((lat - 7.0) / 2.6) ** 2)
+                + 0.95 * np.exp(-((lat + 1.5) / 4.0) ** 2) * -1.0)
+        self.ocean_u = self.ocean_u + band * ref * 2.2
         scale = np.abs(self.ocean_u).max()
         if scale > 1e-9:
             # 归一到与风速可比的量级，方便同一套粒子参数显示
@@ -231,7 +262,7 @@ class CirculationApp(QMainWindow):
     |v|≤1 像素，拖尾值每帧乘 0.9，粒子落到的像素置 1，最后按参考的 PAPER 配色
     反相成米白纸面 + 蓝灰细流线。"""
 
-    BW, BH = 720, 324          # 缓冲分辨率（2:1，和地图一致）
+    BW, BH = 840, 420          # 缓冲分辨率（2:1，和地图一致）
 
     def __init__(self):
         super().__init__()
@@ -289,12 +320,16 @@ class CirculationApp(QMainWindow):
             k = np.clip(mag / max(1e-6, ref), 0.0, 1.0) / np.maximum(mag, 1e-6)
             return (u * k).astype(np.float32), (v * k).astype(np.float32)
 
-        vxu, vyu = norm(up(wx), up(wy), np.percentile(np.hypot(wx, wy), 90))
-        vox, voy = norm(up(ou), up(ov), max(1e-6, np.percentile(np.hypot(ou, ov), 90)))
+        # 参考里 |v| ≤ 1 像素/帧，是相对 144 宽的缓冲说的；
+        # 我们的缓冲宽得多，按比例放大才有同样的速度感
+        gain = self.BW / 144.0 * 0.30
+        vxu, vyu = norm(up(wx), up(wy), np.percentile(np.hypot(wx, wy), 80))
+        vox, voy = norm(up(ou), up(ov), max(1e-6, np.percentile(np.hypot(ou, ov), 80)))
         # 缓冲 y 向下，模型 v 向北 → 取负
-        self._vx_w, self._vy_w = vxu * 1.0, -vyu * 1.0
-        self._vx_o, self._vy_o = vox * 0.9, -voy * 0.9
-        self._ocean_mask = up(self.model.ocean.astype(np.float32))
+        self._vx_w, self._vy_w = vxu * gain, -vyu * gain
+        self._vx_o, self._vy_o = vox * gain * 1.15, -voy * gain * 1.15
+        fine_ocean = ~load_land_fine()
+        self._ocean_mask = up(fine_ocean.astype(np.float32))
 
     # ---------- 静态底图 ----------
     def _build_base(self):
@@ -302,14 +337,14 @@ class CirculationApp(QMainWindow):
         paper = np.array([232, 231, 225], np.float32)
         rgb = np.tile(paper, (BH, BW, 1))
 
-        land = np.flipud(self.model.land)
+        fine = load_land_fine()                      # 720×360，北在上
+        ys = (np.arange(BH) * fine.shape[0] / BH).astype(np.int32)
+        xs = (np.arange(BW) * fine.shape[1] / BW).astype(np.int32)
+        land = fine[np.ix_(ys, xs)]
         coast = np.zeros_like(land)
         coast[1:, :] |= land[1:, :] != land[:-1, :]
         coast[:, 1:] |= land[:, 1:] != land[:, :-1]
-        ys = (np.arange(BH) * land.shape[0] / BH).astype(np.int32)
-        xs = (np.arange(BW) * land.shape[1] / BW).astype(np.int32)
-        cb = coast[np.clip(ys, 0, coast.shape[0] - 1)][:, np.clip(xs, 0, coast.shape[1] - 1)]
-        cb = cb[..., None].astype(np.float32)
+        cb = coast[..., None].astype(np.float32)
         rgb = rgb * (1 - 0.9 * cb) + np.array([120, 118, 114], np.float32) * (0.9 * cb)
 
         if self.show_grid:
@@ -435,12 +470,12 @@ class CirculationApp(QMainWindow):
 
         if self.show_wind:
             self._px_w, self._py_w, self._dens_w = self._step_particles(
-                self._vx_w, self._vy_w, self._px_w, self._py_w, self._dens_w, 1.6e-4, 5e-3)
+                self._vx_w, self._vy_w, self._px_w, self._py_w, self._dens_w, 1.3e-4, 5e-3)
         else:
             self._dens_w *= 0.9
         if self.show_ocean:
             self._px_o, self._py_o, self._dens_o = self._step_particles(
-                self._vx_o, self._vy_o, self._px_o, self._py_o, self._dens_o, 8e-5, 6e-3)
+                self._vx_o, self._vy_o, self._px_o, self._py_o, self._dens_o, 5.0e-5, 7e-3)
         else:
             self._dens_o *= 0.9
 
