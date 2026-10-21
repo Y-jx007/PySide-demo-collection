@@ -125,7 +125,7 @@ class Circulation:
         return p, d
 
     def update(self, month):
-        self.month = month
+        self.month = month          # 允许浮点：季节是连续量
         p0, d = self._mslp()
         p = _blur_y(_blur_x(p0, 6.0), 4.0)
         # 季节项：1/7 月反相
@@ -228,7 +228,7 @@ class CirculationApp(QMainWindow):
     |v|≤1 像素，拖尾值每帧乘 0.9，粒子落到的像素置 1，最后按参考的 PAPER 配色
     反相成米白纸面 + 蓝灰细流线。"""
 
-    BW, BH = 800, 360          # 缓冲分辨率（2:1，和地图一致）
+    BW, BH = 720, 324          # 缓冲分辨率（2:1，和地图一致）
 
     def __init__(self):
         super().__init__()
@@ -241,7 +241,9 @@ class CirculationApp(QMainWindow):
         self.show_pressure = False
         self.show_grid = True
         self.auto_season = True
-        self._month_f = 1.0
+        self._season_t = 1.0
+        self._season_tick = 0
+        self._pressure_rgb = None
         self._rng = np.random.default_rng(7)
 
         self.frame = None
@@ -297,18 +299,6 @@ class CirculationApp(QMainWindow):
         paper = np.array([232, 231, 225], np.float32)
         rgb = np.tile(paper, (BH, BW, 1))
 
-        if self.show_pressure:
-            p = np.flipud(self.model.p)
-            ys = (np.arange(BH) * p.shape[0] / BH).astype(np.int32)
-            xs = (np.arange(BW) * p.shape[1] / BW).astype(np.int32)
-            pb = p[np.clip(ys, 0, p.shape[0] - 1)][:, np.clip(xs, 0, p.shape[1] - 1)]
-            low = np.clip((1012.0 - pb) / 12.0, 0, 1)[..., None]
-            high = np.clip((pb - 1012.0) / 12.0, 0, 1)[..., None]
-            tint = np.array([0, 128, 255], np.float32) * low + np.array([255, 128, 0], np.float32) * high
-            amt = np.clip((low + high) * 0.5, 0, 1)
-            rgb = rgb * (1 - amt) + tint * amt
-
-        # 海岸线：只有轮廓是灰的，和参考一致
         land = np.flipud(self.model.land)
         coast = np.zeros_like(land)
         coast[1:, :] |= land[1:, :] != land[:-1, :]
@@ -330,8 +320,40 @@ class CirculationApp(QMainWindow):
 
         self._base = np.clip(rgb, 0, 255).astype(np.uint8)
         self._base_f = self._base.astype(np.float32)
-        self._compose_buf = np.empty((BH, BW, 3), np.float32)
-        self._compose_u8 = np.empty((BH, BW, 3), np.uint8)
+        if not hasattr(self, "_compose_buf"):
+            self._compose_buf = np.empty((BH, BW, 3), np.float32)
+            self._compose_u8 = np.empty((BH, BW, 3), np.uint8)
+
+    # ---------- 气压层（照参考 shader 的配色） ----------
+    def _build_pressure(self):
+        """LOW = 蓝，HIGH = 橙；经过 0.9-0.8*rgb 反相后，
+        低压呈暖橙色、高压呈淡蓝色，和参考的观测图一致。"""
+        p = np.flipud(self.model.p)
+        BH, BW = self.BH, self.BW
+        ys = (np.arange(BH) * p.shape[0] / BH).astype(np.int32)
+        xs = (np.arange(BW) * p.shape[1] / BW).astype(np.int32)
+        pb = p[np.clip(ys, 0, p.shape[0] - 1)][:, np.clip(xs, 0, p.shape[1] - 1)]
+
+        floor_p = np.floor(pb)
+        t1 = _smoothstep(1000.0, 1012.0, floor_p)
+        t2 = _smoothstep(1012.0, 1024.0, floor_p)
+        low = np.array([0.0, 0.5, 1.0], np.float32)
+        high = np.array([1.0, 0.5, 0.0], np.float32)
+        r = low * (1.0 - t1)[..., None]
+        r = r * (1.0 - t2[..., None]) + high * t2[..., None]
+        rgb = 0.9 - 0.8 * (0.5 * r)
+        small = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+        from scipy.ndimage import zoom
+        big = zoom(small.astype(np.float32), (BH / small.shape[0], BW / small.shape[1], 1), order=1)
+        self._pressure_rgb = np.clip(big, 0, 255).astype(np.uint8)
+
+    def _apply_pressure(self):
+        base = self._base_f
+        if self._pressure_rgb is None:
+            return base
+        pr = self._pressure_rgb.astype(np.float32)
+        # 气压层只做 62% 叠加，海岸线和纸面纹理仍然保留
+        return base * 0.38 + pr * 0.62
 
     # ---------- 粒子推进（照 getPosition 的规则） ----------
     def _step_particles(self, vx, vy, px, py, dens, spawn, die):
@@ -368,7 +390,7 @@ class CirculationApp(QMainWindow):
     # ---------- 合成 ----------
     def _compose(self):
         out = self._compose_buf
-        out[:] = self._base_f
+        out[:] = self._apply_pressure() if self.show_pressure else self._base_f
         # 逐通道就地混合，(H,W,1) 广播到 (H,W,3) 太慢
         if self.show_wind:
             a = self._dens_w
@@ -394,17 +416,19 @@ class CirculationApp(QMainWindow):
         self._fps = 0.9 * self._fps + 0.1 * (1.0 / max(1e-3, now - self._t_prev))
         self._t_prev = now
 
+        # 季节连续演化：参考里 t = mod(iTime,12.) 是连续的，不能按月跳变
         if self.auto_season:
-            self._month_f += 0.010
-            if self._month_f >= 13.0:
-                self._month_f = 1.0
-            m = int(round(self._month_f))
-            if m != self.model.month:
-                self.model.update(m)
-                self._build_velocity()
-                self._build_base()
-                if hasattr(self, "lbl_month"):
-                    self.lbl_month.setText(f"{m} 月")
+            self._season_t += 0.018
+            if self._season_t >= 13.0:
+                self._season_t -= 12.0
+        self._season_tick += 1
+        if self._season_tick % 4 == 0:
+            self.model.update(self._season_t)
+            self._build_velocity()
+            if self.show_pressure:
+                self._build_pressure()
+            if hasattr(self, "lbl_month"):
+                self.lbl_month.setText(f"{self._season_t % 12.0 + 0.5:.1f} 月")
 
         if self.show_wind:
             self._px_w, self._py_w, self._dens_w = self._step_particles(
@@ -509,10 +533,11 @@ class CirculationApp(QMainWindow):
 
     def _on_month(self, v):
         self.chk_auto.setChecked(False)
-        self._month_f = float(v)
-        self.model.update(int(v))
+        self._season_t = float(v)
+        self.model.update(float(v))
         self._build_velocity()
-        self._build_base()
+        if self.show_pressure:
+            self._build_pressure()
         self.lbl_month.setText(f"{v} 月")
         self.canvas.update()
 
@@ -521,6 +546,8 @@ class CirculationApp(QMainWindow):
 
     def _toggle(self, attr, checked):
         setattr(self, attr, bool(checked))
+        if attr == "show_pressure" and checked:
+            self._build_pressure()
         self._build_base()
         self._compose()
         self.canvas.update()
