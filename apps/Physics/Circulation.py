@@ -72,14 +72,15 @@ def _blur_y(a, sigma):
 
 
 def _bilinear(field, x, y):
-    x = np.mod(x, W - 1e-6)
-    y = np.clip(y, 0.0, H - 1.001)
+    Hf, Wf = field.shape          # 必须用数组自己的尺寸（风场是 360×180）
+    x = np.mod(x, Wf - 1e-6)
+    y = np.clip(y, 0.0, Hf - 1.001)
     x0 = x.astype(np.int32)
     y0 = y.astype(np.int32)
     fx = x - x0
     fy = y - y0
-    x1 = (x0 + 1) % W
-    y1 = np.minimum(y0 + 1, H - 1)
+    x1 = (x0 + 1) % Wf
+    y1 = np.minimum(y0 + 1, Hf - 1)
     return (field[y0, x0] * (1 - fx) * (1 - fy) + field[y0, x1] * fx * (1 - fy)
             + field[y1, x0] * (1 - fx) * fy + field[y1, x1] * fx * fy)
 
@@ -296,7 +297,9 @@ class CirculationApp(QMainWindow):
         self._season_tick = 0
         self._pressure_rgb = None
         self._rng = np.random.default_rng(7)
-        self.substeps = 3      # 每帧推进的子步数
+        self.substeps = 5      # 每帧推进的子步数（每步 dt 很小）
+        self._buf_x = np.full((self.BH, self.BW), -1.0, np.float32)
+        self._buf_y = np.full((self.BH, self.BW), -1.0, np.float32)
 
         self.frame = None
         self._base = None
@@ -330,7 +333,7 @@ class CirculationApp(QMainWindow):
             self._wphase = 0.0
         mag = np.hypot(self._wu, self._wv)
         self._wref = max(1e-6, float(np.percentile(mag, 80)))
-        self._wgain = self.BW / 144.0 * 0.30          # 参考的 1 像素/帧是相对 144 宽
+        self._wgain = self.BW / 144.0 * 0.65          # 参考的 1 像素/帧是相对 144 宽
 
     # ---------- 静态底图 ----------
     def _build_base(self):
@@ -400,44 +403,57 @@ class CirculationApp(QMainWindow):
         return base * 0.48 + pr * 0.52
 
     # ---------- 粒子推进（照 getPosition 的规则） ----------
-    def _step_particles(self, px, py, dens, spawn, die):
-        """每个像素最多一个粒子；一步移动 <1 格，拖尾 0.9 衰减。
+    def _step_particles(self, px, py, dens, spawn, steps):
+        """每个像素最多一个粒子。
 
-        速度直接对风场双线性采样，这样季节插值才真正作用到粒子上。
+        关键：**每步 dt 很小**（远小于一格），一帧走多步，每步都往拖尾上打点。
+        一步跨太大时中间格子留不下痕迹，粒子就成了一条条跳跃的点，方向看着就乱。
         """
         BH, BW = self.BH, self.BW
-        alive = px >= 0
-        ys, xs = np.nonzero(alive)
-        new_px = np.full((BH, BW), -1.0, np.float32)
-        new_py = np.full((BH, BW), -1.0, np.float32)
+        dt = self._wgain / steps                      # 每步位移（像素）
+        decay = 0.90 ** (1.0 / steps)                 # 每步衰减，整帧仍是 0.9
 
-        if len(ys):
-            keep = self._rng.random(len(ys)) > die
-            ys, xs = ys[keep], xs[keep]
-            mx = px[ys, xs] / BW * W
-            my = (1.0 - py[ys, xs] / BH) * H
-            uu = _bilinear(self._wu, mx, my)
-            vv = _bilinear(self._wv, mx, my)
-            m = np.hypot(uu, vv)
-            k = np.clip(m / self._wref, 0.0, 1.0) / np.maximum(m, 1e-9)
-            nx = np.mod(px[ys, xs] + uu * k * self._wgain, BW)
-            ny = np.clip(py[ys, xs] - vv * k * self._wgain, 0, BH - 1)
-            tx = np.clip(nx.astype(np.int32), 0, BW - 1)
-            ty = np.clip(ny.astype(np.int32), 0, BH - 1)
-            new_px[ty, tx] = nx
-            new_py[ty, tx] = ny
+        for _ in range(steps):
+            alive = px >= 0
+            ys, xs = np.nonzero(alive)
+            nx_buf = self._buf_x
+            ny_buf = self._buf_y
+            nx_buf.fill(-1.0)
+            ny_buf.fill(-1.0)
 
-        empty = (new_px < 0).sum()
-        k = self._rng.poisson(spawn * empty)
-        if k > 0:
-            cy = self._rng.integers(0, BH, k)
-            cx = self._rng.integers(0, BW, k)
-            new_px[cy, cx] = cx + self._rng.random(k)
-            new_py[cy, cx] = cy + self._rng.random(k)
+            if len(ys):
+                keep = self._rng.random(len(ys)) > 0.004 / steps
+                ys, xs = ys[keep], xs[keep]
+                Hf, Wf = self._wu.shape
+                mx = px[ys, xs] / BW * Wf
+                my = (1.0 - py[ys, xs] / BH) * Hf
+                uu = _bilinear(self._wu, mx, my)
+                vv = _bilinear(self._wv, mx, my)
+                m = np.hypot(uu, vv)
+                k = np.clip(m / self._wref, 0.0, 1.0) / np.maximum(m, 1e-9)
+                nx = np.mod(px[ys, xs] + uu * k * dt, BW)
+                ny = np.clip(py[ys, xs] - vv * k * dt, 0, BH - 1)
+                tx = np.clip(nx.astype(np.int32), 0, BW - 1)
+                ty = np.clip(ny.astype(np.int32), 0, BH - 1)
+                nx_buf[ty, tx] = nx
+                ny_buf[ty, tx] = ny
 
-        dens *= 0.90
-        dens[new_px >= 0] = 1.0
-        return new_px, new_py, dens
+            # 稀疏诞生
+            empty = (nx_buf < 0).sum()
+            k = self._rng.poisson(spawn / steps * empty)
+            if k > 0:
+                cy = self._rng.integers(0, BH, k)
+                cx = self._rng.integers(0, BW, k)
+                nx_buf[cy, cx] = cx + self._rng.random(k)
+                ny_buf[cy, cx] = cy + self._rng.random(k)
+
+            dens *= decay
+            dens[nx_buf >= 0] = 1.0
+            px, nx_buf = nx_buf, px                    # 交换缓冲，避免每次分配
+            py, ny_buf = ny_buf, py
+            self._buf_x, self._buf_y = nx_buf, ny_buf
+
+        return px, py, dens
 
     # ---------- 合成 ----------
     def _blend_wind(self):
@@ -496,10 +512,8 @@ class CirculationApp(QMainWindow):
 
         if self.show_wind:
             # 每帧走多步：步数上去，粒子看起来才够快
-            for _k in range(self.substeps):
-                self._px_w, self._py_w, self._dens_w = self._step_particles(
-                    self._px_w, self._py_w, self._dens_w,
-                    0.0 if _k else 2.0e-4, 5e-3)
+            self._px_w, self._py_w, self._dens_w = self._step_particles(
+                self._px_w, self._py_w, self._dens_w, 7.0e-5, self.substeps)
         else:
             self._dens_w *= 0.9
         self._compose()
