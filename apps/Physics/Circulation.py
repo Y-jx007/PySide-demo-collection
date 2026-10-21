@@ -195,10 +195,11 @@ class Circulation:
 
 
 # ==================== 画布 ====================
-# ==================== 画布 ====================
-class MapCanvas(QWidget):
-    """纸面风格：米白底 + 灰色海岸线 + 逐像素拖尾的细流线（照参考 shader 的做法）。"""
+_STREAK_W = (26.0, 77.0, 128.0)
+_STREAK_O = (24.0, 110.0, 128.0)
 
+
+class MapCanvas(QWidget):
     def __init__(self, app):
         super().__init__()
         self.app = app
@@ -207,26 +208,27 @@ class MapCanvas(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        p.fillRect(self.rect(), QColor(247, 245, 240))
+        p.fillRect(self.rect(), QColor(232, 231, 225))
         app = self.app
         if app.frame is None:
             p.end()
             return
         w, h = self.width(), self.height()
-        scale = min((w - 20) / 2.0, (h - 20) / 1.0)
+        scale = min((w - 16) / 2.0, (h - 16) / 1.0)
         mw, mh = scale * 2.0, scale
         x0 = (w - mw) / 2.0
         y0 = (h - mh) / 2.0
         p.drawImage(QRectF(x0, y0, mw, mh), app.frame)
-        p.setPen(QPen(QColor(120, 120, 126, 120), 1))
-        p.setBrush(Qt.NoBrush)
-        p.drawRect(QRectF(x0, y0, mw, mh))
         p.end()
 
 
 # ==================== 主窗口 ====================
 class CirculationApp(QMainWindow):
-    TW, TH = 480, 216          # 拖尾缓冲分辨率（网格的 3 倍）
+    """照 shadertoy 的 flow map 实现：每个像素最多存一个粒子，粒子每帧移动
+    |v|≤1 像素，拖尾值每帧乘 0.9，粒子落到的像素置 1，最后按参考的 PAPER 配色
+    反相成米白纸面 + 蓝灰细流线。"""
+
+    BW, BH = 800, 360          # 缓冲分辨率（2:1，和地图一致）
 
     def __init__(self):
         super().__init__()
@@ -240,13 +242,20 @@ class CirculationApp(QMainWindow):
         self.show_grid = True
         self.auto_season = True
         self._month_f = 1.0
-        self._rng = np.random.default_rng(11)
+        self._rng = np.random.default_rng(7)
 
         self.frame = None
-        self._base = None                      # 静态底图（纸面 + 海岸线 + 经纬网）
-        self._trail_w = np.zeros((self.TH, self.TW), np.float32)
-        self._trail_o = np.zeros((self.TH, self.TW), np.float32)
-        self._init_particles()
+        self._base = None
+        self._dens_w = np.zeros((self.BH, self.BW), np.float32)
+        self._dens_o = np.zeros((self.BH, self.BW), np.float32)
+        self._buf_i = np.full((self.BH, self.BW), -1.0, np.float32)
+        self._buf_j = np.full((self.BH, self.BW), -1.0, np.float32)
+        self._px_w = np.full((self.BH, self.BW), -1.0, np.float32)
+        self._py_w = np.full((self.BH, self.BW), -1.0, np.float32)
+        self._px_o = np.full((self.BH, self.BW), -1.0, np.float32)
+        self._py_o = np.full((self.BH, self.BW), -1.0, np.float32)
+
+        self._build_velocity()
         self._build_base()
 
         self.init_ui()
@@ -256,131 +265,132 @@ class CirculationApp(QMainWindow):
         self._t_prev = time.perf_counter()
         self._fps = 0.0
 
-    # ---------- 粒子 ----------
-    def _init_particles(self):
-        oy, ox = np.nonzero(self.model.ocean)
-        n_w, n_o = 7000, 2500
-        wi = self._rng.integers(0, len(ox), n_w)
-        self.wx = ox[wi].astype(np.float64) + self._rng.random(n_w)
-        self.wy = oy[wi].astype(np.float64) + self._rng.random(n_w)
-        oi = self._rng.integers(0, len(ox), n_o)
-        self.oxp = ox[oi].astype(np.float64) + self._rng.random(n_o)
-        self.oyp = oy[oi].astype(np.float64) + self._rng.random(n_o)
-        self._oy, self._ox = oy, ox
+    # ---------- 速度场放大到缓冲分辨率 ----------
+    def _build_velocity(self):
+        wx, wy = self.model.wind
+        ou = np.where(self.model.land, 0.0, self.model.ocean_u)
+        ov = np.where(self.model.land, 0.0, self.model.ocean_v)
 
-    def _respawn(self, arr_x, arr_y, n, ocean_only=False):
-        idx = self._rng.integers(0, len(self._ox), n)
-        arr_x[:] = self._ox[idx] + self._rng.random(n)
-        arr_y[:] = self._oy[idx] + self._rng.random(n)
+        def up(f):
+            # 模型第 0 行是南极；缓冲第 0 行是北，所以先翻转
+            g = np.flipud(f)
+            ys = (np.arange(self.BH) * g.shape[0] / self.BH).astype(np.int32)
+            xs = (np.arange(self.BW) * g.shape[1] / self.BW).astype(np.int32)
+            return g[np.clip(ys, 0, g.shape[0] - 1)][:, np.clip(xs, 0, g.shape[1] - 1)]
 
-    def _advect(self, dt):
-        self.wx_prev = self.wx.copy()
-        self.wy_prev = self.wy.copy()
-        self.ox_prev = self.oxp.copy()
-        self.oy_prev = self.oyp.copy()
-        sp = 1.35 * dt
-        # 风
-        u, v = self.model.wind
-        wu = _bilinear(u, self.wx, self.wy)
-        wv = _bilinear(v, self.wx, self.wy)
-        wu, wv = _display_speed(wu, wv, 2.2)
-        self.wx = np.mod(self.wx + wu * sp, W)
-        self.wy = np.clip(self.wy + wv * sp, 0.4, H - 1.4)
-        bad = np.nonzero((self._rng.random(len(self.wx)) < 0.004)
-                         | (self.wy <= 0.41) | (self.wy >= H - 1.41))[0]
-        if len(bad):
-            self._respawn(self.wx[bad], self.wy[bad], len(bad))
-        # 洋流
-        cu = _bilinear(self.model.ocean_u, self.oxp, self.oyp)
-        cv = _bilinear(self.model.ocean_v, self.oxp, self.oyp)
-        cu, cv = _display_speed(cu, cv, 1.6)
-        self.oxp = np.mod(self.oxp + cu * sp, W)
-        self.oyp = np.clip(self.oyp + cv * sp, 0.6, H - 1.6)
-        ix = self.oxp.astype(np.int32) % W
-        iy = np.clip(self.oyp.astype(np.int32), 0, H - 1)
-        bad = np.nonzero((self._rng.random(len(self.oxp)) < 0.003)
-                         | self.model.land[iy, ix])[0]
-        if len(bad):
-            self._respawn(self.oxp[bad], self.oyp[bad], len(bad))
+        # 参考里 getVelocity 把速度归一到 ≤1 像素/帧
+        def norm(u, v, ref):
+            mag = np.hypot(u, v)
+            k = np.clip(mag / max(1e-6, ref), 0.0, 1.0) / np.maximum(mag, 1e-6)
+            return (u * k).astype(np.float32), (v * k).astype(np.float32)
 
-    # ---------- 拖尾 ----------
-    def _splat(self, buf, xs, ys, xp, yp, k=2):
-        """把粒子打进拖尾缓冲；沿上一帧到这一帧的线段插值，流线才连续。
-
-        模型第 0 行是南极，写进缓冲时要翻过来。
-        """
-        buf *= 0.88
-        for i in range(k):
-            f = i / float(k)
-            xa = xp + (xs - xp) * f
-            ya = yp + (ys - yp) * f
-            tx = np.clip((xa / W * self.TW).astype(np.int32), 0, self.TW - 1)
-            ty = np.clip(((H - 1 - ya) / H * self.TH).astype(np.int32), 0, self.TH - 1)
-            np.maximum.at(buf, (ty, tx), 1.0)
+        vxu, vyu = norm(up(wx), up(wy), np.percentile(np.hypot(wx, wy), 90))
+        vox, voy = norm(up(ou), up(ov), max(1e-6, np.percentile(np.hypot(ou, ov), 90)))
+        # 缓冲 y 向下，模型 v 向北 → 取负
+        self._vx_w, self._vy_w = vxu * 1.0, -vyu * 1.0
+        self._vx_o, self._vy_o = vox * 0.9, -voy * 0.9
+        self._ocean_mask = up(self.model.ocean.astype(np.float32))
 
     # ---------- 静态底图 ----------
     def _build_base(self):
-        land = np.flipud(self.model.land)
-        p = np.flipud(self.model.p)
-        TH, TW = self.TH, self.TW
-
-        paper = np.array([247, 244, 237], np.float32)
-        land_tint = np.array([240, 235, 224], np.float32)
-        rgb = np.where(_upsample_mask(land, TH, TW)[..., None], land_tint, paper)
+        BH, BW = self.BH, self.BW
+        paper = np.array([232, 231, 225], np.float32)
+        rgb = np.tile(paper, (BH, BW, 1))
 
         if self.show_pressure:
-            # 参考 shader 的画法：低压蓝、高压橙，叠在纸面上
-            lo = np.clip((1012.0 - p) / 12.0, 0.0, 1.0)[..., None]
-            hi = np.clip((p - 1012.0) / 12.0, 0.0, 1.0)[..., None]
-            low_c = np.array([0.0, 0.5, 1.0], np.float32) * 255.0
-            high_c = np.array([1.0, 0.5, 0.0], np.float32) * 255.0
-            tint = low_c * lo + high_c * hi
-            amt = (0.5 * (lo + hi))
-            mask = _upsample_mask(np.ones_like(p, bool), TH, TW)[..., None]
-            rgb = np.where(mask, rgb * (1 - amt) + tint * amt, rgb)
-            # 等压线
-            iso = np.zeros_like(p)
-            for lv in np.arange(984.0, 1046.0, 4.0):
-                iso = np.maximum(iso, np.clip(1.0 - np.abs(p - lv) / 0.5, 0.0, 1.0))
-            iso_big = _upsample_f(iso, TH, TW)[..., None]
-            rgb = rgb * (1 - 0.5 * iso_big) + np.array([40, 40, 44], np.float32) * (0.5 * iso_big)
+            p = np.flipud(self.model.p)
+            ys = (np.arange(BH) * p.shape[0] / BH).astype(np.int32)
+            xs = (np.arange(BW) * p.shape[1] / BW).astype(np.int32)
+            pb = p[np.clip(ys, 0, p.shape[0] - 1)][:, np.clip(xs, 0, p.shape[1] - 1)]
+            low = np.clip((1012.0 - pb) / 12.0, 0, 1)[..., None]
+            high = np.clip((pb - 1012.0) / 12.0, 0, 1)[..., None]
+            tint = np.array([0, 128, 255], np.float32) * low + np.array([255, 128, 0], np.float32) * high
+            amt = np.clip((low + high) * 0.5, 0, 1)
+            rgb = rgb * (1 - amt) + tint * amt
 
-        # 海岸线：land 与周围不同处
+        # 海岸线：只有轮廓是灰的，和参考一致
+        land = np.flipud(self.model.land)
         coast = np.zeros_like(land)
         coast[1:, :] |= land[1:, :] != land[:-1, :]
         coast[:, 1:] |= land[:, 1:] != land[:, :-1]
-        coast_big = _upsample_mask(coast, TH, TW)[..., None]
-        rgb = rgb * (1 - 0.8 * coast_big) + np.array([104, 100, 94], np.float32) * (0.8 * coast_big)
+        ys = (np.arange(BH) * land.shape[0] / BH).astype(np.int32)
+        xs = (np.arange(BW) * land.shape[1] / BW).astype(np.int32)
+        cb = coast[np.clip(ys, 0, coast.shape[0] - 1)][:, np.clip(xs, 0, coast.shape[1] - 1)]
+        cb = cb[..., None].astype(np.float32)
+        rgb = rgb * (1 - 0.9 * cb) + np.array([120, 118, 114], np.float32) * (0.9 * cb)
 
         if self.show_grid:
-            g = np.zeros((TH, TW), np.float32)
+            g = np.zeros((BH, BW), np.float32)
             for k in range(1, 12):
-                g[:, int(TW * k / 12)] = 1.0
+                g[:, int(BW * k / 12)] = 1.0
             for k in range(1, 6):
-                g[int(TH * k / 6), :] = 1.0
-            g = _upsample_f(g, TH, TW)[..., None]
-            rgb = rgb * (1 - 0.22 * g) + np.array([60, 90, 150], np.float32) * (0.22 * g)
+                g[int(BH * k / 6), :] = 1.0
+            g = g[..., None]
+            rgb = np.where(g > 0, rgb * 0.8 + np.array([0, 128, 255], np.float32) * 0.2, rgb)
 
         self._base = np.clip(rgb, 0, 255).astype(np.uint8)
-        self._ocean_mask = _upsample_mask(np.flipud(self.model.ocean), TH, TW)[..., None].astype(np.float32)
+        self._base_f = self._base.astype(np.float32)
+        self._compose_buf = np.empty((BH, BW, 3), np.float32)
+        self._compose_u8 = np.empty((BH, BW, 3), np.uint8)
+
+    # ---------- 粒子推进（照 getPosition 的规则） ----------
+    def _step_particles(self, vx, vy, px, py, dens, spawn, die):
+        """每个像素最多一个粒子；粒子一步移动 |v|≤1 像素，拖尾 0.9 衰减。"""
+        BH, BW = self.BH, self.BW
+        alive = px >= 0
+        ys, xs = np.nonzero(alive)
+        new_px = np.full((BH, BW), -1.0, np.float32)
+        new_py = np.full((BH, BW), -1.0, np.float32)
+
+        if len(ys):
+            keep = self._rng.random(len(ys)) > die
+            ys, xs = ys[keep], xs[keep]
+            nx = np.mod(px[ys, xs] + vx[ys, xs], BW)
+            ny = np.clip(py[ys, xs] + vy[ys, xs], 0, BH - 1)
+            tx = np.clip(nx.astype(np.int32), 0, BW - 1)
+            ty = np.clip(ny.astype(np.int32), 0, BH - 1)
+            new_px[ty, tx] = nx
+            new_py[ty, tx] = ny
+
+        # 空白像素里稀疏地诞生新粒子（用泊松抽样，避免每帧生成整屏随机数）
+        empty = (new_px < 0).sum()
+        k = self._rng.poisson(spawn * empty)
+        if k > 0:
+            cy = self._rng.integers(0, BH, k)
+            cx = self._rng.integers(0, BW, k)
+            new_px[cy, cx] = cx + self._rng.random(k)
+            new_py[cy, cx] = cy + self._rng.random(k)
+
+        dens *= 0.90
+        dens[new_px >= 0] = 1.0
+        return new_px, new_py, dens
 
     # ---------- 合成 ----------
     def _compose(self):
-        out = self._base.astype(np.float32)
+        out = self._compose_buf
+        out[:] = self._base_f
+        # 逐通道就地混合，(H,W,1) 广播到 (H,W,3) 太慢
         if self.show_wind:
-            a = np.clip(self._trail_w, 0, 1)[..., None] * 0.62
-            out = out * (1 - a) + np.array([66, 58, 50], np.float32) * a
+            a = self._dens_w
+            inv = 1.0 - a
+            for c in range(3):
+                ch = out[:, :, c]
+                ch *= inv
+                ch += _STREAK_W[c] * a
         if self.show_ocean:
-            a = np.clip(self._trail_o, 0, 1)[..., None] * 0.55 * self._ocean_mask
-            out = out * (1 - a) + np.array([18, 108, 132], np.float32) * a
-        img = np.clip(out, 0, 255).astype(np.uint8)
-        self.frame = QImage(np.ascontiguousarray(img).data, self.TW, self.TH,
-                            self.TW * 3, QImage.Format_RGB888).copy()
+            a = self._dens_o * 0.9 * self._ocean_mask
+            inv = 1.0 - a
+            for c in range(3):
+                ch = out[:, :, c]
+                ch *= inv
+                ch += _STREAK_O[c] * a
+        self._compose_u8[:] = np.clip(out, 0, 255)
+        self.frame = QImage(self._compose_u8.data, self.BW, self.BH,
+                            self.BW * 3, QImage.Format_RGB888).copy()
 
     # ---------- 循环 ----------
     def tick(self):
         now = time.perf_counter()
-        dt = min(3.0, max(0.2, (now - self._t_prev) * 60.0))
         self._fps = 0.9 * self._fps + 0.1 * (1.0 / max(1e-3, now - self._t_prev))
         self._t_prev = now
 
@@ -391,19 +401,22 @@ class CirculationApp(QMainWindow):
             m = int(round(self._month_f))
             if m != self.model.month:
                 self.model.update(m)
+                self._build_velocity()
                 self._build_base()
                 if hasattr(self, "lbl_month"):
                     self.lbl_month.setText(f"{m} 月")
 
-        self._advect(dt)
         if self.show_wind:
-            self._splat(self._trail_w, self.wx, self.wy, self.wx_prev, self.wy_prev)
+            self._px_w, self._py_w, self._dens_w = self._step_particles(
+                self._vx_w, self._vy_w, self._px_w, self._py_w, self._dens_w, 1.6e-4, 5e-3)
         else:
-            self._trail_w *= 0.88
+            self._dens_w *= 0.9
         if self.show_ocean:
-            self._splat(self._trail_o, self.oxp, self.oyp, self.ox_prev, self.oy_prev)
+            self._px_o, self._py_o, self._dens_o = self._step_particles(
+                self._vx_o, self._vy_o, self._px_o, self._py_o, self._dens_o, 8e-5, 6e-3)
         else:
-            self._trail_o *= 0.88
+            self._dens_o *= 0.9
+
         self._compose()
         self.canvas.update()
         if hasattr(self, "lbl_fps"):
@@ -487,7 +500,7 @@ class CirculationApp(QMainWindow):
         rv.addWidget(self.canvas, 1)
         root.addWidget(right, 1)
 
-        self.lbl_status = QLabel("白色为纸面，深色细线为风，青色为洋流；勾选「气压分布」可看高压/低压区")
+        self.lbl_status = QLabel("细线是气流（每像素一个粒子，一步移动不到一格，拖尾 0.9 衰减）")
         self.statusBar().addWidget(self.lbl_status, 1)
         self.lbl_fps = QLabel("–")
         self.lbl_fps.setMinimumWidth(70)
@@ -498,9 +511,9 @@ class CirculationApp(QMainWindow):
         self.chk_auto.setChecked(False)
         self._month_f = float(v)
         self.model.update(int(v))
+        self._build_velocity()
         self._build_base()
         self.lbl_month.setText(f"{v} 月")
-        self._compose()
         self.canvas.update()
 
     def _on_auto(self, on):
@@ -513,27 +526,15 @@ class CirculationApp(QMainWindow):
         self.canvas.update()
 
     def _reseed(self):
-        self._init_particles()
-        self._trail_w[:] = 0
-        self._trail_o[:] = 0
+        for a in ("_px_w", "_py_w", "_px_o", "_py_o"):
+            getattr(self, a)[:] = -1
+        self._dens_w[:] = 0
+        self._dens_o[:] = 0
         self.canvas.update()
 
     def closeEvent(self, event):
         self.timer.stop()
         super().closeEvent(event)
-
-
-def _upsample_f(a, th, tw):
-    """把小网格放大到拖尾缓冲尺寸（最近邻即可，底图本身会被再缩放着色）。"""
-    ys = (np.arange(th) * a.shape[0] / th).astype(np.int32)
-    xs = (np.arange(tw) * a.shape[1] / tw).astype(np.int32)
-    return a[np.clip(ys, 0, a.shape[0] - 1)][:, np.clip(xs, 0, a.shape[1] - 1)]
-
-
-def _upsample_mask(a, th, tw):
-    ys = (np.arange(th) * a.shape[0] / th).astype(np.int32)
-    xs = (np.arange(tw) * a.shape[1] / tw).astype(np.int32)
-    return a[np.clip(ys, 0, a.shape[0] - 1)][:, np.clip(xs, 0, a.shape[1] - 1)]
 
 
 if __name__ == "__main__":
