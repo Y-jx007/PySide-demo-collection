@@ -92,6 +92,13 @@ APPS = [
         "category": "Cellular Automata",
     },
     {
+        "title": "Circulation",
+        "description": "全球环流：气压梯度推风，风应力旋度推海洋环流",
+        "path": "Physics/Circulation.py",
+        "friendly": "全球环流",
+        "category": "Physics",
+    },
+    {
         "title": "Atmosphere",
         "description": "大气对流：气温、气流、气压同屏，铅直剖面",
         "path": "Physics/Atmosphere.py",

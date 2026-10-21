@@ -1,6 +1,6 @@
 from custom_import import *
 from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QImage, QPolygonF
+from PySide6.QtGui import QImage, QPainterPath, QPolygonF
 
 # ==================== 对流求解器 ====================
 N = 200                      # 网格边长
@@ -259,14 +259,16 @@ class AtmosCanvas(QWidget):
         if app.show_wind:
             scale = side / sim.n
             px, py, ppx, ppy, plife = app.particles
+            # 所有流线攒成一条 path 一次画完，逐条 drawLine 太慢
+            path = QPainterPath()
             for k in range(len(px)):
-                life = float(plife[k])
-                alpha = int(30 + 110 * (1.0 - life)) if life < 1.0 else 0
-                if alpha <= 0:
+                if float(plife[k]) >= 1.0:
                     continue
-                p.setPen(QPen(QColor(255, 255, 255, alpha), 1.0))
-                p.drawLine(QPointF(x0 + ppx[k] * scale, y0 + ppy[k] * scale),
-                           QPointF(x0 + px[k] * scale, y0 + py[k] * scale))
+                path.moveTo(x0 + ppx[k] * scale, y0 + ppy[k] * scale)
+                path.lineTo(x0 + px[k] * scale, y0 + py[k] * scale)
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1.0))
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(path)
 
         p.setPen(QPen(QColor(90, 90, 96, 120), 1))
         p.drawRect(rect)
