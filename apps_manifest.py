@@ -244,6 +244,13 @@ APPS = [
         "category": "实验",
     },
     {
+        "title": "SoftRobot",
+        "description": "MPM 软体机器人：460 个粒子构成的软体，进化策略搜索步态",
+        "path": "Physics/SoftRobot.py",
+        "friendly": "软体机器人",
+        "category": "实验",
+    },
+    {
         "title": "SoftEvolution",
         "description": "演化软体：软体虫子+遗传算法，几十代后学会爬行",
         "path": "Physics/SoftEvolution.py",
