@@ -210,8 +210,8 @@ class WindSim:
     def update(self, t):
         self.t = float(t)
         self._make_mslp(float(t))
-        self._blur_x(45, 15.0)
-        self._blur_y(45, 15.0)
+        self._blur_x(30, 15.0)
+        self._blur_y(30, 15.0)
         self._wind()
 
     # ---------- 读回 ----------
@@ -300,30 +300,18 @@ class CirculationApp(QMainWindow):
         self.init_ui()
         self.timer = QTimer()
         self.timer.timeout.connect(self.tick)
-        self.timer.start(33)
+        self.timer.start(20)
         self._t_prev = time.perf_counter()
         self._fps = 0.0
 
-    # ---------- 速度场放大到缓冲分辨率 ----------
+    # ---------- 速度场（直接采样模型网格，不预放大） ----------
     def _build_velocity(self):
-        w = self.wind.wind_numpy()                    # (180, 360, 2)，第 0 行是南
-        vx = np.flipud(w[:, :, 0])
-        vy = np.flipud(w[:, :, 1])
-        BH, BW = self.BH, self.BW
-
-        def up(f):
-            ys = (np.arange(BH) * f.shape[0] / BH).astype(np.int32)
-            xs = (np.arange(BW) * f.shape[1] / BW).astype(np.int32)
-            return f[np.ix_(ys, xs)]
-
-        mag = np.hypot(w[:, :, 0], w[:, :, 1])
-        ref = max(1e-6, np.percentile(mag, 80))
-        ux, uy = up(vx), up(vy)
-        m = np.hypot(ux, uy)
-        k = np.clip(m / ref, 0.0, 1.0) / np.maximum(m, 1e-9)
-        gain = BW / 144.0 * 0.30                      # 参考的 1 像素/帧是相对 144 宽
-        self._vx_w = (ux * k * gain).astype(np.float32)
-        self._vy_w = (-uy * k * gain).astype(np.float32)
+        w = self.wind.wind_numpy()                     # (180, 360, 2)，第 0 行是南
+        self._wu = w[:, :, 0].astype(np.float32)
+        self._wv = w[:, :, 1].astype(np.float32)
+        mag = np.hypot(self._wu, self._wv)
+        self._wref = max(1e-6, float(np.percentile(mag, 80)))
+        self._wgain = self.BW / 144.0 * 0.60           # 参考的 1 像素/帧是相对 144 宽
 
     # ---------- 静态底图 ----------
     def _build_base(self):
@@ -388,8 +376,11 @@ class CirculationApp(QMainWindow):
         return base * 0.38 + pr * 0.62
 
     # ---------- 粒子推进（照 getPosition 的规则） ----------
-    def _step_particles(self, vx, vy, px, py, dens, spawn, die):
-        """每个像素最多一个粒子；粒子一步移动 |v|≤1 像素，拖尾 0.9 衰减。"""
+    def _step_particles(self, px, py, dens, spawn, die):
+        """每个像素最多一个粒子；一步移动不到一格，拖尾 0.9 衰减。
+
+        速度直接从 360×180 的风场双线性采样，省掉整幅缓冲的重复采样。
+        """
         BH, BW = self.BH, self.BW
         alive = px >= 0
         ys, xs = np.nonzero(alive)
@@ -399,14 +390,19 @@ class CirculationApp(QMainWindow):
         if len(ys):
             keep = self._rng.random(len(ys)) > die
             ys, xs = ys[keep], xs[keep]
-            nx = np.mod(px[ys, xs] + vx[ys, xs], BW)
-            ny = np.clip(py[ys, xs] + vy[ys, xs], 0, BH - 1)
+            mx = px[ys, xs] / BW * W
+            my = (1.0 - py[ys, xs] / BH) * H
+            uu = _bilinear(self._wu, mx, my)
+            vv = _bilinear(self._wv, mx, my)
+            m = np.hypot(uu, vv)
+            k = np.clip(m / self._wref, 0.0, 1.0) / np.maximum(m, 1e-9)
+            nx = np.mod(px[ys, xs] + uu * k * self._wgain, BW)
+            ny = np.clip(py[ys, xs] - vv * k * self._wgain, 0, BH - 1)
             tx = np.clip(nx.astype(np.int32), 0, BW - 1)
             ty = np.clip(ny.astype(np.int32), 0, BH - 1)
             new_px[ty, tx] = nx
             new_py[ty, tx] = ny
 
-        # 空白像素里稀疏地诞生新粒子（用泊松抽样，避免每帧生成整屏随机数）
         empty = (new_px < 0).sum()
         k = self._rng.poisson(spawn * empty)
         if k > 0:
@@ -443,11 +439,11 @@ class CirculationApp(QMainWindow):
 
         # 季节连续演化：参考里 t = mod(iTime,12.) 是连续的，不能按月跳变
         if self.auto_season:
-            self._season_t += 0.018
+            self._season_t += 0.011
             if self._season_t >= 13.0:
                 self._season_t -= 12.0
         self._season_tick += 1
-        if self._season_tick % 6 == 0:
+        if self._season_tick % 20 == 0:
             self.wind.update(self._season_t)
             self._build_velocity()
             if self.show_pressure:
@@ -457,7 +453,7 @@ class CirculationApp(QMainWindow):
 
         if self.show_wind:
             self._px_w, self._py_w, self._dens_w = self._step_particles(
-                self._vx_w, self._vy_w, self._px_w, self._py_w, self._dens_w, 1.3e-4, 5e-3)
+                self._px_w, self._py_w, self._dens_w, 8.0e-5, 5e-3)
         else:
             self._dens_w *= 0.9
         self._compose()
