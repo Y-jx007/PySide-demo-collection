@@ -11,7 +11,7 @@ MU = 10.0
 LA = 10.0
 GRAVITY = 5.0
 ACT_OMEGA = 20.0
-ACT_STRENGTH = 6.0
+ACT_STRENGTH = 2.5
 N_SIN = 4
 N_AGENTS = 4               # 同屏 4 个候选机器人并排，一次 rollout 全部评估
 N_ACT = 4
@@ -69,7 +69,7 @@ class Swarm:
     # ---------- 场景 ----------
     def _layout(self, agent, pts, ids, acts):
         x0 = 0.05 + agent * 0.235
-        y0 = 0.05
+        y0 = 3.0 * self.dx
         dx = self.dx
 
         def rect(px, py, w, h, act):
@@ -187,7 +187,7 @@ class Swarm:
                 nx = x[i0] + dt * nv
                 x[i0 + np_] = ti.Vector([
                     ti.min(ti.max(nx[0], 2.0 * dx), 1.0 - 3.0 * dx),
-                    ti.min(ti.max(nx[1], dx), 1.0 - dx)])
+                    ti.min(ti.max(nx[1], 2.0 * dx), 1.0 - dx)])
                 C[i0 + np_] = nC
 
         @ti.kernel
