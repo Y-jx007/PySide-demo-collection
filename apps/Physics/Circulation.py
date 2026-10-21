@@ -318,7 +318,7 @@ class CirculationApp(QMainWindow):
             self._wu_t, self._wv_t = nu, nv
             self._wphase = 0.0
         mag = np.hypot(self._wu, self._wv)
-        self._wref = max(1e-6, float(np.percentile(mag, 80)))
+        self._wref = max(1e-6, float(np.median(mag)))
         self._wgain = self.BW / 144.0 * 0.45           # 参考的 1 像素/帧是相对 144 宽
 
     def _blend_wind(self):
@@ -414,7 +414,8 @@ class CirculationApp(QMainWindow):
             uu = _bilinear(self._wu, mx, my)
             vv = _bilinear(self._wv, mx, my)
             m = np.hypot(uu, vv)
-            k = np.clip(m / self._wref, 0.0, 1.0) / np.maximum(m, 1e-9)
+            # 方向归一，速度限制在 35%~100%，弱风区也看得见环流
+            k = np.clip(m / self._wref, 0.55, 1.0) / np.maximum(m, 1e-9)
             nx = np.mod(px[ys, xs] + uu * k * self._wgain, BW)
             ny = np.clip(py[ys, xs] - vv * k * self._wgain, 0, BH - 1)
             tx = np.clip(nx.astype(np.int32), 0, BW - 1)
