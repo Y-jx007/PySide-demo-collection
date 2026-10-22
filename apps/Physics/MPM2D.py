@@ -22,6 +22,8 @@ MATERIAL_STATIONARY = 4
 
 WATER_DENSITY = 1.0
 SUPPORT_PLASTICITY = True
+RENDER_RES = 512             # 渲染缓冲分辨率（和物理解析度无关）
+SAMPLE_DENSITY = 4           # 每格采样数，必须保持参考的 2^dim=4，否则初始过压会炸开
 
 
 @ti.data_oriented
@@ -72,8 +74,10 @@ class MPM2D:
         self.grid_v = ti.Vector.field(dim, real, (g, g))
         self.grid_m = ti.field(real, (g, g))
 
-        # 图像缓冲（粒子直接画进这里）
-        self.img = ti.Vector.field(3, real, (res, res))
+        # 图像缓冲：分辨率和物理解析度解耦，画得细
+        self.rres = RENDER_RES
+        self.img = ti.Vector.field(3, real, (RENDER_RES, RENDER_RES))
+        self.blur_tmp = ti.Vector.field(3, real, (RENDER_RES, RENDER_RES))
 
         self._compile()
 
@@ -86,6 +90,9 @@ class MPM2D:
         gv, gm = self.grid_v, self.grid_m
         padding = self.padding
         gsize = self.gsize
+        rres = self.rres
+        img = self.img
+        blur_tmp = self.blur_tmp
         water_density = WATER_DENSITY
 
         @ti.kernel
@@ -198,31 +205,46 @@ class MPM2D:
                     C[p] = new_C
                     x[p] += dt * v[p]
 
-        # ---------- 粒子直接画进图像缓冲 ----------
+        # ---------- 渲染：512² 缓冲，粒子画成小圆盘再模糊 ----------
         @ti.kernel
         def render(radius: ti.i32):
-            for i, j in self.img:
-                self.img[i, j] = ti.Vector([16.0, 20.0, 28.0])
+            for i, j in img:
+                img[i, j] = ti.Vector([14.0, 17.0, 24.0])
             for p in range(n_part[None]):
-                px = ti.cast(x[p][0] * res, ti.i32)
-                py = ti.cast(x[p][1] * res, ti.i32)
-                col = ti.Vector([230.0, 230.0, 230.0])
+                px = x[p][0] * rres
+                py = (1.0 - x[p][1]) * rres
+                col = ti.Vector([235.0, 235.0, 240.0])
                 if mat[p] == MATERIAL_WATER:
                     col = ti.Vector([70.0, 140.0, 240.0])
                 elif mat[p] == MATERIAL_ELASTIC:
                     col = ti.Vector([240.0, 90.0, 70.0])
                 elif mat[p] == MATERIAL_SNOW:
-                    col = ti.Vector([235.0, 245.0, 255.0])
+                    col = ti.Vector([240.0, 248.0, 255.0])
                 elif mat[p] == MATERIAL_SAND:
                     col = ti.Vector([220.0, 190.0, 110.0])
+                ix = ti.cast(px, ti.i32)
+                iy = ti.cast(py, ti.i32)
                 for di in range(-radius, radius + 1):
                     for dj in range(-radius, radius + 1):
-                        if di * di + dj * dj > radius * radius + 1:
-                            continue
-                        ii = px + di
-                        jj = py + dj
-                        if 0 <= ii < res and 0 <= jj < res:
-                            self.img[res - 1 - jj, ii] = col
+                        if di * di + dj * dj <= radius * radius + 1:
+                            ii = ix + di
+                            jj = iy + dj
+                            if 0 <= ii < rres and 0 <= jj < rres:
+                                img[jj, ii] = col
+
+        @ti.kernel
+        def blur():
+            for i, j in img:
+                acc = img[i, j] * 4.0
+                cnt = 4.0
+                for di, dj in ti.static(ti.ndrange(-1, 2)):
+                    ii = ti.min(ti.max(i + di, 0), rres - 1)
+                    jj = ti.min(ti.max(j + dj, 0), rres - 1)
+                    acc += img[ii, jj]
+                    cnt += 1.0
+                blur_tmp[i, j] = acc / cnt
+            for i, j in img:
+                img[i, j] = blur_tmp[i, j]
 
         @ti.kernel
         def max_velocity() -> real:
@@ -238,6 +260,7 @@ class MPM2D:
         self._grid_op = grid_op
         self._g2p = g2p
         self._render = render
+        self._blur = blur
 
     # ---------- 加粒子（照参考的 add_cube） ----------
     @ti.kernel
@@ -263,7 +286,7 @@ class MPM2D:
     def add_cube(self, lower, size, material, velocity=(0.0, 0.0),
                  sample_density=None):
         if sample_density is None:
-            sample_density = 2 ** dim
+            sample_density = SAMPLE_DENSITY
         vol = size[0] * size[1]
         num_new = int(sample_density * vol / self.dx ** dim + 1)
         start = int(self.n_particles[None])
@@ -292,8 +315,9 @@ class MPM2D:
             self._g2p(dt)
         return substeps
 
-    def draw(self, radius=1):
+    def draw(self, radius=2):
         self._render(radius)
+        self._blur()
         return np.clip(self.img.to_numpy(), 0, 255).astype(np.uint8)
 
     def particle_info(self):
@@ -380,9 +404,11 @@ class MPMApp(QMainWindow):
         self.material = "固体"
         self.paused = False
         self.frame = None
-        self.frame_dt = 1.0 / 240.0
+        self.frame_dt = 1.0 / 480.0
         self.fps = 0.0
         self._last_t = time.perf_counter()
+        self._last_pour = 0.0
+        self._stat_tick = 0
 
         self.build_scene()
         self.init_ui()
@@ -400,12 +426,16 @@ class MPMApp(QMainWindow):
                           material=MATERIAL_SNOW)
         self.sim.add_cube(lower=(0.30, 0.22), size=(0.40, 0.20),
                           material=MATERIAL_WATER)
-        self.frame = self.sim.draw(radius=1)
+        self.frame = self.sim.draw(radius=2)
 
     def pour(self, x, y):
+        now = time.perf_counter()
+        if now - self._last_pour < 0.05:      # 最多 20 次/秒，否则一下子灌太多粒子
+            return
+        self._last_pour = now
         if not (0.05 < x < 0.95 and 0.05 < y < 0.95):
             return
-        r = self.brush / 100.0 * 0.10
+        r = self.brush / 100.0 * 0.06
         r = max(0.01, r)
         self.sim.add_cube(lower=(x - r, y - r), size=(2 * r, 2 * r),
                           material=MATERIAL_IDS[self.material],
@@ -415,16 +445,17 @@ class MPMApp(QMainWindow):
     def tick(self):
         if not self.paused:
             self.sim.step(self.frame_dt)
-            self.frame = self.sim.draw(radius=1)
+            self.frame = self.sim.draw(radius=2)
             self.canvas.update()
             now = time.perf_counter()
             dt = now - self._last_t
             self._last_t = now
             self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(dt, 1e-6))
-        info = self.sim.particle_info()
-        self.lbl_stat.setText(
-            "粒子 %d · %.0f fps · 每帧 %.4f s 仿真" % (
-                int(self.sim.n_particles[None]), self.fps, self.frame_dt))
+        self._stat_tick += 1
+        if self._stat_tick % 10 == 0:          # 每 10 帧才回读粒子数，避免每帧同步 GPU
+            self.lbl_stat.setText(
+                "粒子 %d · %.0f fps · 每帧 %.4f s 仿真" % (
+                    int(self.sim.n_particles[None]), self.fps, self.frame_dt))
 
     # ---------- UI ----------
     def init_ui(self):
