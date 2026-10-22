@@ -1,36 +1,35 @@
 from custom_import import *
 from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtGui import QPolygonF
 from PySide6.QtGui import QRadialGradient
 
 import numpy as np
 
-real = ti.f32
-dim = 3
-
 # ==================== 参数 ====================
-N_PARTICLES = 2600
+N_PARTICLES = 40000
 R_CUP = 0.42                 # 杯内半径（世界单位）
 H_CUP = 0.80                 # 杯高
 FILL = 0.55                  # 初始水柱高度
-H = 0.082                    # 光滑核半径
-DX = 0.046                   # 初始粒子间距
-RHO0 = 1.0
-REP = 0.55                # 排斥力强度
-VISC = 0.9                # 粘性
-KP = 5.0                 # 超压刚度（维持体积）
-RHO0 = 6.2                # 静止时的粒子数密度
-DT = 2e-3
+DX = 0.018                   # 初始粒子间距
+H = 0.036                    # 光滑核半径（约 2 倍间距）
+RHO0 = 9.0                   # 静止数密度，初始化后自动校准
+REP = 0.55                   # 排斥力强度
+VISC = 0.9                   # 粘性
+KP = 5.0                     # 超压刚度（维持体积）
+DT = 1e-3
 SUBSTEPS = 6
 GRAVITY = -2.2
-GRID = 14                    # 邻居网格边长（覆盖 [-0.5, 0.5]）
-CELL = 1.0 / GRID          # ≈ H，保证 27 格邻域刚好覆盖核半径
+GRID = 28                    # 邻居网格边长（覆盖 [-0.5, 0.5]）
+CELL = 1.0 / GRID
 MAX_PER_CELL = 48
 
+real = ti.f32
+dim = 3
 
 class CupFluid:
     def __init__(self, n=N_PARTICLES):
         ti.reset()
-        ti.init(arch=ti.cpu, default_fp=real)
+        ti.init(arch=ti.gpu, default_fp=real)
 
         pts = self._make_points(n)
         self.n = n = len(pts)
@@ -54,7 +53,13 @@ class CupFluid:
         self.vel.fill(0.0)
         self.home = pts.copy()
         self.r_max = R_CUP - 0.035
+        # 先编译内核，再用初始点阵标定静止数密度，超压项才不会一上来就爆
         self._compile()
+        self._clear_cells()
+        self._bin()
+        self._density()
+        global RHO0
+        RHO0 = float(self.dens.to_numpy().mean()) * 0.92
 
     # ---------- 初始水柱 ----------
     def _make_points(self, n):
@@ -71,7 +76,10 @@ class CupFluid:
                     pts.append([r * np.cos(a), y, r * np.sin(a)])
                 r += step
             y += step
-        return np.array(pts[:n], np.float32)
+        arr = np.array(pts[:n], np.float32)
+        rng = np.random.default_rng(7)
+        arr += rng.normal(0.0, 0.28 * DX, arr.shape).astype(np.float32)
+        return arr
 
     # ---------- kernel ----------
     def _compile(self):
@@ -215,124 +223,113 @@ SCALE_BASE = 1.0
 
 
 class CupCanvas(QWidget):
+    """轨道相机 + 半分辨率加法混合粒子渲染。"""
+
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.setMinimumSize(560, 560)
-        self.setMouseTracking(True)
+        self.setMinimumSize(620, 560)
+        self.yaw = -0.6
+        self.pitch = 0.45
+        self.zoom = 1.0
         self.dragging = False
+        self.orbiting = False
         self.last = None
         self._buf = None
 
+    # ---------- 相机 ----------
+    def project(self, pts, w, h):
+        cy_, sy_ = np.cos(self.yaw), np.sin(self.yaw)
+        cp, sp = np.cos(self.pitch), np.sin(self.pitch)
+        x = pts[:, 0]
+        y = pts[:, 1] - 0.24          # 看向杯子中部
+        z = pts[:, 2]
+        x1 = cy_ * x + sy_ * z
+        z1 = -sy_ * x + cy_ * z
+        y2 = cp * y - sp * z1
+        z2 = sp * y + cp * z1
+        scale = min(w, h) * 0.82 * self.zoom / 1.15
+        sx = w * 0.5 + x1 * scale
+        sy = h * 0.52 - y2 * scale
+        return sx, sy, z2, scale
+
     def _buffer(self, w, h):
         if self._buf is None or self._buf.shape[0] != h or self._buf.shape[1] != w:
-            self._buf = np.full((h, w, 3), (250, 249, 246), np.uint8)
+            self._buf = np.zeros((h, w, 3), np.uint8)
         return self._buf
-
-    # ---------- 3D → 2D ----------
-    def project(self, pts, w, h):
-        cx, cy = self.app.sim.cup_c[None][0], self.app.sim.cup_c[None][2]
-        scale = min(w, h) * 0.78 / 1.25
-        sx = w / 2 + (pts[:, 0] - cx) * scale
-        sy = h * 0.62 - (pts[:, 1] * np.cos(TILT) + (pts[:, 2] - cy) * np.sin(TILT)) * scale
-        depth = pts[:, 1] * np.sin(TILT) - (pts[:, 2] - cy) * np.cos(TILT)
-        return sx, sy, depth, scale
-
-    def _proj1(self, x, y, z, w, h, scale, cx, base_y):
-        c = self.app.sim.cup_c[None]
-        sx = cx + (x) * scale
-        sy = base_y - (y * np.cos(TILT) + (z) * np.sin(TILT)) * scale
-        return sx, sy
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor(10, 16, 30))
         w, h = self.width(), self.height()
+        p.fillRect(self.rect(), QColor(8, 12, 24))
         sim = self.app.sim
+        hw, hh = max(1, w // 2), max(1, h // 2)
 
-        # 杯子轮廓（两条竖边 + 上下椭圆）
-        c = sim.cup_c[None]
-        scale = min(w, h) * 0.78 / 1.25
-        cx = w / 2
-        base_y = h * 0.62
-        cup_r = R_CUP * scale
-        top_y = base_y - H_CUP * np.cos(TILT) * scale
-        ell_h = R_CUP * np.sin(TILT) * scale
-
-        p.setPen(QPen(QColor(120, 160, 210, 70), 2))
-        p.setBrush(QColor(40, 70, 110, 30))
-        p.drawEllipse(QRectF(cx - cup_r, base_y - ell_h, cup_r * 2, ell_h * 2))
-        p.drawEllipse(QRectF(cx - cup_r, top_y - ell_h, cup_r * 2, ell_h * 2))
-        p.drawLine(QPointF(cx - cup_r, base_y), QPointF(cx - cup_r, top_y))
-        p.drawLine(QPointF(cx + cup_r, base_y), QPointF(cx + cup_r, top_y))
-        # 杯壁竖条纹，体现转动
-        ang = self.app.visual_spin
-        for k in range(12):
-            a = ang + k * np.pi / 6
-            px = cx + np.cos(a) * cup_r
-            py = base_y - (0.5 + 0.5 * np.sin(a)) * (base_y - top_y)
-            p.setPen(QPen(QColor(90, 130, 180, 35), 1))
-            p.drawLine(QPointF(px, py - 26), QPointF(px, py + 26))
-
-        # 水粒子：用 numpy 直接画进缓冲，再贴成一张图（比 5000 次 drawEllipse 快两个数量级）
         pts = sim.pos.to_numpy()
         spd = sim.speeds()
-        sx, sy, depth, scale = self.project(pts, w, h)
+        sx, sy, depth, scale = self.project(pts, hw, hh)
 
-        img = self._buffer(w, h)
-        hh, ww = img.shape[:2]
-        # 每帧清空（残影会让画面糊成网格）
-        img[:] = np.array([10, 16, 30], np.uint8)
-        vmax = max(0.6, float(np.percentile(spd, 96)))
+        img = self._buffer(hw, hh)
+        img[:] = np.array([8, 12, 24], np.uint8)
+        vmax = max(0.8, float(np.percentile(spd, 97)))
+
+        # 速度 → 颜色：慢的深蓝，快的青白
         t = np.clip(spd / vmax, 0.0, 1.0)
-        r = (52 + 130 * t).astype(np.float32)
-        g = (104 + 140 * t).astype(np.float32)
-        b = (178 + 70 * t).astype(np.float32)
-        # 深度越近越不透明（远端的粒子淡一些）
+        r = (24 + 150 * t).astype(np.float32)
+        g = (80 + 165 * t).astype(np.float32)
+        b = (185 + 70 * t).astype(np.float32)
         dnorm = (depth - depth.min()) / max(1e-6, depth.max() - depth.min())
-        a = np.clip(0.45 + 0.45 * (1.0 - dnorm), 0.30, 0.92).astype(np.float32)
+        a = (0.14 + 0.34 * (1.0 - dnorm)).astype(np.float32)
+
+        # 用 bincount 累加（C 速度），比逐点散射快一个数量级
         ix = sx.astype(np.int32)
         iy = sy.astype(np.int32)
-        rad = max(2, int(round(0.022 * scale)))
-        # 3x3 小方块刷点：9 次向量化赋值，比逐粒子画圆快两个数量级
-        for dy in (-rad, 0, rad):
-            for dx in (-rad, 0, rad):
-                xs = ix + dx
-                ys = iy + dy
-                ok = (xs >= 0) & (xs < ww) & (ys >= 0) & (ys < hh)
-                if not ok.any():
-                    continue
-                wgt = (a * (0.75 if (dx or dy) else 1.0))[ok, None]
-                col = np.stack([r[ok], g[ok], b[ok]], axis=1) * wgt
-                old = img[ys[ok], xs[ok]].astype(np.float32)
-                np.minimum(old + col, 255.0, out=old)
-                img[ys[ok], xs[ok]] = old.astype(np.uint8)
+        base = np.stack([r, g, b], axis=1) * a[:, None]
+        hw_, hh_ = hw, hh
+        acc = np.zeros((hh_ * hw_, 3), np.float32)
+        for dy, dx, wt in ((0, 0, 1.0), (1, 1, 0.5), (-1, -1, 0.5)):
+            xs = ix + dx
+            ys = iy + dy
+            ok = (xs >= 0) & (xs < hw_) & (ys >= 0) & (ys < hh_)
+            if not ok.any():
+                continue
+            sel = np.nonzero(ok)[0]
+            flat = ys[sel] * hw_ + xs[sel]
+            for c in range(3):
+                acc[:, c] += np.bincount(flat, weights=base[sel, c] * wt,
+                                         minlength=hh_ * hw_)
+        img[:] = np.clip(np.array([8, 12, 24], np.float32) + acc.reshape(hh_, hw_, 3),
+                         0, 255).astype(np.uint8)
+
         from PySide6.QtGui import QImage
-        qimg = QImage(img.data, ww, hh, ww * 3, QImage.Format_RGB888)
-        p.drawImage(0, 0, qimg)
+        qimg = QImage(img.data, hw, hh, hw * 3, QImage.Format_RGB888)
+        p.drawImage(QRectF(0, 0, w, h), qimg)
 
-        # 玻璃杯轮廓（画在水的上面）
-        p.setPen(QPen(QColor(120, 175, 225, 90), 1.5))
+        # 玻璃杯：用相机矩阵投影杯口/杯底圆
         p.setBrush(Qt.NoBrush)
-        p.drawEllipse(QRectF(cx - cup_r, top_y - ell_h, cup_r * 2, ell_h * 2))
-        p.drawLine(QPointF(cx - cup_r, base_y), QPointF(cx - cup_r, top_y))
-        p.drawLine(QPointF(cx + cup_r, base_y), QPointF(cx + cup_r, top_y))
-        p.drawEllipse(QRectF(cx - cup_r, base_y - ell_h, cup_r * 2, ell_h * 2))
-
-        # 涡心标记：速度环流最强处
-        if self.app.show_axis:
-            m = np.abs(pts[:, 0] + pts[:, 2]) < 0.02
-            if m.any():
-                cxm = sx[m].mean()
-                cym = sy[m].mean()
-                p.setPen(QPen(QColor(255, 255, 255, 160), 1.2, Qt.DashLine))
-                p.drawEllipse(QPointF(cxm, cym), 0.10 * scale, 0.04 * scale)
+        for yy, alpha in ((0.0, 110), (H_CUP, 60)):
+            ring = np.stack([R_CUP * np.cos(np.linspace(0, 2 * np.pi, 64)),
+                             np.full(64, yy),
+                             R_CUP * np.sin(np.linspace(0, 2 * np.pi, 64))], axis=1)
+            rx, ry, _, _ = self.project(ring, w, h)
+            poly = QPolygonF([QPointF(float(a), float(b)) for a, b in zip(rx, ry)])
+            p.setPen(QPen(QColor(130, 180, 230, alpha), 1.4))
+            p.drawPolyline(poly)
+        # 四条竖棱
+        for k in range(4):
+            a = k * np.pi / 2
+            seg = np.array([[R_CUP * np.cos(a), 0.0, R_CUP * np.sin(a)],
+                            [R_CUP * np.cos(a), H_CUP, R_CUP * np.sin(a)]])
+            rx, ry, _, _ = self.project(seg, w, h)
+            p.setPen(QPen(QColor(110, 160, 210, 45), 1.2))
+            p.drawLine(QPointF(float(rx[0]), float(ry[0])), QPointF(float(rx[1]), float(ry[1])))
         p.end()
 
-    # ---------- 鼠标摇杯子 ----------
+    # ---------- 鼠标 ----------
     def mousePressEvent(self, e):
         self.dragging = True
+        self.orbiting = bool(e.buttons() & Qt.RightButton) or bool(e.modifiers() & Qt.ControlModifier)
         self.last = e.position()
 
     def mouseReleaseEvent(self, e):
@@ -343,20 +340,27 @@ class CupCanvas(QWidget):
             return
         d = e.position() - self.last
         self.last = e.position()
-        self.app.drag_cup(float(d.x()) * 0.0016, float(d.y()) * 0.0016)
+        if self.orbiting:
+            self.yaw += float(d.x()) * 0.01
+            self.pitch = max(-0.2, min(1.35, self.pitch + float(d.y()) * 0.01))
+        else:
+            self.app.drag_cup(float(d.x()) * 0.0014, float(d.y()) * 0.0014)
+
+    def wheelEvent(self, e):
+        self.zoom = max(0.45, min(3.0, self.zoom * (1.0015 ** e.angleDelta().y())))
 
 
 class CupVortexApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("杯中水 · 3D SPH 涡旋")
-        self.setGeometry(120, 80, 1100, 760)
+        self.setGeometry(120, 80, 1100, 780)
 
         self.sim = CupFluid()
         self.visual_spin = 0.0
-        self.show_axis = False
         self.shaking = False
         self.shake_phase = 0.0
+        self.shake_amp = 0.010
         self.steps_per_frame = 6
 
         self.init_ui()
@@ -364,19 +368,14 @@ class CupVortexApp(QMainWindow):
         self.timer.timeout.connect(self.tick)
         self.timer.start(33)
 
-    # ---------- 交互 ----------
     def drag_cup(self, dx, dz):
         c = self.sim.cup_c[None]
-        c = [max(-0.12, min(0.12, c[0] + dx)), 0.0,
-             max(-0.12, min(0.12, c[2] + dz))]
+        c = [max(-0.10, min(0.10, c[0] + dx)), 0.0,
+             max(-0.10, min(0.10, c[2] + dz))]
         self.sim.cup_c[None] = c
-        self.sim.cup_v[None] = [dx * 30.0, 0.0, dz * 30.0]
-
-    def set_shake(self, amp):
-        self.shake_amp = amp * 0.010
+        self.sim.cup_v[None] = [dx * 26.0, 0.0, dz * 26.0]
 
     def tick(self):
-        # 自动摇晃
         if self.shaking:
             self.shake_phase += 0.16
             c = self.sim.cup_c[None]
@@ -388,19 +387,15 @@ class CupVortexApp(QMainWindow):
             self.sim.cup_v[None] = [0.0, 0.0, 0.0]
 
         self.sim.cup_w[None] = float(self.spin_slider.value()) / 100.0 * 9.0
-        self.visual_spin += self.sim.cup_w[None] * 0.02
-
         self.sim.step(self.steps_per_frame)
         self.canvas.update()
+
         p = self.sim.snapshot()
         v = self.sim.vel.to_numpy()
         L = float(np.sum(p[:, 2] * v[:, 0] - p[:, 0] * v[:, 2]))
         self.lbl_l.setText(f"环流 {L:+.0f}")
         self.lbl_v.setText(f"最大速度 {self.sim.speeds().max():.2f}")
-        self.lbl_status.setText(
-            f"{self.sim.n} 粒子 · 每帧 {self.steps_per_frame} 步 · dt 1e-3 · 拖动鼠标摇杯子")
 
-    # ---------- UI ----------
     def init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -409,7 +404,7 @@ class CupVortexApp(QMainWindow):
         root.setSpacing(10)
 
         panel = QWidget()
-        panel.setFixedWidth(258)
+        panel.setFixedWidth(252)
         pv = QVBoxLayout(panel)
         pv.setSpacing(8)
         pv.setContentsMargins(0, 0, 0, 0)
@@ -420,7 +415,8 @@ class CupVortexApp(QMainWindow):
         tf.setBold(True)
         title.setFont(tf)
         pv.addWidget(title)
-        sub = QLabel("5200 个 SPH 粒子在圆柱杯里" + chr(10) + "拖动鼠标摇杯子，或转杯壁制造涡旋")
+        sub = QLabel(f"{N_PARTICLES // 1000}k SPH 粒子 · Taichi GPU" + chr(10)
+                     + "左键摇杯子 · 右键/滚轮转视角")
         sub.setStyleSheet("color: #7a7a80;")
         sf = sub.font()
         sf.setPointSize(8)
@@ -449,9 +445,8 @@ class CupVortexApp(QMainWindow):
         v1.addLayout(row)
         self.amp_slider = QSlider(Qt.Horizontal)
         self.amp_slider.setRange(0, 100)
-        self.amp_slider.setValue(60)
-        self.amp_slider.valueChanged.connect(lambda v: self.set_shake(v))
-        self.shake_amp = 0.006
+        self.amp_slider.setValue(65)
+        self.amp_slider.valueChanged.connect(lambda v: setattr(self, "shake_amp", v * 0.00016))
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("幅度"))
         row2.addWidget(self.amp_slider, 1)
@@ -480,7 +475,7 @@ class CupVortexApp(QMainWindow):
         rv.addWidget(self.canvas, 1)
         root.addWidget(right, 1)
 
-        self.lbl_status = QLabel("拖动鼠标摇杯子")
+        self.lbl_status = QLabel("左键拖拽摇杯子 · 右键拖拽转视角 · 滚轮缩放")
         self.statusBar().addWidget(self.lbl_status, 1)
 
     def toggle_shake(self):
