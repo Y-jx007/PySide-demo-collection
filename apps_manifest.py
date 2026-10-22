@@ -208,6 +208,13 @@ APPS = [
         "category": "实验",
     },
     {
+        "title": "MPM2D",
+        "description": "2D MPM 材料：固体 / 雪 / 液体三种本构，照 taichi_elements 实现",
+        "path": "Physics/MPM2D.py",
+        "friendly": "MPM 材料",
+        "category": "实验",
+    },
+    {
         "title": "2D Boids",
         "description": "Boids 群体行为模拟",
         "path": "2D Boids.py",
