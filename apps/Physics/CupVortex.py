@@ -1,30 +1,31 @@
 from custom_import import *
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QPolygonF
-from PySide6.QtGui import QRadialGradient
 
 import numpy as np
 
-# ==================== 参数 ====================
-N_PARTICLES = 40000
-R_CUP = 0.42                 # 杯内半径（世界单位）
-H_CUP = 0.80                 # 杯高
-FILL = 0.55                  # 初始水柱高度
-DX = 0.018                   # 初始粒子间距
-H = 0.036                    # 光滑核半径（约 2 倍间距）
-RHO0 = 9.0                   # 静止数密度，初始化后自动校准
-REP = 0.55                   # 排斥力强度
-VISC = 0.9                   # 粘性
-KP = 5.0                     # 超压刚度（维持体积）
-DT = 1e-3
-SUBSTEPS = 6
-GRAVITY = -2.2
-GRID = 28                    # 邻居网格边长（覆盖 [-0.5, 0.5]）
-CELL = 1.0 / GRID
-MAX_PER_CELL = 48
-
 real = ti.f32
 dim = 3
+
+# ==================== 参数 ====================
+N_PARTICLES = 40000
+R_CUP = 0.26                 # 细高的杯子，深径比 ≈ 3，涡旋才立得住
+H_CUP = 1.15
+FILL = 0.70                  # 初始水柱高度 = FILL * H_CUP
+DX = 0.017                   # 初始粒子间距
+H = 0.034                    # 光滑核半径
+REP = 0.55                   # 排斥力
+VISC = 0.22                  # 粘性（原来 0.9 太黏，水全糊在壁上）
+KP = 5.0                     # 超压刚度
+DT = 1e-3
+GRAVITY = -2.2
+CELL = 1.0 / 28.0            # 邻居网格边长
+GXZ = 28                     # x/z 方向的网格数（覆盖 [-0.5, 0.5]）
+GY = int(1.2 / CELL) + 2     # y 方向足够高
+MAX_PER_CELL = 32
+RHO0 = 9.0                   # 启动时自动标定
+RW, RH = 620, 560            # 渲染缓冲尺寸
+
 
 class CupFluid:
     def __init__(self, n=N_PARTICLES):
@@ -33,78 +34,71 @@ class CupFluid:
 
         pts = self._make_points(n)
         self.n = n = len(pts)
+
         self.pos = ti.Vector.field(dim, real, n)
         self.vel = ti.Vector.field(dim, real, n)
         self.acc = ti.Vector.field(dim, real, n)
         self.dens = ti.field(real, n)
-        self.pres = ti.field(real, n)
-        self.cell_cnt = ti.field(ti.i32, GRID * GRID * GRID)
-        self.cell_idx = ti.field(ti.i32, (GRID * GRID * GRID, MAX_PER_CELL))
+        self.cell_cnt = ti.field(ti.i32, GXZ * GXZ * GY)
+        self.cell_idx = ti.field(ti.i32, (GXZ * GXZ * GY, MAX_PER_CELL))
+        self.img = ti.Vector.field(3, real, (RH, RW))
 
-        # 杯子状态
         self.cup_c = ti.Vector.field(dim, real, shape=())
         self.cup_v = ti.Vector.field(dim, real, shape=())
-        self.cup_w = ti.field(real, shape=())        # 绕竖轴角速度
+        self.cup_w = ti.field(real, shape=())
         self.cup_c[None] = [0.0, 0.0, 0.0]
         self.cup_v[None] = [0.0, 0.0, 0.0]
         self.cup_w[None] = 0.0
 
         self.pos.from_numpy(pts)
         self.vel.fill(0.0)
-        self.home = pts.copy()
-        self.r_max = R_CUP - 0.035
-        # 先编译内核，再用初始点阵标定静止数密度，超压项才不会一上来就爆
         self._compile()
+
+        global RHO0
         self._clear_cells()
         self._bin()
         self._density()
-        global RHO0
         RHO0 = float(self.dens.to_numpy().mean()) * 0.92
 
     # ---------- 初始水柱 ----------
     def _make_points(self, n):
         pts = []
-        step = DX
-        r_max = R_CUP - 0.035
-        y = 0.03
-        while y < 0.03 + FILL * H_CUP and len(pts) < n:
+        r_max = R_CUP - 0.02
+        y = 0.02
+        while y < 0.02 + FILL * H_CUP and len(pts) < n:
             r = 0.0
             while r < r_max and len(pts) < n:
-                n_ring = max(1, int(2 * np.pi * max(r, step * 0.5) / step))
-                for k in range(n_ring):
-                    a = 2 * np.pi * k / n_ring
+                ring = max(1, int(2 * np.pi * max(r, DX * 0.5) / DX))
+                for k in range(ring):
+                    a = 2 * np.pi * k / ring
                     pts.append([r * np.cos(a), y, r * np.sin(a)])
-                r += step
-            y += step
+                r += DX
+            y += DX
         arr = np.array(pts[:n], np.float32)
-        rng = np.random.default_rng(7)
-        arr += rng.normal(0.0, 0.28 * DX, arr.shape).astype(np.float32)
+        arr += np.random.default_rng(7).normal(0.0, 0.3 * DX, arr.shape).astype(np.float32)
         return arr
 
     # ---------- kernel ----------
     def _compile(self):
         n = self.n
         pos, vel, acc = self.pos, self.vel, self.acc
-        dens, pres = self.dens, self.pres
+        dens = self.dens
         cnt, idx = self.cell_cnt, self.cell_idx
         cup_c, cup_v, cup_w = self.cup_c, self.cup_v, self.cup_w
+        img = self.img
 
         @ti.kernel
         def clear_cells():
-            for c in range(GRID * GRID * GRID):
+            for c in range(GXZ * GXZ * GY):
                 cnt[c] = 0
 
         @ti.kernel
         def bin_particles():
             for i in range(n):
-                p = pos[i] + 0.5
-                gx = ti.cast(p[0] / CELL, ti.i32)
-                gy = ti.cast(p[1] / CELL, ti.i32)
-                gz = ti.cast(p[2] / CELL, ti.i32)
-                gx = ti.min(ti.max(gx, 0), GRID - 1)
-                gy = ti.min(ti.max(gy, 0), GRID - 1)
-                gz = ti.min(ti.max(gz, 0), GRID - 1)
-                c = gx * GRID * GRID + gz * GRID + gy
+                gx = ti.min(ti.max(ti.cast((pos[i][0] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
+                gz = ti.min(ti.max(ti.cast((pos[i][2] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
+                gy = ti.min(ti.max(ti.cast(pos[i][1] / CELL, ti.i32), 0), GY - 1)
+                c = (gx * GXZ + gz) * GY + gy
                 k = ti.atomic_add(cnt[c], 1)
                 if k < MAX_PER_CELL:
                     idx[c, k] = i
@@ -112,16 +106,16 @@ class CupFluid:
         @ti.kernel
         def compute_density():
             for i in range(n):
-                gx = ti.min(ti.max(ti.cast((pos[i][0] + 0.5) / CELL, ti.i32), 0), GRID - 1)
-                gy = ti.min(ti.max(ti.cast((pos[i][1] + 0.5) / CELL, ti.i32), 0), GRID - 1)
-                gz = ti.min(ti.max(ti.cast((pos[i][2] + 0.5) / CELL, ti.i32), 0), GRID - 1)
+                gx = ti.min(ti.max(ti.cast((pos[i][0] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
+                gz = ti.min(ti.max(ti.cast((pos[i][2] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
+                gy = ti.min(ti.max(ti.cast(pos[i][1] / CELL, ti.i32), 0), GY - 1)
                 d = 0.0
                 for dx in ti.static(range(-1, 2)):
-                    for dy in ti.static(range(-1, 2)):
-                        for dz in ti.static(range(-1, 2)):
-                            cx, cy, cz = gx + dx, gy + dy, gz + dz
-                            if 0 <= cx < GRID and 0 <= cy < GRID and 0 <= cz < GRID:
-                                c = cx * GRID * GRID + cz * GRID + cy
+                    for dz in ti.static(range(-1, 2)):
+                        for dy in ti.static(range(-1, 2)):
+                            cx, cz, cy = gx + dx, gz + dz, gy + dy
+                            if 0 <= cx < GXZ and 0 <= cz < GXZ and 0 <= cy < GY:
+                                c = (cx * GXZ + cz) * GY + cy
                                 m = ti.min(cnt[c], MAX_PER_CELL)
                                 for k in range(m):
                                     j = idx[c, k]
@@ -134,16 +128,20 @@ class CupFluid:
         @ti.kernel
         def compute_forces():
             for i in range(n):
-                gx = ti.min(ti.max(ti.cast((pos[i][0] + 0.5) / CELL, ti.i32), 0), GRID - 1)
-                gy = ti.min(ti.max(ti.cast((pos[i][1] + 0.5) / CELL, ti.i32), 0), GRID - 1)
-                gz = ti.min(ti.max(ti.cast((pos[i][2] + 0.5) / CELL, ti.i32), 0), GRID - 1)
+                gx = ti.min(ti.max(ti.cast((pos[i][0] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
+                gz = ti.min(ti.max(ti.cast((pos[i][2] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
+                gy = ti.min(ti.max(ti.cast(pos[i][1] / CELL, ti.i32), 0), GY - 1)
                 f = ti.Vector([0.0, 0.0, 0.0])
+                over = dens[i] - RHO0
+                if over < 0.0:
+                    over = 0.0
+                stiff = REP + KP * over
                 for dx in ti.static(range(-1, 2)):
-                    for dy in ti.static(range(-1, 2)):
-                        for dz in ti.static(range(-1, 2)):
-                            cx, cy, cz = gx + dx, gy + dy, gz + dz
-                            if 0 <= cx < GRID and 0 <= cy < GRID and 0 <= cz < GRID:
-                                c = cx * GRID * GRID + cz * GRID + cy
+                    for dz in ti.static(range(-1, 2)):
+                        for dy in ti.static(range(-1, 2)):
+                            cx, cz, cy = gx + dx, gz + dz, gy + dy
+                            if 0 <= cx < GXZ and 0 <= cz < GXZ and 0 <= cy < GY:
+                                c = (cx * GXZ + cz) * GY + cy
                                 m = ti.min(cnt[c], MAX_PER_CELL)
                                 for k in range(m):
                                     j = idx[c, k]
@@ -152,12 +150,7 @@ class CupFluid:
                                     if 1e-9 < r2 < H * H:
                                         d = ti.sqrt(r2)
                                         q = 1.0 - d / H
-                                        # 排斥：基础项 + 超压项（近似不可压）
-                                        over = dens[i] - RHO0
-                                        if over < 0.0:
-                                            over = 0.0
-                                        f += (REP + KP * over) * q * q * (r / d)
-                                        # 粘性：向邻域平均速度靠拢
+                                        f += stiff * q * q * (r / d)
                                         f += VISC * (vel[j] - vel[i]) * q
                 f[1] += GRAVITY
                 acc[i] = f
@@ -170,39 +163,67 @@ class CupFluid:
             for i in range(n):
                 vel[i] += DT * acc[i]
                 p = pos[i] + DT * vel[i]
-                # 杯底
                 if p[1] < 0.01:
                     p[1] = 0.01
                     vel[i][1] = ti.max(vel[i][1], 0.0)
-                # 侧壁：圆柱
+                    vel[i][0] += cv[0] * 0.30
+                    vel[i][2] += cv[2] * 0.30
                 rel = ti.Vector([p[0] - c[0], 0.0, p[2] - c[2]])
                 rr = rel.norm() + 1e-8
-                # 杯壁附近：向壁面切向速度靠拢（否则水根本碰不到壁，转不起来）
-                if rr > R_CUP - 0.10:
-                    tang_w = ti.Vector([-rel[2], 0.0, rel[0]]) / rr * w * R_CUP
-                    blend = ti.min(1.0, (rr - (R_CUP - 0.10)) / 0.10) * 0.35
-                    vel[i] = vel[i] * (1.0 - blend) + tang_w * blend
-                if rr > R_CUP - 0.02:
+                # 只有贴壁最后 0.05 的一圈受壁面拖曳
+                if rr > R_CUP - 0.05:
+                    tang = ti.Vector([-rel[2], 0.0, rel[0]]) / rr * w * R_CUP
+                    blend = ti.min(1.0, (rr - (R_CUP - 0.05)) / 0.05) * 0.12
+                    vel[i] = vel[i] * (1.0 - blend) + (cv + tang) * blend
+                if rr > R_CUP - 0.01:
                     nrm = rel / rr
-                    p = ti.Vector([c[0] + nrm[0] * (R_CUP - 0.02), p[1],
-                                   c[2] + nrm[2] * (R_CUP - 0.02)])
-                    # 壁面速度 = 杯子平移 + 旋转
-                    tang = ti.Vector([-nrm[2], 0.0, nrm[0]]) * w * (R_CUP - 0.02)
-                    vel[i] = cv + tang * 0.6
-                    vel[i][1] *= 0.5
+                    p[0] = c[0] + nrm[0] * (R_CUP - 0.01)
+                    p[2] = c[2] + nrm[2] * (R_CUP - 0.01)
                 if p[1] > H_CUP:
                     p[1] = H_CUP
                     vel[i][1] = ti.min(vel[i][1], 0.0)
                 pos[i] = p
+
+        # ---------- splat 全部在 kernel 里做 ----------
+        @ti.kernel
+        def render(m00: real, m01: real, m02: real,
+                   m10: real, m11: real, m12: real,
+                   m20: real, m21: real, m22: real,
+                   scale: real, cx: real, cy: real,
+                   cx3: real, cy3: real, cz3: real):
+            for i, j in img:
+                img[i, j] = ti.Vector([8.0, 12.0, 24.0])
+            for p in range(n):
+                v = pos[p] - ti.Vector([cx3, cy3, cz3])
+                X = m00 * v[0] + m01 * v[1] + m02 * v[2]
+                Y = m10 * v[0] + m11 * v[1] + m12 * v[2]
+                Z = m20 * v[0] + m21 * v[1] + m22 * v[2]
+                sx = cx + X * scale
+                sy = cy - Y * scale
+                spd = vel[p].norm()
+                t = ti.min(spd / 1.4, 1.0)
+                depth = ti.min(ti.max(Z * 2.0 + 0.5, 0.0), 1.0)
+                a = 0.40 + 0.55 * (1.0 - depth)
+                col = ti.Vector([24.0 + 150.0 * t,
+                                 84.0 + 165.0 * t,
+                                 188.0 + 67.0 * t]) * a
+                ix = ti.cast(sx, ti.i32)
+                iy = ti.cast(sy, ti.i32)
+                # 2x2 溅射：单像素太稀，看着像雾
+                for ox, oy in ti.static(ti.ndrange(2, 2)):
+                    px = ix + ox
+                    py = iy + oy
+                    if 0 <= px < RW and 0 <= py < RH:
+                        ti.atomic_add(img[py, px], col * 0.55)
 
         self._clear_cells = clear_cells
         self._bin = bin_particles
         self._density = compute_density
         self._forces = compute_forces
         self._integrate = integrate
+        self._render = render
 
-    # ---------- 推进 ----------
-    def step(self, sub=SUBSTEPS):
+    def step(self, sub=6):
         for _ in range(sub):
             self._clear_cells()
             self._bin()
@@ -210,120 +231,100 @@ class CupFluid:
             self._forces()
             self._integrate()
 
-    def snapshot(self):
-        return self.pos.to_numpy()
+    def draw(self, m, scale, cx, cy, center):
+        self._render(m[0][0], m[0][1], m[0][2],
+                     m[1][0], m[1][1], m[1][2],
+                     m[2][0], m[2][1], m[2][2],
+                     scale, cx, cy, center[0], center[1], center[2])
+        return np.clip(self.img.to_numpy(), 0, 255).astype(np.uint8)
 
     def speeds(self):
         return np.linalg.norm(self.vel.to_numpy(), axis=1)
 
-
-# ==================== 渲染与界面 ====================
-TILT = np.deg2rad(34.0)          # 俯视角度
-SCALE_BASE = 1.0
+    def snapshot(self):
+        return self.pos.to_numpy()
 
 
+# ==================== 界面 ====================
 class CupCanvas(QWidget):
-    """轨道相机 + 半分辨率加法混合粒子渲染。"""
-
     def __init__(self, app):
         super().__init__()
         self.app = app
         self.setMinimumSize(620, 560)
         self.yaw = -0.6
-        self.pitch = 0.45
+        self.pitch = 0.35
         self.zoom = 1.0
         self.dragging = False
         self.orbiting = False
         self.last = None
-        self._buf = None
 
     # ---------- 相机 ----------
-    def project(self, pts, w, h):
+    def matrix(self):
         cy_, sy_ = np.cos(self.yaw), np.sin(self.yaw)
         cp, sp = np.cos(self.pitch), np.sin(self.pitch)
-        x = pts[:, 0]
-        y = pts[:, 1] - 0.24          # 看向杯子中部
-        z = pts[:, 2]
-        x1 = cy_ * x + sy_ * z
-        z1 = -sy_ * x + cy_ * z
-        y2 = cp * y - sp * z1
-        z2 = sp * y + cp * z1
-        scale = min(w, h) * 0.82 * self.zoom / 1.15
-        sx = w * 0.5 + x1 * scale
-        sy = h * 0.52 - y2 * scale
-        return sx, sy, z2, scale
+        ry = np.array([[cy_, 0, sy_], [0, 1, 0], [-sy_, 0, cy_]], np.float32)
+        rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]], np.float32)
+        return (rx @ ry).astype(np.float32)
 
-    def _buffer(self, w, h):
-        if self._buf is None or self._buf.shape[0] != h or self._buf.shape[1] != w:
-            self._buf = np.zeros((h, w, 3), np.uint8)
-        return self._buf
+    def cam(self):
+        scale = min(RW, RH) * 0.80 * self.zoom / H_CUP
+        cx = RW * 0.5
+        cy = RH * 0.5 + H_CUP * 0.5 * scale
+        return scale, cx, cy
+
+    def project_points(self, pts):
+        m = self.matrix()
+        c = self.app.sim.cup_c[None]
+        v = pts - np.array([c[0], 0.0, c[2]], np.float32)
+        p = v @ m.T
+        scale, cx, cy = self.cam()
+        return cx + p[:, 0] * scale, cy - p[:, 1] * scale
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         w, h = self.width(), self.height()
         p.fillRect(self.rect(), QColor(8, 12, 24))
+
         sim = self.app.sim
-        hw, hh = max(1, w // 2), max(1, h // 2)
-
-        pts = sim.pos.to_numpy()
-        spd = sim.speeds()
-        sx, sy, depth, scale = self.project(pts, hw, hh)
-
-        img = self._buffer(hw, hh)
-        img[:] = np.array([8, 12, 24], np.uint8)
-        vmax = max(0.8, float(np.percentile(spd, 97)))
-
-        # 速度 → 颜色：慢的深蓝，快的青白
-        t = np.clip(spd / vmax, 0.0, 1.0)
-        r = (24 + 150 * t).astype(np.float32)
-        g = (80 + 165 * t).astype(np.float32)
-        b = (185 + 70 * t).astype(np.float32)
-        dnorm = (depth - depth.min()) / max(1e-6, depth.max() - depth.min())
-        a = (0.14 + 0.34 * (1.0 - dnorm)).astype(np.float32)
-
-        # 用 bincount 累加（C 速度），比逐点散射快一个数量级
-        ix = sx.astype(np.int32)
-        iy = sy.astype(np.int32)
-        base = np.stack([r, g, b], axis=1) * a[:, None]
-        hw_, hh_ = hw, hh
-        acc = np.zeros((hh_ * hw_, 3), np.float32)
-        for dy, dx, wt in ((0, 0, 1.0), (1, 1, 0.5), (-1, -1, 0.5)):
-            xs = ix + dx
-            ys = iy + dy
-            ok = (xs >= 0) & (xs < hw_) & (ys >= 0) & (ys < hh_)
-            if not ok.any():
-                continue
-            sel = np.nonzero(ok)[0]
-            flat = ys[sel] * hw_ + xs[sel]
-            for c in range(3):
-                acc[:, c] += np.bincount(flat, weights=base[sel, c] * wt,
-                                         minlength=hh_ * hw_)
-        img[:] = np.clip(np.array([8, 12, 24], np.float32) + acc.reshape(hh_, hw_, 3),
-                         0, 255).astype(np.uint8)
+        m = self.matrix()
+        scale, cx, cy = self.cam()
+        c = sim.cup_c[None]
+        img = sim.draw(m, scale, cx, cy, (c[0], 0.0, c[2]))
 
         from PySide6.QtGui import QImage
-        qimg = QImage(img.data, hw, hh, hw * 3, QImage.Format_RGB888)
-        p.drawImage(QRectF(0, 0, w, h), qimg)
+        img = np.ascontiguousarray(img)
+        hr, wr = img.shape[:2]
+        qimg = QImage(img.data, wr, hr, wr * 3, QImage.Format_RGB888)
 
-        # 玻璃杯：用相机矩阵投影杯口/杯底圆
+        k = min(w / wr, h / hr)
+        ox = (w - wr * k) * 0.5
+        oy = (h - hr * k) * 0.5
+        p.drawImage(QRectF(ox, oy, wr * k, hr * k), qimg)
+
+        # 跟随杯子运动的玻璃轮廓（图像坐标 → 画布坐标）
+        def to_canvas(xs, ys):
+            return ox + xs * k, oy + ys * k
+
         p.setBrush(Qt.NoBrush)
-        for yy, alpha in ((0.0, 110), (H_CUP, 60)):
-            ring = np.stack([R_CUP * np.cos(np.linspace(0, 2 * np.pi, 64)),
-                             np.full(64, yy),
-                             R_CUP * np.sin(np.linspace(0, 2 * np.pi, 64))], axis=1)
-            rx, ry, _, _ = self.project(ring, w, h)
-            poly = QPolygonF([QPointF(float(a), float(b)) for a, b in zip(rx, ry)])
+        for yy, alpha in ((0.0, 120), (H_CUP, 70)):
+            a = np.linspace(0, 2 * np.pi, 72)
+            ring = np.stack([c[0] + R_CUP * np.cos(a), np.full(72, yy),
+                             c[2] + R_CUP * np.sin(a)], axis=1).astype(np.float32)
+            rx, ry = self.project_points(ring)
+            rx, ry = to_canvas(rx, ry)
             p.setPen(QPen(QColor(130, 180, 230, alpha), 1.4))
-            p.drawPolyline(poly)
-        # 四条竖棱
-        for k in range(4):
-            a = k * np.pi / 2
-            seg = np.array([[R_CUP * np.cos(a), 0.0, R_CUP * np.sin(a)],
-                            [R_CUP * np.cos(a), H_CUP, R_CUP * np.sin(a)]])
-            rx, ry, _, _ = self.project(seg, w, h)
-            p.setPen(QPen(QColor(110, 160, 210, 45), 1.2))
-            p.drawLine(QPointF(float(rx[0]), float(ry[0])), QPointF(float(rx[1]), float(ry[1])))
+            p.drawPolyline(QPolygonF([QPointF(float(u), float(v_)) for u, v_ in zip(rx, ry)]))
+        for kk in range(6):
+            a = kk * np.pi / 3
+            seg = np.array([[c[0] + R_CUP * np.cos(a), 0.0, c[2] + R_CUP * np.sin(a)],
+                            [c[0] + R_CUP * np.cos(a), H_CUP, c[2] + R_CUP * np.sin(a)]],
+                           np.float32)
+            rx, ry = self.project_points(seg)
+            rx, ry = to_canvas(rx, ry)
+            p.setPen(QPen(QColor(110, 160, 210, 45), 1.1))
+            p.drawLine(QPointF(float(rx[0]), float(ry[0])),
+                       QPointF(float(rx[1]), float(ry[1])))
         p.end()
 
     # ---------- 鼠标 ----------
@@ -342,22 +343,21 @@ class CupCanvas(QWidget):
         self.last = e.position()
         if self.orbiting:
             self.yaw += float(d.x()) * 0.01
-            self.pitch = max(-0.2, min(1.35, self.pitch + float(d.y()) * 0.01))
+            self.pitch = max(-0.3, min(1.4, self.pitch + float(d.y()) * 0.01))
         else:
-            self.app.drag_cup(float(d.x()) * 0.0014, float(d.y()) * 0.0014)
+            self.app.drag_cup(float(d.x()) * 0.0012, float(d.y()) * 0.0012)
 
     def wheelEvent(self, e):
-        self.zoom = max(0.45, min(3.0, self.zoom * (1.0015 ** e.angleDelta().y())))
+        self.zoom = max(0.4, min(3.0, self.zoom * (1.0015 ** e.angleDelta().y())))
 
 
 class CupVortexApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("杯中水 · 3D SPH 涡旋")
-        self.setGeometry(120, 80, 1100, 780)
+        self.setGeometry(120, 80, 1120, 800)
 
         self.sim = CupFluid()
-        self.visual_spin = 0.0
         self.shaking = False
         self.shake_phase = 0.0
         self.shake_amp = 0.010
@@ -370,10 +370,10 @@ class CupVortexApp(QMainWindow):
 
     def drag_cup(self, dx, dz):
         c = self.sim.cup_c[None]
-        c = [max(-0.10, min(0.10, c[0] + dx)), 0.0,
-             max(-0.10, min(0.10, c[2] + dz))]
-        self.sim.cup_c[None] = c
-        self.sim.cup_v[None] = [dx * 26.0, 0.0, dz * 26.0]
+        nc = [max(-0.10, min(0.10, c[0] + dx)), 0.0,
+              max(-0.10, min(0.10, c[2] + dz))]
+        self.sim.cup_c[None] = nc
+        self.sim.cup_v[None] = [dx * 20.0, 0.0, dz * 20.0]
 
     def tick(self):
         if self.shaking:
@@ -381,7 +381,7 @@ class CupVortexApp(QMainWindow):
             c = self.sim.cup_c[None]
             nx = self.shake_amp * np.sin(self.shake_phase)
             nz = self.shake_amp * np.sin(self.shake_phase * 0.5 + 1.0)
-            self.sim.cup_v[None] = [(nx - c[0]) * 18.0, 0.0, (nz - c[2]) * 18.0]
+            self.sim.cup_v[None] = [(nx - c[0]) * 16.0, 0.0, (nz - c[2]) * 16.0]
             self.sim.cup_c[None] = [nx, 0.0, nz]
         else:
             self.sim.cup_v[None] = [0.0, 0.0, 0.0]
@@ -415,8 +415,7 @@ class CupVortexApp(QMainWindow):
         tf.setBold(True)
         title.setFont(tf)
         pv.addWidget(title)
-        sub = QLabel(f"{N_PARTICLES // 1000}k SPH 粒子 · Taichi GPU" + chr(10)
-                     + "左键摇杯子 · 右键/滚轮转视角")
+        sub = QLabel("36k SPH 粒子 · Taichi GPU" + chr(10) + "左键摇杯子 · 右键/滚轮转视角")
         sub.setStyleSheet("color: #7a7a80;")
         sf = sub.font()
         sf.setPointSize(8)

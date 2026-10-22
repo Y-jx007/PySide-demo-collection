@@ -209,7 +209,7 @@ APPS = [
     },
     {
         "title": "CupVortex",
-        "description": "杯中水：36k 个 SPH 粒子在 GPU 上跑，可转视角，摇出涡旋",
+        "description": "杯中水：细高玻璃杯、31k SPH 粒子在 GPU 上跑，可转视角、摇出涡旋",
         "path": "Physics/CupVortex.py",
         "friendly": "杯中水",
         "category": "实验",
