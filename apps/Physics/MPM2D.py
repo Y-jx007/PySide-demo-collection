@@ -267,15 +267,19 @@ class MPM2D:
                                 self.img[jj, ii] = col
 
         @ti.kernel
-        def blur():
+        def dilate():
+            # 3x3 取最大：把 1 像素的点撑开填缝，颜色保持不变
+            # （3x3 平均会把孤立点压成 4/9 亮度，画面发暗）
             rres = RENDER_RES
             for i, j in self.img:
-                acc = ti.Vector([0, 0, 0], ti.i32) + self.img[i, j].cast(ti.i32) * 4
+                c = self.img[i, j]
                 for di, dj in ti.static(ti.ndrange(-1, 2)):
                     ii = ti.min(ti.max(i + di, 0), rres - 1)
                     jj = ti.min(ti.max(j + dj, 0), rres - 1)
-                    acc += self.img[ii, jj].cast(ti.i32)
-                self.blur_tmp[i, j] = (acc / 9).cast(ti.u8)
+                    o = self.img[ii, jj]
+                    c = ti.Vector([ti.max(c[0], o[0]), ti.max(c[1], o[1]),
+                                   ti.max(c[2], o[2])], ti.u8)
+                self.blur_tmp[i, j] = c
             for i, j in self.img:
                 self.img[i, j] = self.blur_tmp[i, j]
 
@@ -285,7 +289,7 @@ class MPM2D:
         self._clear_grid_all = clear_grid_all
         self._max_velocity = max_velocity
         self._render = render
-        self._blur = blur
+        self._blur = dilate
 
     @ti.kernel
     def _seed_batch(self, count: ti.i32, new_material: ti.i32,
