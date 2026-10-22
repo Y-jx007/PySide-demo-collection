@@ -72,6 +72,7 @@ class MPM2D:
         self.allowed_cfl = 0.9
         self.configure(res, density)
         self._compile()
+        self._clear_grid_all()
 
     def configure(self, res, density):
         self.res = int(res)
@@ -89,12 +90,6 @@ class MPM2D:
     def _compile(self):
         gsize = self.gsize
         padding = self.padding
-
-        @ti.kernel
-        def clear_grid():
-            for i, j in self.grid_v:
-                self.grid_v[i, j] = ti.Vector([0.0, 0.0])
-                self.grid_m[i, j] = 0.0
 
         @ti.kernel
         def p2g(dt: real):
@@ -169,7 +164,8 @@ class MPM2D:
         @ti.kernel
         def grid_op(dt: real):
             res = self.res_cur[None]
-            for i, j in self.grid_m:
+            ext = res + 2 * padding
+            for i, j in ti.ndrange(ext, ext):
                 if self.grid_m[i, j] > 0.0:
                     self.grid_v[i, j] = (1.0 / self.grid_m[i, j]) * self.grid_v[i, j]
                     self.grid_v[i, j] += dt * ti.Vector([0.0, GRAVITY_Y])
@@ -209,6 +205,17 @@ class MPM2D:
                     self.v[p] = new_v
                     self.C[p] = new_C
                     self.x[p] += dt * self.v[p]
+            # 顺手清空网格，省掉一个独立的 clear kernel
+            ext = self.res_cur[None] + 2 * padding
+            for i, j in ti.ndrange(ext, ext):
+                self.grid_v[i, j] = ti.Vector([0.0, 0.0])
+                self.grid_m[i, j] = 0.0
+
+        @ti.kernel
+        def clear_grid_all():
+            for i, j in self.grid_v:
+                self.grid_v[i, j] = ti.Vector([0.0, 0.0])
+                self.grid_m[i, j] = 0.0
 
         @ti.kernel
         def max_velocity() -> real:
@@ -260,10 +267,10 @@ class MPM2D:
             for i, j in self.img:
                 self.img[i, j] = self.blur_tmp[i, j]
 
-        self._clear_grid = clear_grid
         self._p2g = p2g
         self._grid_op = grid_op
         self._g2p = g2p
+        self._clear_grid_all = clear_grid_all
         self._max_velocity = max_velocity
         self._render = render
         self._blur = blur
@@ -305,23 +312,24 @@ class MPM2D:
         vmax = float(self._max_velocity())
         cfl_dt = self.allowed_cfl * self.dx / (vmax + 1e-6)
         dt = min(self.default_dt * self.dt_scale, cfl_dt)
+        # 子步数受上限约束，但 dt 绝不能再被放大（那样会越过 CFL 直接炸）
         substeps = max(1, min(MAX_SUBSTEPS, int(frame_dt / dt) + 1))
-        dt = frame_dt / substeps
+        dt = min(dt, frame_dt / substeps)
         for _ in range(substeps):
-            self._clear_grid()
             self._p2g(dt)
             self._grid_op(dt)
             self._g2p(dt)
+        self._sim_time = substeps * dt
         return substeps
 
-    def particle_radius(self):
-        """点半径按粒子间距自适应，避免大块圆点。"""
+    def particle_radius(self, grain=1.0):
+        """点半径按粒子间距自适应；grain 是颗粒度倍率。"""
         spacing_px = (self.dx / max(1.0, (self.density ** 0.5))) * RENDER_RES
-        return max(1, int(round(spacing_px * 0.35)))
+        return max(1, int(round(spacing_px * 0.35 * grain)))
 
-    def draw(self, radius=None):
+    def draw(self, radius=None, grain=1.0):
         if radius is None:
-            radius = self.particle_radius()
+            radius = self.particle_radius(grain)
         self._render(radius)
         self._blur()
         return np.clip(self.img.to_numpy(), 0, 255).astype(np.uint8)
@@ -405,6 +413,7 @@ class MPMApp(QMainWindow):
         self.fps = 0.0
         self._last_t = time.perf_counter()
         self._last_pour = 0.0
+        self.grain = 1.0
         self._stat_tick = 0
         self.substeps = 0
 
@@ -423,7 +432,7 @@ class MPMApp(QMainWindow):
                           material=MATERIAL_SNOW)
         self.sim.add_cube(lower=(0.30, 0.22), size=(0.40, 0.20),
                           material=MATERIAL_WATER)
-        self.frame = self.sim.draw()
+        self.frame = self.sim.draw(grain=self.grain)
 
     def pour(self, x, y):
         now = time.perf_counter()
@@ -440,7 +449,7 @@ class MPMApp(QMainWindow):
     def tick(self):
         if not self.paused:
             self.substeps = self.sim.step(self.frame_dt)
-            self.frame = self.sim.draw()
+            self.frame = self.sim.draw(grain=self.grain)
             self.canvas.update()
             now = time.perf_counter()
             dt = now - self._last_t
@@ -498,6 +507,12 @@ class MPMApp(QMainWindow):
         self.den_box.setCurrentIndex(0)
         self.den_box.currentIndexChanged.connect(self.on_density)
         f0.addRow("采样", self.den_box)
+        self.grain = 1.0
+        self.grain_slider = QSlider(Qt.Horizontal)
+        self.grain_slider.setRange(50, 400)
+        self.grain_slider.setValue(100)
+        self.grain_slider.valueChanged.connect(self.on_grain)
+        f0.addRow("颗粒度", self.grain_slider)
         self.spd_box = QComboBox()
         for name, val in (("0.5×", 1 / 480), ("1×", 1 / 240), ("2×", 1 / 120)):
             self.spd_box.addItem(name, val)
@@ -562,6 +577,11 @@ class MPMApp(QMainWindow):
     def on_density(self, idx):
         self.sim.configure(self.sim.res, DENSITY_OPTIONS[idx])
         self.build_scene()
+        self.canvas.update()
+
+    def on_grain(self, v):
+        self.grain = v / 100.0
+        self.frame = self.sim.draw(grain=self.grain)
         self.canvas.update()
 
     def on_speed(self, idx):
