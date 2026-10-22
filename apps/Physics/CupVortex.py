@@ -9,21 +9,28 @@ dim = 3
 
 # ==================== 参数 ====================
 N_PARTICLES = 90000
-R_CUP = 0.30                 # 细高的杯子，深径比 ≈ 3，涡旋才立得住
+R_CUP = 0.30                 # 世界单位；整只杯子当作 0.6 m 宽、1.2 m 高
 H_CUP = 1.20
-FILL = 0.86                  # 初始水柱高度 = FILL * H_CUP
-DX = 0.016                   # 初始粒子间距
-H = 0.032                    # 光滑核半径
-REP = 0.55                   # 排斥力
-VISC = 0.22                  # 粘性（原来 0.9 太黏，水全糊在壁上）
-KP = 5.0                     # 超压刚度
-DT = 1e-3
-GRAVITY = -2.2
-CELL = 1.0 / 33.0            # 邻居网格边长
-GXZ = 33                     # x/z 方向的网格数（覆盖 [-0.5, 0.5]）
-GY = int(1.25 / CELL) + 2     # y 方向足够高
+FILL = 0.86
+DX = 0.016                   # 粒子间距
+H = 0.032                    # 光滑核半径 = 2*DX
+GRAVITY = -9.81              # ← 真实重力，之前是 -2.2
+DT = 5e-4                    # 每个子步（CFL: 0.4*h/c_sound）
+SUBSTEPS_PER_FRAME = 16      # 每帧推进 8 ms 仿真时间
+RHO0 = 1000.0                # 水的密度
+MASS = RHO0 * DX ** 3        # 粒子质量
+STIFF_B = 2.0e4              # Tait 方程系数 p = B((rho/rho0)^7 - 1)
+MU = 0.06                    # 动力粘性
+CELL = 1.0 / 33.0
+GXZ = 33
+GY = int(1.25 / CELL) + 2
 MAX_PER_CELL = 32
-RHO0 = 9.0                   # 启动时自动标定
+
+# 核函数常数
+K_POLY6 = 315.0 / (64.0 * np.pi * H ** 9)
+K_SPIKY = -45.0 / (np.pi * H ** 6)
+K_LAP = 45.0 / (np.pi * H ** 6)
+
 RW, RH = 640, 620            # 渲染缓冲尺寸
 
 
@@ -39,6 +46,7 @@ class CupFluid:
         self.vel = ti.Vector.field(dim, real, n)
         self.acc = ti.Vector.field(dim, real, n)
         self.dens = ti.field(real, n)
+        self.pres = ti.field(real, n)
         self.cell_cnt = ti.field(ti.i32, GXZ * GXZ * GY)
         self.cell_idx = ti.field(ti.i32, (GXZ * GXZ * GY, MAX_PER_CELL))
         self.img = ti.Vector.field(3, real, (RH, RW))
@@ -60,11 +68,11 @@ class CupFluid:
         self.vel.fill(0.0)
         self._compile()
 
-        global RHO0
         self._clear_cells()
         self._bin()
         self._density()
-        RHO0 = float(self.dens.to_numpy().mean()) * 0.92
+        info = self.dens.to_numpy()
+        print(f"[sph] 初始密度 mean {info.mean():.1f} min {info.min():.1f} max {info.max():.1f}", flush=True)
 
     # ---------- 初始水柱 ----------
     def _make_points(self, n):
@@ -89,6 +97,7 @@ class CupFluid:
         n = self.n
         pos, vel, acc = self.pos, self.vel, self.acc
         dens = self.dens
+        pres = self.pres
         cnt, idx = self.cell_cnt, self.cell_idx
         cup_c, cup_v, cup_w = self.cup_c, self.cup_v, self.cup_w
         img = self.img
@@ -133,9 +142,13 @@ class CupFluid:
                                     j = idx[c, k]
                                     r2 = (pos[i] - pos[j]).norm_sqr()
                                     if r2 < H * H:
-                                        q = 1.0 - r2 / (H * H)
+                                        q = H * H - r2
                                         d += q * q * q
-                dens[i] = d
+                dens[i] = MASS * K_POLY6 * d
+                # Tait 方程，负压截断（避免拉在一起）
+                ratio = dens[i] / RHO0
+                p = STIFF_B * (ratio ** 7 - 1.0)
+                pres[i] = ti.max(p, 0.0)
 
         @ti.kernel
         def compute_forces():
@@ -144,12 +157,8 @@ class CupFluid:
                 gz = ti.min(ti.max(ti.cast((pos[i][2] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
                 gy = ti.min(ti.max(ti.cast(pos[i][1] / CELL, ti.i32), 0), GY - 1)
                 f = ti.Vector([0.0, 0.0, 0.0])
-                # 类 Tait 方程：p = K((rho/rho0)^2 - 1)，压缩时二次增长，水才不可压
-                ratio = dens[i] / RHO0
-                over = ratio * ratio - 1.0
-                if over < 0.0:
-                    over = 0.0
-                stiff = REP + KP * over
+                pi_ = pres[i]
+                ri = dens[i]
                 for dx in ti.static(range(-1, 2)):
                     for dz in ti.static(range(-1, 2)):
                         for dy in ti.static(range(-1, 2)):
@@ -159,20 +168,26 @@ class CupFluid:
                                 m = ti.min(cnt[c], MAX_PER_CELL)
                                 for k in range(m):
                                     j = idx[c, k]
-                                    r = pos[i] - pos[j]
-                                    r2 = r.norm_sqr()
-                                    if 1e-9 < r2 < H * H:
-                                        d = ti.sqrt(r2)
-                                        q = 1.0 - d / H
-                                        f += stiff * q * q * (r / d)
-                                        f += VISC * (vel[j] - vel[i]) * q
+                                    r_vec = pos[i] - pos[j]
+                                    r2 = r_vec.norm_sqr()
+                                    if 1e-12 < r2 < H * H:
+                                        r = ti.sqrt(r2)
+                                        # 压力：spiky 梯度的标准对称形式
+                                        hq = H - r
+                                        wp = K_SPIKY * hq * hq / r * r_vec
+                                        coeff = -MASS * (pi_ / (ri * ri) + pres[j] / (dens[j] * dens[j]))
+                                        f += coeff * wp
+                                        # 粘性：拉普拉斯核
+                                        f += MU * MASS * (vel[j] - vel[i]) / dens[j] * (K_LAP * hq)
                 f[1] += GRAVITY
                 acc[i] = f
 
         @ti.kernel
         def integrate():
             c = cup_c[None]
-            cv = cup_v[None]
+            cv_raw = cup_v[None]
+            sp = cv_raw.norm()
+            cv = cv_raw * (4.0 / sp) if sp > 4.0 else cv_raw
             w = cup_w[None]
             for i in range(n):
                 vel[i] += DT * acc[i]
@@ -196,6 +211,10 @@ class CupFluid:
                 if p[1] > H_CUP:
                     p[1] = H_CUP
                     vel[i][1] = ti.min(vel[i][1], 0.0)
+                # 速度限幅，防止数值爆炸
+                spd = vel[i].norm()
+                if spd > 10.0:
+                    vel[i] *= 10.0 / spd
                 pos[i] = p
 
         # ---------- 屏幕空间流体渲染 ----------
@@ -289,7 +308,7 @@ class CupFluid:
         self._blur_v = blur_v
         self._shade = shade
 
-    def step(self, sub=6):
+    def step(self, sub=SUBSTEPS_PER_FRAME):
         for _ in range(sub):
             self._clear_cells()
             self._bin()
@@ -430,7 +449,7 @@ class CupVortexApp(QMainWindow):
         self.shaking = False
         self.shake_phase = 0.0
         self.shake_amp = 0.010
-        self.steps_per_frame = 6
+        self.steps_per_frame = SUBSTEPS_PER_FRAME
 
         self.init_ui()
         self.timer = QTimer()
