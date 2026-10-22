@@ -7,7 +7,8 @@ import numpy as np
 # ==================== 迷宫 ====================
 CELL = 1.0
 SUB = 8                    # 每格 8×8 采样点，用来做射线与碰撞
-N_SENSOR = 5
+N_RAYS = 5
+N_IN = 7                  # 5 条射线 + 撞墙标志 + 卡住时长
 SENSOR_ANGLES = np.deg2rad([-70, -35, 0, 35, 70])
 SENSOR_RANGE = 3.6
 AGENT_R = 0.16
@@ -102,7 +103,7 @@ class Swarm:
         self.pop = pop
         self.maze = maze or Maze(seed=seed)
         self.rng = np.random.default_rng(seed)
-        self.w1 = (self.rng.normal(0, 0.4, (pop, N_SENSOR, 8))).astype(np.float32)
+        self.w1 = (self.rng.normal(0, 0.4, (pop, N_IN, 8))).astype(np.float32)
         self.b1 = np.zeros((pop, 8), np.float32)
         self.w2 = (self.rng.normal(0, 0.4, (pop, 8, 2))).astype(np.float32)
         self.b2 = np.zeros((pop, 2), np.float32)
@@ -119,6 +120,10 @@ class Swarm:
         self.ang = np.full(self.pop, 0.0, np.float32)
         self.alive = np.ones(self.pop, bool)
         self.reached = np.zeros(self.pop, bool)
+        self.hit = np.zeros(self.pop, bool)
+        self.stuck_t = np.zeros(self.pop, np.float32)
+        self.visited = np.zeros((self.pop, self.maze.cw, self.maze.ch), bool)
+        self.visited[:, 0, 0] = True
         self.t = 0.0
         self.trail = [[] for _ in range(self.pop)]
         self.best_path = None
@@ -126,8 +131,12 @@ class Swarm:
     # ---------- 单步 ----------
     def step(self, dt=1.0 / 30):
         m = self.maze
-        sens = np.stack([m.ray(self.pos[:, 0], self.pos[:, 1], self.ang + a)
+        rays = np.stack([m.ray(self.pos[:, 0], self.pos[:, 1], self.ang + a)
                          for a in SENSOR_ANGLES], axis=1)
+        sens = np.concatenate([
+            rays,
+            self.hit[:, None].astype(np.float32),
+            np.clip(self.stuck_t / 1.5, 0.0, 1.0)[:, None]], axis=1)
         h = np.tanh(np.einsum('pi,pih->ph', sens, self.w1) + self.b1)
         out = np.tanh(np.einsum('ph,pho->po', h, self.w2) + self.b2)
 
@@ -144,7 +153,26 @@ class Swarm:
         ok_y = ~m.blocked_circle(ox, ny)
         nx2 = np.where(ok_b, nx, np.where(ok_x, nx, ox))
         ny2 = np.where(ok_b, ny, np.where(ok_x, oy, np.where(ok_y, ny, oy)))
+
+        # 完全卡死：沿反方向倒一点，避免墙角变成吸收态
+        walled = ~ok_b & ~ok_x & ~ok_y
+        if walled.any():
+            rx = ox - np.cos(self.ang) * speed * dt * 0.9
+            ry = oy - np.sin(self.ang) * speed * dt * 0.9
+            back_ok = ~m.blocked_circle(rx, ry)
+            use_back = walled & back_ok
+            nx2 = np.where(use_back, rx, nx2)
+            ny2 = np.where(use_back, ry, ny2)
+            # 退不了就原地小角度转身
+            spin = walled & ~back_ok
+            self.ang = np.where(spin, self.ang + dt * 3.0, self.ang)
+
         self.pos = np.stack([nx2, ny2], axis=1)
+        self.hit = walled | ~ok_b
+        self.stuck_t = np.where(walled, self.stuck_t + dt, 0.0)
+        cx = np.clip(self.pos[:, 0].astype(np.int32), 0, m.cw - 1)
+        cy = np.clip(self.pos[:, 1].astype(np.int32), 0, m.ch - 1)
+        self.visited[np.arange(self.pop), cx, cy] = True
 
         d = np.linalg.norm(self.pos - m.goal, axis=1)
         self.reached |= d < 0.55
@@ -155,7 +183,8 @@ class Swarm:
         d0 = np.linalg.norm(self.maze.start - self.maze.goal)
         d = np.linalg.norm(self.pos - self.maze.goal, axis=1)
         prog = d0 - d
-        return prog + self.reached * 12.0
+        explored = self.visited.sum(axis=(1, 2)).astype(np.float32)
+        return prog + self.reached * 12.0 + explored * 0.25
 
     # ---------- 繁殖 ----------
     def evolve(self):
