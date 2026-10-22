@@ -58,7 +58,6 @@
 | **Circulation** | 全球风场：解析式海平面气压 + 地转风，Taichi 并行算在 360×180 网格上，海岸线用 Natural Earth 720×360 数据；可叠加气压配色 |
 | **Erosion** | 降雨冲刷地形（雨滴侵蚀），干燥后按 Voronoi 板块边界张开泥土龟裂 |
 | **Caustic** | 焦散/光线折射模拟 |
-| **CupVortex** | 杯中水 3D 流体：MLS-MPM（APIC 传输 + 状态方程压力，同 taichi mpm128 的路子），17 万粒子、80³ 网格、GPU 求解；左键摇杯子、右键/滚轮转视角 |
 | **2D Boids** | Boids 群体行为 |
 | **2D Noise** | 麦克风实时噪声频谱（需要 sounddevice） |
 | **2D Qusicrystal** | 二维准晶衍射图样 |
