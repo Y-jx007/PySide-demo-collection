@@ -208,6 +208,13 @@ APPS = [
         "category": "实验",
     },
     {
+        "title": "CupVortex",
+        "description": "杯中水：2250 个 SPH 粒子，摇杯子或转杯壁产生涡旋",
+        "path": "Physics/CupVortex.py",
+        "friendly": "杯中水",
+        "category": "实验",
+    },
+    {
         "title": "2D Boids",
         "description": "Boids 群体行为模拟",
         "path": "2D Boids.py",
