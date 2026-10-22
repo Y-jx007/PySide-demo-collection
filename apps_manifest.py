@@ -208,13 +208,6 @@ APPS = [
         "category": "实验",
     },
     {
-        "title": "MazeEvolution",
-        "description": "进化神经网络走迷宫：5 条射线+小网络，几十代学会找路",
-        "path": "Physics/MazeEvolution.py",
-        "friendly": "进化走迷宫",
-        "category": "实验",
-    },
-    {
         "title": "2D Boids",
         "description": "Boids 群体行为模拟",
         "path": "2D Boids.py",
