@@ -32,7 +32,7 @@ MAX_SUBSTEPS = 40             # 单帧子步上限，避免局部爆炸时卡死
 class MPM2D:
     """2D MLS-MPM。网格分辨率与采样密度都是运行时参数，可随时重建。"""
 
-    def __init__(self, res=RES_DEFAULT, density=4, max_particles=MAX_PARTICLES,
+    def __init__(self, res=RES_DEFAULT, density=16, max_particles=MAX_PARTICLES,
                  arch=None):
         ti.reset()
         ti.init(arch=arch if arch is not None else ti.gpu, default_fp=real)
@@ -523,7 +523,7 @@ class MPMApp(QMainWindow):
         self.den_box = QComboBox()
         for d in DENSITY_OPTIONS:
             self.den_box.addItem("%d / 格" % d, d)
-        self.den_box.setCurrentIndex(0)
+        self.den_box.setCurrentIndex(2)
         self.den_box.currentIndexChanged.connect(self.on_density)
         f0.addRow("采样", self.den_box)
         self.grain = 1.0
