@@ -53,8 +53,8 @@ class MPM2D:
         self.grid_v = ti.Vector.field(dim, real, (self.gsize, self.gsize))
         self.grid_m = ti.field(real, (self.gsize, self.gsize))
 
-        self.img = ti.Vector.field(3, real, (RENDER_RES, RENDER_RES))
-        self.blur_tmp = ti.Vector.field(3, real, (RENDER_RES, RENDER_RES))
+        self.img = ti.Vector.field(3, ti.u8, (RENDER_RES, RENDER_RES))
+        self.blur_tmp = ti.Vector.field(3, ti.u8, (RENDER_RES, RENDER_RES))
 
         self.par = ti.Vector.field(4, real, shape=())   # dx, inv_dx, p_vol, p_mass
         self.res_cur = ti.field(ti.i32, shape=())
@@ -185,6 +185,7 @@ class MPM2D:
             par = self.par[None]
             dx = par[0]
             inv_dx = par[1]
+            res = self.res_cur[None]
             for p in range(self.n_particles[None]):
                 base = ti.cast(ti.floor(self.x[p] * inv_dx - 0.5), ti.i32)
                 fx = self.x[p] * inv_dx - ti.cast(base, real)
@@ -198,6 +199,19 @@ class MPM2D:
                     nb = base + ti.Vector([i, j]) + padding
                     if 0 <= nb[0] < gsize and 0 <= nb[1] < gsize:
                         g_v = self.grid_v[nb]
+                        m = self.grid_m[nb]
+                        if m > 0.0:
+                            g_v = (1.0 / m) * g_v + dt * ti.Vector([0.0, GRAVITY_Y])
+                            xi = nb[0] - padding
+                            yj = nb[1] - padding
+                            if xi < padding and g_v[0] < 0.0:
+                                g_v[0] = 0.0
+                            if xi >= res - padding and g_v[0] > 0.0:
+                                g_v[0] = 0.0
+                            if yj < padding and g_v[1] < 0.0:
+                                g_v[1] = 0.0
+                            if yj >= res - padding and g_v[1] > 0.0:
+                                g_v[1] = 0.0
                         weight = w[i][0] * w[j][1]
                         new_v += weight * g_v
                         new_C += 4 * inv_dx * weight * g_v.outer_product(dpos)
@@ -229,19 +243,19 @@ class MPM2D:
         def render(radius: ti.i32):
             rres = RENDER_RES
             for i, j in self.img:
-                self.img[i, j] = ti.Vector([14.0, 17.0, 24.0])
+                self.img[i, j] = ti.Vector([14, 17, 24], ti.u8)
             for p in range(self.n_particles[None]):
                 px = self.x[p][0] * rres
                 py = (1.0 - self.x[p][1]) * rres
-                col = ti.Vector([235.0, 235.0, 240.0])
+                col = ti.Vector([235, 235, 240], ti.u8)
                 if self.material[p] == MATERIAL_WATER:
-                    col = ti.Vector([70.0, 140.0, 240.0])
+                    col = ti.Vector([70, 140, 240], ti.u8)
                 elif self.material[p] == MATERIAL_ELASTIC:
-                    col = ti.Vector([240.0, 90.0, 70.0])
+                    col = ti.Vector([240, 90, 70], ti.u8)
                 elif self.material[p] == MATERIAL_SNOW:
-                    col = ti.Vector([240.0, 248.0, 255.0])
+                    col = ti.Vector([240, 248, 255], ti.u8)
                 elif self.material[p] == MATERIAL_SAND:
-                    col = ti.Vector([220.0, 190.0, 110.0])
+                    col = ti.Vector([220, 190, 110], ti.u8)
                 ix = ti.cast(px, ti.i32)
                 iy = ti.cast(py, ti.i32)
                 for di in range(-radius, radius + 1):
@@ -256,14 +270,12 @@ class MPM2D:
         def blur():
             rres = RENDER_RES
             for i, j in self.img:
-                acc = self.img[i, j] * 4.0
-                cnt = 4.0
+                acc = ti.Vector([0, 0, 0], ti.i32) + self.img[i, j].cast(ti.i32) * 4
                 for di, dj in ti.static(ti.ndrange(-1, 2)):
                     ii = ti.min(ti.max(i + di, 0), rres - 1)
                     jj = ti.min(ti.max(j + dj, 0), rres - 1)
-                    acc += self.img[ii, jj]
-                    cnt += 1.0
-                self.blur_tmp[i, j] = acc / cnt
+                    acc += self.img[ii, jj].cast(ti.i32)
+                self.blur_tmp[i, j] = (acc / 9).cast(ti.u8)
             for i, j in self.img:
                 self.img[i, j] = self.blur_tmp[i, j]
 
@@ -309,7 +321,11 @@ class MPM2D:
         return num_new
 
     def step(self, frame_dt):
-        vmax = float(self._max_velocity())
+        self._vmax_age = getattr(self, "_vmax_age", 99) + 1
+        if self._vmax_age >= 6:                      # 每 6 帧才回读一次，省掉每帧同步
+            self._vmax = float(self._max_velocity())
+            self._vmax_age = 0
+        vmax = getattr(self, "_vmax", 0.0)
         cfl_dt = self.allowed_cfl * self.dx / (vmax + 1e-6)
         dt = min(self.default_dt * self.dt_scale, cfl_dt)
         # 子步数受上限约束，但 dt 绝不能再被放大（那样会越过 CFL 直接炸）
@@ -317,7 +333,6 @@ class MPM2D:
         dt = min(dt, frame_dt / substeps)
         for _ in range(substeps):
             self._p2g(dt)
-            self._grid_op(dt)
             self._g2p(dt)
         self._sim_time = substeps * dt
         return substeps
@@ -332,7 +347,7 @@ class MPM2D:
             radius = self.particle_radius(grain)
         self._render(radius)
         self._blur()
-        return np.clip(self.img.to_numpy(), 0, 255).astype(np.uint8)
+        return self.img.to_numpy()
 
     def particle_info(self):
         n = int(self.n_particles[None])
@@ -509,10 +524,17 @@ class MPMApp(QMainWindow):
         f0.addRow("采样", self.den_box)
         self.grain = 1.0
         self.grain_slider = QSlider(Qt.Horizontal)
-        self.grain_slider.setRange(50, 400)
+        self.grain_slider.setRange(5, 400)
         self.grain_slider.setValue(100)
         self.grain_slider.valueChanged.connect(self.on_grain)
         f0.addRow("颗粒度", self.grain_slider)
+        self.dts_box = QComboBox()
+        for name, val in (("1× (参考)", 1.0), ("2×", 2.0), ("4×", 4.0)):
+            self.dts_box.addItem(name, val)
+        self.dts_box.setCurrentIndex(0)
+        self.dts_box.currentIndexChanged.connect(
+            lambda i: setattr(self.sim, "dt_scale", self.dts_box.itemData(i)))
+        f0.addRow("步长", self.dts_box)
         self.spd_box = QComboBox()
         for name, val in (("0.5×", 1 / 480), ("1×", 1 / 240), ("2×", 1 / 120)):
             self.spd_box.addItem(name, val)
