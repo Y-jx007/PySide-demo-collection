@@ -11,6 +11,7 @@ N_SENSOR = 5
 SENSOR_ANGLES = np.deg2rad([-70, -35, 0, 35, 70])
 SENSOR_RANGE = 3.6
 AGENT_R = 0.16
+WALL_HALF = 0.08          # 画墙的线宽一半，碰撞半径要算进去
 
 
 class Maze:
@@ -71,13 +72,15 @@ class Maze:
         iy = np.clip((y * SUB).astype(np.int32), 0, self.H - 1)
         return self.occ[iy, ix]
 
-    def blocked_circle(self, x, y, r=AGENT_R):
-        """圆与墙是否相交：圆周八点采样，比四点更不容易漏掉薄墙。"""
-        d = r * 0.7071
-        hit = self.blocked(x + r, y) | self.blocked(x - r, y)
-        hit |= self.blocked(x, y + r) | self.blocked(x, y - r)
-        hit |= self.blocked(x + d, y + d) | self.blocked(x + d, y - d)
-        hit |= self.blocked(x - d, y + d) | self.blocked(x - d, y - d)
+    def blocked_circle(self, x, y, r=AGENT_R + WALL_HALF):
+        """圆与墙是否相交：在半径 r 和内圈各取 12 个点，避免从墙角斜着挤进去。"""
+        hit = self.blocked(x, y)
+        for k in range(12):
+            a = k * 0.5235988                      # 每 30°
+            ca, sa = np.cos(a), np.sin(a)
+            hit = hit | self.blocked(x + r * ca, y + r * sa)
+            ca2, sa2 = np.cos(a + 0.26), np.sin(a + 0.26)
+            hit = hit | self.blocked(x + 0.55 * r * ca2, y + 0.55 * r * sa2)
         return hit
 
     def ray(self, x, y, ang, maxr=SENSOR_RANGE, steps=24):
@@ -108,7 +111,11 @@ class Swarm:
     # ---------- 一代开始 ----------
     def reset_run(self):
         self.pos = np.tile(self.maze.start, (self.pop, 1)).astype(np.float32)
-        self.pos += self.rng.normal(0, 0.05, self.pos.shape).astype(np.float32)
+        self.pos += np.clip(self.rng.normal(0, 0.05, self.pos.shape),
+                            -0.06, 0.06).astype(np.float32)
+        # 出生点如果已经压墙（高斯尾巴），直接挪回格子中心
+        bad = self.maze.blocked_circle(self.pos[:, 0], self.pos[:, 1])
+        self.pos[bad] = self.maze.start
         self.ang = np.full(self.pop, 0.0, np.float32)
         self.alive = np.ones(self.pop, bool)
         self.reached = np.zeros(self.pop, bool)
