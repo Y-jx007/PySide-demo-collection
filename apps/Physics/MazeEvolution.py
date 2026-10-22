@@ -71,6 +71,15 @@ class Maze:
         iy = np.clip((y * SUB).astype(np.int32), 0, self.H - 1)
         return self.occ[iy, ix]
 
+    def blocked_circle(self, x, y, r=AGENT_R):
+        """圆与墙是否相交：圆周八点采样，比四点更不容易漏掉薄墙。"""
+        d = r * 0.7071
+        hit = self.blocked(x + r, y) | self.blocked(x - r, y)
+        hit |= self.blocked(x, y + r) | self.blocked(x, y - r)
+        hit |= self.blocked(x + d, y + d) | self.blocked(x + d, y - d)
+        hit |= self.blocked(x - d, y + d) | self.blocked(x - d, y - d)
+        return hit
+
     def ray(self, x, y, ang, maxr=SENSOR_RANGE, steps=24):
         """沿角度方向找最近的墙，返回归一化距离（0=贴墙，1=开阔）。"""
         n = x.shape[0]
@@ -86,7 +95,7 @@ class Maze:
 
 # ==================== 群体 ====================
 class Swarm:
-    def __init__(self, pop=64, maze=None, seed=1):
+    def __init__(self, pop=80, maze=None, seed=1):
         self.pop = pop
         self.maze = maze or Maze(seed=seed)
         self.rng = np.random.default_rng(seed)
@@ -121,12 +130,14 @@ class Swarm:
         nx = self.pos[:, 0] + np.cos(self.ang) * speed * dt
         ny = self.pos[:, 1] + np.sin(self.ang) * speed * dt
 
-        # 撞墙时沿墙滑动，而不是直接停死（否则会卡在墙角）
-        bx = m.blocked(nx, self.pos[:, 1])
-        by = m.blocked(self.pos[:, 0], ny)
-        nx = np.where(bx, self.pos[:, 0], nx)
-        ny = np.where(by, self.pos[:, 1], ny)
-        self.pos = np.stack([nx, ny], axis=1)
+        # 优先级：完整位移 > 只走 x > 只走 y > 原地
+        ox, oy = self.pos[:, 0], self.pos[:, 1]
+        ok_b = ~m.blocked_circle(nx, ny)
+        ok_x = ~m.blocked_circle(nx, oy)
+        ok_y = ~m.blocked_circle(ox, ny)
+        nx2 = np.where(ok_b, nx, np.where(ok_x, nx, ox))
+        ny2 = np.where(ok_b, ny, np.where(ok_x, oy, np.where(ok_y, ny, oy)))
+        self.pos = np.stack([nx2, ny2], axis=1)
 
         d = np.linalg.norm(self.pos - m.goal, axis=1)
         self.reached |= d < 0.55
@@ -202,22 +213,33 @@ class MazeCanvas(QWidget):
         def Y(v):
             return oy + v * scale
 
-        # 墙
-        occ = m.occ
-        step = 1
-        cellpix = max(1.0, scale / SUB * 1.2)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(58, 60, 66))
-        ys, xs = np.nonzero(occ[::step, ::step])
-        for iy, ix in zip(ys, xs):
-            p.drawRect(QRectF(ox + ix * step / SUB * scale,
-                              oy + iy * step / SUB * scale,
-                              cellpix, cellpix))
+        # 墙：用圆头粗线画，转角自然衔接
+        p.setPen(QPen(QColor(52, 54, 60), max(2.0, 0.16 * scale),
+                      Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        for j in range(m.ch):
+            for i in range(m.cw):
+                x0 = i * CELL
+                y0 = j * CELL
+                if m.walls[j, i, 0]:
+                    p.drawLine(QPointF(X(x0), Y(y0)), QPointF(X(x0 + CELL), Y(y0)))
+                if m.walls[j, i, 3]:
+                    p.drawLine(QPointF(X(x0), Y(y0)), QPointF(X(x0), Y(y0 + CELL)))
+                if i == m.cw - 1 and m.walls[j, i, 1]:
+                    p.drawLine(QPointF(X(x0 + CELL), Y(y0)), QPointF(X(x0 + CELL), Y(y0 + CELL)))
+                if j == m.ch - 1 and m.walls[j, i, 2]:
+                    p.drawLine(QPointF(X(x0), Y(y0 + CELL)), QPointF(X(x0 + CELL), Y(y0 + CELL)))
 
-        # 终点
+        # 起点与终点
+        sx, sy = m.start
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(190, 186, 178), 1.6, Qt.DashLine))
+        p.drawEllipse(QPointF(X(sx), Y(sy)), 0.30 * scale, 0.30 * scale)
         gx, gy = m.goal
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(96, 176, 120, 60))
+        p.drawEllipse(QPointF(X(gx), Y(gy)), 0.42 * scale, 0.42 * scale)
         p.setBrush(QColor(96, 176, 120))
-        p.drawEllipse(QPointF(X(gx), Y(gy)), 0.28 * scale, 0.28 * scale)
+        p.drawEllipse(QPointF(X(gx), Y(gy)), 0.26 * scale, 0.26 * scale)
 
         # 最优个体的轨迹
         if app.best_trail:
@@ -259,12 +281,12 @@ class MazeApp(QMainWindow):
         self.setGeometry(110, 70, 1120, 760)
 
         self.maze_seed = 7
-        self.swarm = Swarm(pop=64, maze=Maze(8, 6, seed=self.maze_seed))
+        self.swarm = Swarm(pop=80, maze=Maze(10, 8, seed=self.maze_seed))
         self.generation = 1
         self.running = True
         self.show_all = True
         self.episode_t = 0.0
-        self.episode_len = 30.0
+        self.episode_len = 35.0
         self.best_trail = []
         self.best_fit = 0.0
         self.reached = 0
@@ -388,7 +410,7 @@ class MazeApp(QMainWindow):
 
     def new_maze(self):
         self.maze_seed += 1
-        self.swarm = Swarm(pop=64, maze=Maze(8, 6, seed=self.maze_seed))
+        self.swarm = Swarm(pop=80, maze=Maze(10, 8, seed=self.maze_seed))
         self.generation = 1
         self.episode_t = 0.0
         self.best_trail = []
