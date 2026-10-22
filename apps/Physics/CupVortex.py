@@ -8,23 +8,23 @@ real = ti.f32
 dim = 3
 
 # ==================== 参数 ====================
-N_PARTICLES = 40000
-R_CUP = 0.26                 # 细高的杯子，深径比 ≈ 3，涡旋才立得住
-H_CUP = 1.15
-FILL = 0.70                  # 初始水柱高度 = FILL * H_CUP
-DX = 0.017                   # 初始粒子间距
-H = 0.034                    # 光滑核半径
+N_PARTICLES = 90000
+R_CUP = 0.30                 # 细高的杯子，深径比 ≈ 3，涡旋才立得住
+H_CUP = 1.20
+FILL = 0.86                  # 初始水柱高度 = FILL * H_CUP
+DX = 0.016                   # 初始粒子间距
+H = 0.032                    # 光滑核半径
 REP = 0.55                   # 排斥力
 VISC = 0.22                  # 粘性（原来 0.9 太黏，水全糊在壁上）
 KP = 5.0                     # 超压刚度
 DT = 1e-3
 GRAVITY = -2.2
-CELL = 1.0 / 28.0            # 邻居网格边长
-GXZ = 28                     # x/z 方向的网格数（覆盖 [-0.5, 0.5]）
-GY = int(1.2 / CELL) + 2     # y 方向足够高
+CELL = 1.0 / 33.0            # 邻居网格边长
+GXZ = 33                     # x/z 方向的网格数（覆盖 [-0.5, 0.5]）
+GY = int(1.25 / CELL) + 2     # y 方向足够高
 MAX_PER_CELL = 32
 RHO0 = 9.0                   # 启动时自动标定
-RW, RH = 620, 560            # 渲染缓冲尺寸
+RW, RH = 640, 620            # 渲染缓冲尺寸
 
 
 class CupFluid:
@@ -42,6 +42,12 @@ class CupFluid:
         self.cell_cnt = ti.field(ti.i32, GXZ * GXZ * GY)
         self.cell_idx = ti.field(ti.i32, (GXZ * GXZ * GY, MAX_PER_CELL))
         self.img = ti.Vector.field(3, real, (RH, RW))
+        self.dens_img = ti.field(real, (RH, RW))
+        self.blur_tmp = ti.field(real, (RH, RW))
+        self.col_img = ti.Vector.field(3, real, (RH, RW))
+        self.blur_col_tmp = ti.Vector.field(3, real, (RH, RW))
+        self.dens_blur = ti.field(real, (RH, RW))
+        self.blur_col = ti.Vector.field(3, real, (RH, RW))
 
         self.cup_c = ti.Vector.field(dim, real, shape=())
         self.cup_v = ti.Vector.field(dim, real, shape=())
@@ -86,6 +92,12 @@ class CupFluid:
         cnt, idx = self.cell_cnt, self.cell_idx
         cup_c, cup_v, cup_w = self.cup_c, self.cup_v, self.cup_w
         img = self.img
+        dens_img = self.dens_img
+        blur_tmp = self.blur_tmp
+        col_img = self.col_img
+        blur_col_tmp = self.blur_col_tmp
+        dens_blur = self.dens_blur
+        blur_col = self.blur_col
 
         @ti.kernel
         def clear_cells():
@@ -132,7 +144,9 @@ class CupFluid:
                 gz = ti.min(ti.max(ti.cast((pos[i][2] + 0.5) / CELL, ti.i32), 0), GXZ - 1)
                 gy = ti.min(ti.max(ti.cast(pos[i][1] / CELL, ti.i32), 0), GY - 1)
                 f = ti.Vector([0.0, 0.0, 0.0])
-                over = dens[i] - RHO0
+                # 类 Tait 方程：p = K((rho/rho0)^2 - 1)，压缩时二次增长，水才不可压
+                ratio = dens[i] / RHO0
+                over = ratio * ratio - 1.0
                 if over < 0.0:
                     over = 0.0
                 stiff = REP + KP * over
@@ -184,15 +198,16 @@ class CupFluid:
                     vel[i][1] = ti.min(vel[i][1], 0.0)
                 pos[i] = p
 
-        # ---------- splat 全部在 kernel 里做 ----------
+        # ---------- 屏幕空间流体渲染 ----------
         @ti.kernel
-        def render(m00: real, m01: real, m02: real,
-                   m10: real, m11: real, m12: real,
-                   m20: real, m21: real, m22: real,
-                   scale: real, cx: real, cy: real,
-                   cx3: real, cy3: real, cz3: real):
+        def splat(m00: real, m01: real, m02: real,
+                  m10: real, m11: real, m12: real,
+                  m20: real, m21: real, m22: real,
+                  scale: real, cx: real, cy: real,
+                  cx3: real, cy3: real, cz3: real):
             for i, j in img:
-                img[i, j] = ti.Vector([8.0, 12.0, 24.0])
+                dens_img[i, j] = 0.0
+                col_img[i, j] = ti.Vector([0.0, 0.0, 0.0])
             for p in range(n):
                 v = pos[p] - ti.Vector([cx3, cy3, cz3])
                 X = m00 * v[0] + m01 * v[1] + m02 * v[2]
@@ -201,27 +216,78 @@ class CupFluid:
                 sx = cx + X * scale
                 sy = cy - Y * scale
                 spd = vel[p].norm()
-                t = ti.min(spd / 1.4, 1.0)
+                t = ti.min(spd / 1.5, 1.0)
                 depth = ti.min(ti.max(Z * 2.0 + 0.5, 0.0), 1.0)
-                a = 0.40 + 0.55 * (1.0 - depth)
-                col = ti.Vector([24.0 + 150.0 * t,
-                                 84.0 + 165.0 * t,
-                                 188.0 + 67.0 * t]) * a
+                w = 0.55 + 0.45 * (1.0 - depth)
+                col = ti.Vector([30.0 + 130.0 * t,
+                                 90.0 + 150.0 * t,
+                                 190.0 + 65.0 * t])
                 ix = ti.cast(sx, ti.i32)
                 iy = ti.cast(sy, ti.i32)
-                # 2x2 溅射：单像素太稀，看着像雾
                 for ox, oy in ti.static(ti.ndrange(2, 2)):
                     px = ix + ox
                     py = iy + oy
                     if 0 <= px < RW and 0 <= py < RH:
-                        ti.atomic_add(img[py, px], col * 0.55)
+                        ti.atomic_add(dens_img[py, px], w)
+                        ti.atomic_add(col_img[py, px], col * w)
+
+        @ti.kernel
+        def blur_h(rad: ti.i32):
+            for i, j in dens_img:
+                s_ = 0.0
+                c_ = ti.Vector([0.0, 0.0, 0.0])
+                cnt = 0.0
+                for k in range(-rad, rad + 1):
+                    x = ti.min(ti.max(j + k, 0), RW - 1)
+                    wt = 1.0 - ti.abs(ti.cast(k, real)) / (rad + 1.0)
+                    s_ += dens_img[i, x] * wt
+                    c_ += col_img[i, x] * wt
+                    cnt += wt
+                blur_tmp[i, j] = s_ / cnt
+                blur_col_tmp[i, j] = c_ / cnt
+
+        @ti.kernel
+        def blur_v(rad: ti.i32):
+            for i, j in dens_img:
+                s_ = 0.0
+                c_ = ti.Vector([0.0, 0.0, 0.0])
+                cnt = 0.0
+                for k in range(-rad, rad + 1):
+                    y = ti.min(ti.max(i + k, 0), RH - 1)
+                    wt = 1.0 - ti.abs(ti.cast(k, real)) / (rad + 1.0)
+                    s_ += blur_tmp[y, j] * wt
+                    c_ += blur_col_tmp[y, j] * wt
+                    cnt += wt
+                blur_col[i, j] = c_ / cnt
+                dens_blur[i, j] = s_ / cnt
+
+        @ti.kernel
+        def shade(gain: real):
+            for i, j in img:
+                d = ti.min(dens_blur[i, j] * gain, 2.0)
+                # 薄处透亮、厚处深沉，看起来像有体积的液体
+                alpha = ti.min(d * 1.15, 1.0)
+                thin = ti.Vector([150.0, 225.0, 255.0])
+                thick = ti.Vector([18.0, 62.0, 150.0])
+                k = ti.min(d, 1.0)
+                body = thin * (1.0 - k) + thick * k
+                # 上下一点点明暗变化，避免整块死板
+                vert = 0.85 + 0.35 * (1.0 - ti.cast(i, real) / RH)
+                # 速度着色：流得快的地方偏青白
+                spd_c = col_img[i, j] / ti.max(dens_blur[i, j] * 3.0, 1e-4)
+                col = body * vert + spd_c * 0.25 * alpha
+                bg = ti.Vector([8.0, 12.0, 24.0])
+                img[i, j] = bg * (1.0 - alpha) + col * alpha
 
         self._clear_cells = clear_cells
         self._bin = bin_particles
         self._density = compute_density
         self._forces = compute_forces
         self._integrate = integrate
-        self._render = render
+        self._splat = splat
+        self._blur_h = blur_h
+        self._blur_v = blur_v
+        self._shade = shade
 
     def step(self, sub=6):
         for _ in range(sub):
@@ -232,10 +298,13 @@ class CupFluid:
             self._integrate()
 
     def draw(self, m, scale, cx, cy, center):
-        self._render(m[0][0], m[0][1], m[0][2],
-                     m[1][0], m[1][1], m[1][2],
-                     m[2][0], m[2][1], m[2][2],
-                     scale, cx, cy, center[0], center[1], center[2])
+        self._splat(m[0][0], m[0][1], m[0][2],
+                    m[1][0], m[1][1], m[1][2],
+                    m[2][0], m[2][1], m[2][2],
+                    scale, cx, cy, center[0], center[1], center[2])
+        self._blur_h(7)
+        self._blur_v(7)
+        self._shade(0.55)
         return np.clip(self.img.to_numpy(), 0, 255).astype(np.uint8)
 
     def speeds(self):
