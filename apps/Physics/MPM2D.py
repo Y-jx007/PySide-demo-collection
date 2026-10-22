@@ -23,8 +23,9 @@ MATERIAL_STATIONARY = 4
 
 SUPPORT_PLASTICITY = True
 WATER_DENSITY = 1.0
-RENDER_RES = 512
+RENDER_RES = 768
 MAX_PARTICLES = 600000
+MAX_SUBSTEPS = 40             # 单帧子步上限，避免局部爆炸时卡死
 
 
 @ti.data_oriented
@@ -268,22 +269,25 @@ class MPM2D:
         self._blur = blur
 
     @ti.kernel
-    def _seed(self, start: ti.i32, count: ti.i32, new_material: ti.i32,
-              lower: ti.template(), upper: ti.template(), vel: ti.template()):
+    def _seed_batch(self, count: ti.i32, new_material: ti.i32,
+                    lx: real, ly: real, ux: real, uy: real,
+                    vx: real, vy: real):
+        # 一次 atomic 拿一整段下标，Python 侧不回读，避免每倒一次就同步一次
+        base = ti.atomic_add(self.n_particles[None], count)
         for k in range(count):
-            p = start + k
-            rx = ti.random()
-            ry = ti.random()
-            self.x[p] = ti.Vector([lower[0] + rx * (upper[0] - lower[0]),
-                                   lower[1] + ry * (upper[1] - lower[1])])
-            self.v[p] = ti.Vector([vel[0], vel[1]])
-            self.F[p] = ti.Matrix([[1.0, 0.0], [0.0, 1.0]])
-            self.C[p] = ti.Matrix([[0.0, 0.0], [0.0, 0.0]])
-            self.material[p] = new_material
-            if new_material == MATERIAL_SAND:
-                self.Jp[p] = 0.0
-            else:
-                self.Jp[p] = 1.0
+            p = base + k
+            if p < self.max_particles:
+                rx = ti.random()
+                ry = ti.random()
+                self.x[p] = ti.Vector([lx + rx * (ux - lx), ly + ry * (uy - ly)])
+                self.v[p] = ti.Vector([vx, vy])
+                self.F[p] = ti.Matrix([[1.0, 0.0], [0.0, 1.0]])
+                self.C[p] = ti.Matrix([[0.0, 0.0], [0.0, 0.0]])
+                self.material[p] = new_material
+                if new_material == MATERIAL_SAND:
+                    self.Jp[p] = 0.0
+                else:
+                    self.Jp[p] = 1.0
 
     def add_cube(self, lower, size, material, velocity=(0.0, 0.0),
                  sample_density=None):
@@ -291,21 +295,17 @@ class MPM2D:
             sample_density = self.density
         vol = size[0] * size[1]
         num_new = int(sample_density * vol / self.dx ** dim + 1)
-        start = int(self.n_particles[None])
-        if start + num_new > self.max_particles:
-            return 0
-        lower_v = ti.Vector([float(lower[0]), float(lower[1])])
-        upper_v = ti.Vector([float(lower[0] + size[0]), float(lower[1] + size[1])])
-        vel_v = ti.Vector([float(velocity[0]), float(velocity[1])])
-        self._seed(start, num_new, int(material), lower_v, upper_v, vel_v)
-        self.n_particles[None] = start + num_new
+        self._seed_batch(num_new, int(material),
+                         float(lower[0]), float(lower[1]),
+                         float(lower[0] + size[0]), float(lower[1] + size[1]),
+                         float(velocity[0]), float(velocity[1]))
         return num_new
 
     def step(self, frame_dt):
         vmax = float(self._max_velocity())
         cfl_dt = self.allowed_cfl * self.dx / (vmax + 1e-6)
         dt = min(self.default_dt * self.dt_scale, cfl_dt)
-        substeps = max(1, int(frame_dt / dt) + 1)
+        substeps = max(1, min(MAX_SUBSTEPS, int(frame_dt / dt) + 1))
         dt = frame_dt / substeps
         for _ in range(substeps):
             self._clear_grid()
@@ -314,7 +314,14 @@ class MPM2D:
             self._g2p(dt)
         return substeps
 
-    def draw(self, radius=2):
+    def particle_radius(self):
+        """点半径按粒子间距自适应，避免大块圆点。"""
+        spacing_px = (self.dx / max(1.0, (self.density ** 0.5))) * RENDER_RES
+        return max(1, int(round(spacing_px * 0.35)))
+
+    def draw(self, radius=None):
+        if radius is None:
+            radius = self.particle_radius()
         self._render(radius)
         self._blur()
         return np.clip(self.img.to_numpy(), 0, 255).astype(np.uint8)
@@ -416,24 +423,24 @@ class MPMApp(QMainWindow):
                           material=MATERIAL_SNOW)
         self.sim.add_cube(lower=(0.30, 0.22), size=(0.40, 0.20),
                           material=MATERIAL_WATER)
-        self.frame = self.sim.draw(2)
+        self.frame = self.sim.draw()
 
     def pour(self, x, y):
         now = time.perf_counter()
-        if now - self._last_pour < 0.06:
+        if now - self._last_pour < 0.10:
             return
         self._last_pour = now
         if not (0.05 < x < 0.95 and 0.05 < y < 0.95):
             return
-        r = max(0.01, self.brush / 100.0 * 0.06)
+        r = max(0.008, self.brush / 100.0 * 0.045)
         self.sim.add_cube(lower=(x - r, y - r), size=(2 * r, 2 * r),
                           material=MATERIAL_IDS[self.material],
-                          velocity=(0.0, -0.5))
+                          velocity=(0.0, 0.0))
 
     def tick(self):
         if not self.paused:
             self.substeps = self.sim.step(self.frame_dt)
-            self.frame = self.sim.draw(2)
+            self.frame = self.sim.draw()
             self.canvas.update()
             now = time.perf_counter()
             dt = now - self._last_t
