@@ -14,7 +14,9 @@ DT = 3e-4
 SUBSTEPS = 20
 GRAVITY = -9.81
 
-R_CUP = 0.30
+R_CUP = 0.30              # 画出来的杯子内壁半径
+R_LIM = R_CUP - 0.010     # 粒子中心能到达的半径（壁厚）
+Y_FLOOR = 0.004           # 杯底（画在 y=0，粒子中心留在 0.004 之上）
 H_CUP = 1.00
 FILL = 0.72
 
@@ -22,7 +24,7 @@ SPACING = DX * 0.80        # 实际粒子间距
 P_VOL = SPACING ** 3      # 每个粒子代表的体积（必须和间距一致，否则水位不对）
 P_RHO = 1000.0
 P_MASS = P_VOL * P_RHO
-E_FLUID = 1.0e7           # 体积模量：实测 1e7 时水面稳定在 0.67（灌装 0.72）
+E_FLUID = 3.0e7           # 体积模量：实测 1e7 时水面稳定在 0.67（灌装 0.72）
 VISC_DAMP = 0.9995
 
 RW, RH = 640, 620
@@ -72,7 +74,7 @@ class CupFluid:
     # ---------- 初始水体 ----------
     def _make_points(self):
         pts = []
-        r_max = R_CUP - 0.02
+        r_max = R_LIM - 0.5 * SPACING
         y = 0.03
         spacing = SPACING
         while y < 0.03 + FILL * H_CUP:
@@ -137,16 +139,16 @@ class CupFluid:
                     vout = gv[i, j, k] / gm[i, j, k]
                     vout[1] += DT * GRAVITY
                     vout *= VISC_DAMP
-                    if j <= 1 and vout[1] < 0.0:
+                    if (ti.cast(j, real) + 0.5) * DX < Y_FLOOR + DX and vout[1] < 0.0:
                         vout = ti.Vector([0.0, 0.0, 0.0])
                     px = (ti.cast(i, real) + 0.5) * DX - c[0]
                     pz = (ti.cast(k, real) + 0.5) * DX - c[2]
                     rr = ti.sqrt(px * px + pz * pz) + 1e-8
-                    if rr > R_CUP - DX:
+                    if rr > R_LIM - DX:
                         nx = px / rr
                         nz = pz / rr
-                        vx = cv[0] + (-nz) * w_ * R_CUP
-                        vz = cv[2] + (nx) * w_ * R_CUP
+                        vx = cv[0] + (-nz) * w_ * R_LIM
+                        vz = cv[2] + (nx) * w_ * R_LIM
                         vn = vout[0] * nx + vout[2] * nz
                         if vn > 0.0:
                             vout[0] -= vn * nx
@@ -156,6 +158,39 @@ class CupFluid:
                     if (ti.cast(j, real) + 0.5) * DX > H_CUP and vout[1] > 0.0:
                         vout[1] = 0.0
                     gv[i, j, k] = vout
+
+        @ti.kernel
+        def clamp_particles():
+            c = cup_c[None]
+            cv = cup_v[None]
+            for p in range(n):
+                px = x[p]
+                # 杯底 / 杯口
+                if px[1] < Y_FLOOR:
+                    px[1] = Y_FLOOR
+                    if v[p][1] < 0.0:
+                        v[p][1] = 0.0
+                if px[1] > H_CUP:
+                    px[1] = H_CUP
+                    if v[p][1] > 0.0:
+                        v[p][1] = 0.0
+                # 圆柱侧壁：位置拉回 + 只保留切向速度
+                dx_ = px[0] - c[0]
+                dz_ = px[2] - c[2]
+                rr = ti.sqrt(dx_ * dx_ + dz_ * dz_)
+                if rr > R_LIM:
+                    nx = dx_ / (rr + 1e-8)
+                    nz = dz_ / (rr + 1e-8)
+                    px[0] = c[0] + nx * R_LIM
+                    px[2] = c[2] + nz * R_LIM
+                    vn = v[p][0] * nx + v[p][2] * nz
+                    if vn > 0.0:
+                        v[p][0] -= vn * nx
+                        v[p][2] -= vn * nz
+                # 兜底：留在网格内
+                px[0] = ti.min(ti.max(px[0], 2.0 * DX), 1.0 - 2.0 * DX)
+                px[2] = ti.min(ti.max(px[2], 2.0 * DX), 1.0 - 2.0 * DX)
+                x[p] = px
 
         @ti.kernel
         def g2p():
@@ -258,6 +293,7 @@ class CupFluid:
         self._p2g = p2g
         self._grid = grid_update
         self._g2p = g2p
+        self._clamp = clamp_particles
         self._splat = splat
         self._blur_h = blur_h
         self._blur_v = blur_v
@@ -269,6 +305,7 @@ class CupFluid:
             self._p2g()
             self._grid()
             self._g2p()
+            self._clamp()
 
     def draw(self, m, scale, cx, cy, center):
         self._splat(m[0][0], m[0][1], m[0][2],
@@ -341,10 +378,10 @@ class CupCanvas(QWidget):
         p.drawImage(QRectF(ox, oy, wr * k, hr * k), qimg)
 
         p.setBrush(Qt.NoBrush)
-        for yy, alpha in ((0.0, 120), (H_CUP, 70)):
+        for yy, alpha in ((Y_FLOOR, 120), (H_CUP, 70)):
             a = np.linspace(0, 2 * np.pi, 72)
-            ring = np.stack([c[0] + R_CUP * np.cos(a), np.full(72, yy),
-                             c[2] + R_CUP * np.sin(a)], axis=1).astype(np.float32)
+            ring = np.stack([c[0] + R_LIM * np.cos(a), np.full(72, yy),
+                             c[2] + R_LIM * np.sin(a)], axis=1).astype(np.float32)
             rx, ry = self.project_points(ring)
             rx = ox + rx * k
             ry = oy + ry * k
@@ -352,8 +389,8 @@ class CupCanvas(QWidget):
             p.drawPolyline(QPolygonF([QPointF(float(u), float(v_)) for u, v_ in zip(rx, ry)]))
         for kk in range(6):
             a = kk * np.pi / 3
-            seg = np.array([[c[0] + R_CUP * np.cos(a), 0.0, c[2] + R_CUP * np.sin(a)],
-                            [c[0] + R_CUP * np.cos(a), H_CUP, c[2] + R_CUP * np.sin(a)]],
+            seg = np.array([[c[0] + R_LIM * np.cos(a), Y_FLOOR, c[2] + R_LIM * np.sin(a)],
+                            [c[0] + R_LIM * np.cos(a), H_CUP, c[2] + R_LIM * np.sin(a)]],
                            np.float32)
             rx, ry = self.project_points(seg)
             rx = ox + rx * k
