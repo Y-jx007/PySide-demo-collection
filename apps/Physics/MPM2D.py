@@ -9,7 +9,7 @@ dim = 2
 # ==================== 参数（本构照 taichi_elements engine/mpm_solver.py） ====================
 RES_DEFAULT = 128
 RES_OPTIONS = (128, 192, 256, 384)
-DENSITY_OPTIONS = (4, 8, 16, 24)
+DENSITY_OPTIONS = (4, 8, 16, 24, 36, 48)
 RES_MAX = max(RES_OPTIONS)
 PADDING = 3
 GRAVITY_Y = -9.8
@@ -267,18 +267,19 @@ class MPM2D:
                                 self.img[jj, ii] = col
 
         @ti.kernel
-        def dilate():
-            # 3x3 取最大：把 1 像素的点撑开填缝，颜色保持不变
-            # （3x3 平均会把孤立点压成 4/9 亮度，画面发暗）
+        def dilate(level: ti.i32):
+            # 按需要填缝：level 0 = 不处理，1 = 十字 5 抽样，2 = 3x3
+            # 取最大值不会改变颜色（3x3 平均会把孤立点压成 4/9 亮度）
             rres = RENDER_RES
             for i, j in self.img:
                 c = self.img[i, j]
                 for di, dj in ti.static(ti.ndrange(-1, 2)):
-                    ii = ti.min(ti.max(i + di, 0), rres - 1)
-                    jj = ti.min(ti.max(j + dj, 0), rres - 1)
-                    o = self.img[ii, jj]
-                    c = ti.Vector([ti.max(c[0], o[0]), ti.max(c[1], o[1]),
-                                   ti.max(c[2], o[2])], ti.u8)
+                    if level == 2 or di == 0 or dj == 0:
+                        ii = ti.min(ti.max(i + di, 0), rres - 1)
+                        jj = ti.min(ti.max(j + dj, 0), rres - 1)
+                        o = self.img[ii, jj]
+                        c = ti.Vector([ti.max(c[0], o[0]), ti.max(c[1], o[1]),
+                                       ti.max(c[2], o[2])], ti.u8)
                 self.blur_tmp[i, j] = c
             for i, j in self.img:
                 self.img[i, j] = self.blur_tmp[i, j]
@@ -344,13 +345,15 @@ class MPM2D:
     def particle_radius(self, grain=1.0):
         """点半径按粒子间距自适应；grain 是颗粒度倍率。"""
         spacing_px = (self.dx / max(1.0, (self.density ** 0.5))) * RENDER_RES
-        return max(1, int(round(spacing_px * 0.35 * grain)))
+        return max(0, int(round(spacing_px * 0.55 * grain)))
 
     def draw(self, radius=None, grain=1.0):
         if radius is None:
             radius = self.particle_radius(grain)
         self._render(radius)
-        self._blur()
+        # 点足够大时不填缝；点很小时用十字，中等用 3x3
+        if radius < 2:
+            self._blur(1)
         return self.img.to_numpy()
 
     def particle_info(self):
@@ -528,7 +531,7 @@ class MPMApp(QMainWindow):
         f0.addRow("采样", self.den_box)
         self.grain = 1.0
         self.grain_slider = QSlider(Qt.Horizontal)
-        self.grain_slider.setRange(5, 400)
+        self.grain_slider.setRange(1, 800)
         self.grain_slider.setValue(100)
         self.grain_slider.valueChanged.connect(self.on_grain)
         f0.addRow("颗粒度", self.grain_slider)
