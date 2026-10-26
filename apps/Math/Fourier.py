@@ -1,4 +1,5 @@
-from custom_import import *
+from common.qt_base import (QApplication, QBrush, QButtonGroup, QCheckBox, QColor, QComboBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout, QImage, QLabel, QLineEdit, QMainWindow, QMessageBox, QMouseEvent, QPainter, QPen, QPixmap, QPoint, QPushButton, QRect, QSlider, QSplitter, QTabWidget, QVBoxLayout, QWidget, Qt, math, sys)
+from common.numpy_base import (Image, ImageDraw, np)
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 

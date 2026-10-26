@@ -1,4 +1,5 @@
-from custom_import import *
+from common.qt_base import (ColorButton, QApplication, QColor, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPainter, QPen, QPixmap, QPushButton, QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget, Signal, math, sys, time)
+from common.numpy_base import (np)
 from array import array
 from PySide6.QtCore import QLineF
 

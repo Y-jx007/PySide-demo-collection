@@ -1,6 +1,9 @@
-from custom_import import *
+from common.qt_base import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QImage, QLabel, QMainWindow, QMessageBox, QOpenGLWidget, QPushButton, QSlider, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, sys)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
+from common.opengl_base import (GL_COLOR_BUFFER_BIT, GL_LINEAR, GL_MODELVIEW, GL_PROJECTION, GL_QUADS, GL_RGB, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_UNSIGNED_BYTE, glBegin, glBindTexture, glClear, glClearColor, glColor4f, glEnable, glEnd, glGenTextures, glLoadIdentity, glMatrixMode, glOrtho, glTexCoord2f, glTexImage2D, glTexParameteri, glTexSubImage2D, glVertex2f, glViewport)
 
-ti.init(arch=ti.gpu, default_fp=ti.f32)
+ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
 
 def setup_gl_format():
     fmt = QSurfaceFormat()

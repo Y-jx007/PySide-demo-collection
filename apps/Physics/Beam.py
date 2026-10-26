@@ -1,4 +1,6 @@
-from custom_import import *
+from common.qt_base import (QApplication, QColor, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QPainter, QPen, QPointF, QPolygonF, QPushButton, QRectF, QSlider, QTimer, QVBoxLayout, QWidget, Qt, math, sys)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QPolygonF
 
@@ -255,7 +257,7 @@ class ImplicitBeam:
     # ---------- Taichi：单元应力与失效 ----------
     def _init_taichi(self):
         ti.reset()
-        ti.init(arch=ti.cpu, default_fp=ti.f32)
+        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=True)
         self.t_dis = ti.field(ti.f32, 2 * self.n_nodes)
         self.t_stress = ti.field(ti.f32, self.n_elem)
         self.t_broken = ti.field(ti.i32, self.n_elem)

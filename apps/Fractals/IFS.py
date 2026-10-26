@@ -1,4 +1,6 @@
-from custom_import import *
+from common.qt_base import (ColorButton, QApplication, QColor, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QMessageBox, QPainter, QPixmap, QPushButton, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget, Qt, Signal, sys, time)
+from common.numpy_base import (np)
+from common.numba_base import (jit)
 
 # 经典 IFS 分形数据
 IFS_FRACTALS = {

@@ -1,4 +1,6 @@
-from custom_import import *
+from common.qt_base import (QApplication, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPen, QPushButton, QRectF, QSlider, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
 from PySide6.QtCore import QPointF, QRectF
 
 import numpy as np
@@ -35,7 +37,7 @@ class MPM2D:
     def __init__(self, res=RES_DEFAULT, density=16, max_particles=MAX_PARTICLES,
                  arch=None):
         ti.reset()
-        ti.init(arch=arch if arch is not None else ti.gpu, default_fp=real)
+        ti.init(arch=arch if arch is not None else ti.gpu, default_fp=real, offline_cache=True)
 
         self.max_particles = max_particles
         self.padding = PADDING

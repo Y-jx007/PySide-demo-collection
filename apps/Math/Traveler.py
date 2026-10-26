@@ -23,7 +23,7 @@ except ImportError:
 
 # ------------------- 距离计算 (优化版本) -------------------
 
-@jit(nopython=True, parallel=True)
+@jit(nopython=True, parallel=True, cache=True)
 def calculate_distance_matrix_parallel(cities):
     num_cities = len(cities)
     matrix = np.zeros((num_cities, num_cities))
@@ -36,7 +36,7 @@ def calculate_distance_matrix_parallel(cities):
             matrix[j, i] = dist
     return matrix
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def calculate_distance_fast(distance_matrix, individual):
     total = 0.0
     num_cities = len(individual)
@@ -46,7 +46,7 @@ def calculate_distance_fast(distance_matrix, individual):
         total += distance_matrix[start_idx, end_idx]
     return total
 
-@jit(nopython=True, parallel=True)
+@jit(nopython=True, parallel=True, cache=True)
 def calculate_fitness_parallel(distance_matrix, population):
     num_individuals = len(population)
     fitnesses = np.zeros(num_individuals)
@@ -63,7 +63,7 @@ def calculate_fitness_parallel(distance_matrix, population):
 
 # ------------------- 增量2-opt优化 -------------------
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def incremental_two_opt_numba(distance_matrix, individual, max_iterations=1000):
     n = len(individual)
     improved = True
@@ -107,7 +107,7 @@ def incremental_two_opt_numba(distance_matrix, individual, max_iterations=1000):
     
     return individual, current_distance
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def fast_two_opt_numba(distance_matrix, individual, max_iterations=50):
     """更快的2-opt实现，限制迭代次数"""
     n = len(individual)
@@ -149,7 +149,7 @@ def fast_two_opt_numba(distance_matrix, individual, max_iterations=50):
 
 # ------------------- 遗传算法操作 (优化版本) -------------------
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def tournament_selection_numba(fitnesses, tournament_size, num_selections):
     population_size = len(fitnesses)
     selected_indices = np.zeros(num_selections, dtype=np.int32)
@@ -164,7 +164,7 @@ def tournament_selection_numba(fitnesses, tournament_size, num_selections):
     
     return selected_indices
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def ordered_crossover_numba(parent1, parent2):
     size = len(parent1)
     child = np.full(size, -1, dtype=np.int32)
@@ -183,19 +183,19 @@ def ordered_crossover_numba(parent1, parent2):
     
     return child
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def mutate_swap_numba(individual):
     i, j = np.random.choice(len(individual), 2, replace=False)
     individual[i], individual[j] = individual[j], individual[i]
     return individual
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def mutate_inversion_numba(individual):
     i, j = np.sort(np.random.choice(len(individual), 2, replace=False))
     individual[i:j+1] = individual[i:j+1][::-1]
     return individual
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def mutate_scramble_numba(individual):
     i, j = np.sort(np.random.choice(len(individual), 2, replace=False))
     segment = individual[i:j+1].copy()
@@ -463,7 +463,6 @@ class TSPWorker(QThread):
                 )
             if done:
                 break
-            self.msleep(10)
         # 最终更新一次
         self.update_signal.emit(
             self.cities,

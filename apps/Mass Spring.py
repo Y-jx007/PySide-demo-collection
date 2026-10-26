@@ -1,7 +1,7 @@
 import taichi_forge as ti
 
 # arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
-ti.init(arch=ti.gpu, default_fp=ti.f32)
+ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
 
 spring_Y = ti.field(dtype=ti.f32, shape=())  # Young's modulus
 paused = ti.field(dtype=ti.i32, shape=())

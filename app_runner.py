@@ -19,7 +19,7 @@ APPS = ROOT / "apps"
 
 def _configure_paths() -> None:
     os.chdir(ROOT)
-    candidates = [APPS]
+    candidates = [ROOT, APPS]
     if APPS.is_dir():
         candidates.extend(sorted(p for p in APPS.iterdir() if p.is_dir() and p.name != "__pycache__"))
     for path in candidates:

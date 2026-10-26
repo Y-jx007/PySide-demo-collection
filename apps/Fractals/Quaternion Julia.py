@@ -1,14 +1,56 @@
-from custom_import import *
+import sys
+
+import numpy as np
+import taichi_forge as ti
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QSurfaceFormat, QVector3D
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QPushButton, QComboBox, QSpinBox, QSlider, QLineEdit, QGroupBox,
+    QSplitter, QSizePolicy,
+)
+from OpenGL.GL import *
+
+from common.utils import OrbitCamera
 
 # ==================== Taichi 初始化 ====================
-ti.init(arch=ti.gpu)
+# 默认离线缓存目录 C:/taichi_cache 可能不可写，导致每次启动都重新 JIT
+# 编译几十秒。这里显式指到用户可写目录，首帧之后再次启动可直接命中缓存。
+import os
+import tempfile
+
+_ti_candidates = []
+if os.environ.get("QJ_TAICHI_CACHE"):
+    _ti_candidates.append(os.environ["QJ_TAICHI_CACHE"])
+_base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+_ti_candidates.append(os.path.join(_base, "PySideDrawingTool", "taichi_cache"))
+_ti_candidates.append(os.path.join(tempfile.gettempdir(), "PySideDrawingTool_taichi_cache"))
+
+_ti_cache = None
+for _candidate in _ti_candidates:
+    try:
+        os.makedirs(_candidate, exist_ok=True)
+        _probe = os.path.join(_candidate, ".write_test")
+        with open(_probe, "w") as _f:
+            _f.write("1")
+        os.remove(_probe)
+        _ti_cache = _candidate
+        break
+    except OSError:
+        continue
+if _ti_cache is None:
+    _ti_cache = tempfile.mkdtemp(prefix="PySideDrawingTool_taichi_")
+
+ti.init(arch=ti.gpu, offline_cache_file_path=_ti_cache)
 
 W, H = 640, 640
 FOCAL_LENGTH = 3.0
 BOUNDING_RADIUS = 3.5               # 扩大包围球
 DEFAULT_MAX_ITER = 250
 DEFAULT_SURFACE_PRECISION = 0.00025
-DEFAULT_SAMPLES = 2
+DEFAULT_SAMPLES = 1
+DEFAULT_ACCUM = 48                  # 累积帧数：到上限后停止重绘
 RAY_TMAX = 7.0
 DEFAULT_POWER = 2
 
@@ -40,6 +82,67 @@ def qlen2(q): return q.dot(q)
 def smoothstep(e0, e1, x):
     t = ti.max(0.0, ti.min(1.0, (x - e0) / (e1 - e0)))
     return t * t * (3.0 - 2.0 * t)
+
+
+# ---------- 廉价 3D 值噪声 / fbm：给岩壳、火山灰和熔岩裂纹加细节 ----------
+@ti.func
+def hash3(ix, iy, iz):
+    h = (ix * 374761393 + iy * 668265263 + iz * 1274126177) & 0x7fffffff
+    h = ((h ^ (h >> 13)) * 1274126177) & 0x7fffffff
+    h = (h ^ (h >> 16)) & 0x00ffffff
+    return ti.cast(h, ti.f32) * (1.0 / 16777216.0)
+
+
+@ti.func
+def vnoise(p):
+    ip = ti.cast(ti.floor(p), ti.i32)
+    f = p - ti.cast(ip, ti.f32)
+    u = f * f * (3.0 - 2.0 * f)
+    n000 = hash3(ip.x, ip.y, ip.z)
+    n100 = hash3(ip.x + 1, ip.y, ip.z)
+    n010 = hash3(ip.x, ip.y + 1, ip.z)
+    n110 = hash3(ip.x + 1, ip.y + 1, ip.z)
+    n001 = hash3(ip.x, ip.y, ip.z + 1)
+    n101 = hash3(ip.x + 1, ip.y, ip.z + 1)
+    n011 = hash3(ip.x, ip.y + 1, ip.z + 1)
+    n111 = hash3(ip.x + 1, ip.y + 1, ip.z + 1)
+    nx00 = n000 * (1.0 - u.x) + n100 * u.x
+    nx10 = n010 * (1.0 - u.x) + n110 * u.x
+    nx01 = n001 * (1.0 - u.x) + n101 * u.x
+    nx11 = n011 * (1.0 - u.x) + n111 * u.x
+    nxy0 = nx00 * (1.0 - u.y) + nx10 * u.y
+    nxy1 = nx01 * (1.0 - u.y) + nx11 * u.y
+    return nxy0 * (1.0 - u.z) + nxy1 * u.z
+
+
+@ti.func
+def fbm(p):
+    return (vnoise(p) * 0.55
+            + vnoise(p * 2.03 + ti.Vector([13.1, 7.7, 3.3])) * 0.30
+            + vnoise(p * 4.07 + ti.Vector([41.7, 19.3, 5.9])) * 0.15)
+
+
+@ti.func
+def fbm2(p):
+    """两倍频版本，给 bump 用：少 1/3 的噪声开销，视觉差别很小。"""
+    return (vnoise(p) * 0.68
+            + vnoise(p * 2.03 + ti.Vector([13.1, 7.7, 3.3])) * 0.32)
+
+
+@ti.func
+def bump_normal(pos, nor, scale, strength):
+    """用 fbm 的有限差分扰动法线，让岩壳不再像塑料。"""
+    base = fbm2(pos * scale)
+    tang = ti.Vector([0.0, 0.0, 1.0]).cross(nor)
+    if tang.norm() < 1e-3:
+        tang = ti.Vector([1.0, 0.0, 0.0]).cross(nor)
+    tang = tang.normalized()
+    bitang = nor.cross(tang).normalized()
+    e = 0.035
+    nx = fbm2((pos + tang * e) * scale) - base
+    ny = fbm2((pos + bitang * e) * scale) - base
+    return (nor + (tang * nx + bitang * ny) * (strength / e)).normalized()
+
 
 # ---------- 四元数快速幂 ----------
 @ti.func
@@ -145,22 +248,68 @@ def ray_march(ro, rd, c, plane, max_iter, power, rad, prec, mode: ti.i32):
     return ti.Vector([hit, niters])
 
 @ti.func
-def shade(t_norm):
-    rock = ti.Vector([140, 140, 140]) / 255.0
-    dk_red = ti.Vector([160, 30, 10]) / 255.0
-    orange = ti.Vector([255, 100, 0]) / 255.0
-    gold = ti.Vector([255, 220, 0]) / 255.0
-    t = ti.pow(t_norm, 1.5)
-    col = ti.Vector([0.0, 0.0, 0.0])
-    if t < 0.5:
-        s = smoothstep(0.0, 0.5, t)
-        col = rock * (1 - s) + dk_red * s
-    elif t < 0.8:
-        s = smoothstep(0.5, 0.8, t)
-        col = dk_red * (1 - s) + orange * s
-    else:
-        s = smoothstep(0.8, 1.0, t)
-        col = orange * (1 - s) + gold * s
+def background(rd):
+    # 保持原版中性灰背景，不做烟尘/余烬染色
+    return ti.Vector([0.2, 0.2, 0.22])
+
+
+@ti.func
+def shade(pos, nor, rd, t_norm, mode):
+    # 多尺度噪声：大块火山灰、中频岩壳、细颗粒
+    n_big = fbm(pos * 2.4 + ti.Vector([4.2, 1.7, 8.3]))
+    n_mid = fbm(pos * 7.0 + ti.Vector([11.1, 3.9, 5.2]))
+    n_fine = fbm(pos * 19.0 + ti.Vector([2.3, 9.4, 1.8]))
+
+    up = smoothstep(-0.15, 0.95, nor.y)
+    ash = smoothstep(0.38, 0.78, n_big + 0.25 * up) * (0.25 + 0.75 * up)
+    ash *= smoothstep(0.35, 0.75, n_mid)
+
+    basalt = ti.Vector([0.030, 0.026, 0.024])
+    ash_col = ti.Vector([0.235, 0.208, 0.182])
+    albedo = basalt * (1.0 - ash) + ash_col * ash
+    albedo *= 0.55 + 0.65 * n_fine
+    albedo *= 0.85 + 0.30 * smoothstep(0.55, 0.85, n_mid)
+    # 细颗粒火山灰：迎风面更明显
+    dust = smoothstep(0.60, 0.78, n_fine) * up
+    albedo += ti.Vector([0.075, 0.066, 0.058]) * dust * (1.0 - ash * 0.5)
+
+    # 迭代次数作为“温度”：越靠内部越热，再用噪声打碎成裂纹
+    heat = smoothstep(0.48, 0.98, t_norm)
+    vein = smoothstep(0.52, 0.66, n_mid * 0.7 + n_fine * 0.3)
+    lava = smoothstep(0.25, 0.9, heat) * (0.30 + 0.70 * vein)
+    core = smoothstep(0.86, 1.0, t_norm + 0.12 * (n_mid - 0.5))
+    if mode == 1:
+        # Mandelbrot 的 t_norm 在集合边界附近普遍接近 1，
+        # 不压低的话会整片烧成白色，看不到岩壳。
+        lava *= 0.30
+        core *= 0.05
+    # 细裂缝：即使没有高温核心，也在岩壳间透出暗红/橙色
+    crack = smoothstep(0.60, 0.72, n_fine * 0.68 + n_mid * 0.32)
+
+    deep_red = ti.Vector([0.85, 0.055, 0.004])
+    orange = ti.Vector([4.2, 0.72, 0.045])
+    white_hot = ti.Vector([6.0, 2.4, 0.55])
+    emission = (deep_red * lava * 0.8
+                + orange * (lava * lava) * 1.25
+                + deep_red * crack * (0.18 + 0.82 * heat) * 0.9
+                + orange * crack * heat * 0.55
+                + white_hot * core)
+
+    key = ti.Vector([-0.55, 0.35, 0.76]).normalized()
+    sky = ti.Vector([0.25, 0.9, -0.25]).normalized()
+    ndl = ti.max(nor.dot(key), 0.0)
+    nds = ti.max(nor.dot(sky), 0.0)
+
+    ambient = 0.035 + 0.22 * nds
+    hvec = (key - rd).normalized()
+    spec = ti.pow(ti.max(nor.dot(hvec), 0.0), 64.0) * 0.04 * (1.0 - ash * 0.9)
+    bounce = ti.max(-nor.y, 0.0) * 0.14 * lava
+
+    col = albedo * (ambient + ndl * 0.85)
+    col += ti.Vector([1.0, 0.52, 0.22]) * (spec + bounce)
+    col += emission
+    rim = ti.pow(1.0 - ti.max(nor.dot(-rd), 0.0), 3.0)
+    col += ti.Vector([1.0, 0.26, 0.045]) * rim * (0.08 + 0.45 * heat)
     return col
 
 @ti.kernel
@@ -179,14 +328,14 @@ def render(ro: ti.types.vector(3, ti.f32), right: ti.types.vector(3, ti.f32),
             tn = ray_march(ro, rd, c_val, plane, max_iter, power, BOUNDING_RADIUS, prec, mode)
             t = tn.x
             if t < 0.0:
-                col += ti.Vector([0.2, 0.2, 0.22])
+                col += background(rd)
             else:
                 pos = ro + rd*t
                 nor = normal(pos, c_val, plane, max_iter, power, prec, mode)
-                light = ti.Vector([0.5, 0.8, 0.3]).normalized()
-                diff = ti.max(nor.dot(light), 0.0); amb = 0.4
-                t_norm = ti.log(tn.y+1) / ti.log(ti.cast(max_iter,ti.f32)+1)
-                col += shade(t_norm) * (amb + diff*0.6)
+                nor = bump_normal(pos, nor, 9.0, 0.38)
+                t_norm = ti.log(tn.y+1) / ti.log(ti.cast(max_iter, ti.f32)+1)
+                surf = shade(pos, nor, rd, t_norm, mode)
+                col += surf
         curr[i,j] = col / ti.cast(samples, ti.f32)
         accum[i,j] += curr[i,j]
     acc_cnt[None] += 1
@@ -198,6 +347,7 @@ def reset():
 
 @ti.kernel
 def tonemap():
+    # 原版色调映射：保持背景亮度和暗角与旧版本一致
     cnt = ti.cast(acc_cnt[None], ti.f32); inv = 1.0 / ti.max(cnt, 1.0)
     for i, j in display:
         avg = accum[i,j] * inv
@@ -210,6 +360,8 @@ def tonemap():
 
 # ==================== OpenGL 窗口 ====================
 class FractalWidget(QOpenGLWidget):
+    first_frame_ready = Signal()
+
     def __init__(self, cam):
         super().__init__()
         self.setMinimumSize(W, H)
@@ -217,39 +369,83 @@ class FractalWidget(QOpenGLWidget):
         self.cx, self.cy, self.cz, self.cw = 0.0, 0.0, 0.675, 0.0
         self.max_iter = DEFAULT_MAX_ITER; self.samples = DEFAULT_SAMPLES
         self.prec = DEFAULT_SURFACE_PRECISION; self.power = DEFAULT_POWER
+        self.max_accum = DEFAULT_ACCUM
         self.mode = 0                      # 0=Julia, 1=Mandelbrot
         self.need_reset = True; self.tex = None
+        # 首帧前先让窗口显示出来，再在事件循环里编译/渲染；
+        # 否则 show() 会同步卡在几十秒的 Taichi JIT 上。
+        self._render_armed = False
+        self._defer_scheduled = False
+        self._first_frame_emitted = False
+        self.render_timer = QTimer(self)
+        self.render_timer.setSingleShot(True)
+        self.render_timer.setInterval(1)
+        self.render_timer.timeout.connect(self.update)
 
     def initializeGL(self):
+        glClearColor(0.2, 0.2, 0.22, 1.0)
         self.tex = glGenTextures(1); glBindTexture(GL_TEXTURE_2D, self.tex)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, W, H, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, None)
         glDisable(GL_DEPTH_TEST)
 
+    def _arm_render(self):
+        self._render_armed = True
+        self.kick()
+
+    def kick(self):
+        """重新开始累积（相机/参数变化后调用）。"""
+        self.need_reset = True
+        if self._render_armed and not self.render_timer.isActive():
+            self.render_timer.start(0)
+
     def paintGL(self):
-        glClear(GL_COLOR_BUFFER_BIT); self.cam._update_vectors()
-        m = self.cam.model_matrix()
-        ro = m.map(self.cam.position - self.cam.target) + self.cam.target
-        rd = m.mapVector(self.cam.front); ri = m.mapVector(self.cam.right); up = m.mapVector(self.cam.up)
-        ro_ti = ti.Vector([ro.x(), ro.y(), ro.z()]); ri_ti = ti.Vector([ri.x(), ri.y(), ri.z()])
-        up_ti = ti.Vector([up.x(), up.y(), up.z()]); rd_ti = ti.Vector([rd.x(), rd.y(), rd.z()])
-        c_ti = ti.Vector([self.cx, self.cy, self.cz, self.cw]); pl_ti = section_plane[None]
-        if self.need_reset: reset(); self.need_reset = False
-        render(ro_ti, ri_ti, up_ti, rd_ti, c_ti, pl_ti, self.max_iter, self.power, self.samples, self.prec, self.mode)
-        tonemap(); ti.sync()
-        arr = display.to_numpy().transpose(1,0,2)
-        glBindTexture(GL_TEXTURE_2D, self.tex)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, W, H, 0, GL_RGB, GL_UNSIGNED_BYTE, arr.tobytes())
+        glClear(GL_COLOR_BUFFER_BIT)
+        if not self._render_armed:
+            # 让窗口先出现，把 JIT 放到事件循环里执行。
+            if not self._defer_scheduled:
+                self._defer_scheduled = True
+                QTimer.singleShot(50, self._arm_render)
+            return
+
+        self.cam._update_vectors()
+        if self.need_reset:
+            reset(); self.need_reset = False
+
+        if acc_cnt[None] < self.max_accum:
+            m = self.cam.model_matrix()
+            ro = m.map(self.cam.position - self.cam.target) + self.cam.target
+            rd = m.mapVector(self.cam.front); ri = m.mapVector(self.cam.right); up = m.mapVector(self.cam.up)
+            ro_ti = ti.Vector([ro.x(), ro.y(), ro.z()]); ri_ti = ti.Vector([ri.x(), ri.y(), ri.z()])
+            up_ti = ti.Vector([up.x(), up.y(), up.z()]); rd_ti = ti.Vector([rd.x(), rd.y(), rd.z()])
+            c_ti = ti.Vector([self.cx, self.cy, self.cz, self.cw]); pl_ti = section_plane[None]
+            render(ro_ti, ri_ti, up_ti, rd_ti, c_ti, pl_ti, self.max_iter,
+                   self.power, self.samples, self.prec, self.mode)
+            tonemap(); ti.sync()
+            arr = display.to_numpy().transpose(1, 0, 2)
+            glBindTexture(GL_TEXTURE_2D, self.tex)
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGB,
+                            GL_UNSIGNED_BYTE, arr.tobytes())
+            if not self._first_frame_emitted:
+                self._first_frame_emitted = True
+                self.first_frame_ready.emit()
+            if acc_cnt[None] < self.max_accum:
+                self.render_timer.start(1)
+
         ratio = self.devicePixelRatioF(); w, h = int(self.width()*ratio), int(self.height()*ratio)
         glViewport(0,0,w,h); glMatrixMode(GL_PROJECTION); glLoadIdentity(); glOrtho(0,w,0,h,-1,1)
         glMatrixMode(GL_MODELVIEW); glLoadIdentity()
         glEnable(GL_TEXTURE_2D); glBegin(GL_QUADS)
         glTexCoord2f(0,0); glVertex2f(0,0); glTexCoord2f(1,0); glVertex2f(w,0)
         glTexCoord2f(1,1); glVertex2f(w,h); glTexCoord2f(0,1); glVertex2f(0,h)
-        glEnd(); glDisable(GL_TEXTURE_2D); self.update()
+        glEnd(); glDisable(GL_TEXTURE_2D)
 
     def resizeEvent(self, e):
-        s = min(self.width(), self.height()); self.setFixedSize(s, s); super().resizeEvent(e)
+        s = min(self.width(), self.height()); self.setFixedSize(s, s)
+        super().resizeEvent(e)
+        self.update()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -263,14 +459,20 @@ class FractalWidget(QOpenGLWidget):
         if e.buttons() & Qt.LeftButton:
             if e.modifiers() & Qt.ControlModifier: self.cam.roll_model(dx*0.5)
             else: self.cam.update_arcball(e.position().x(), e.position().y(), self.width(), self.height())
-            self.need_reset = True
-        elif e.buttons() & Qt.MiddleButton: self.cam.pan(-dx*0.1, dy*0.1); self.need_reset = True
+            self.kick()
+        elif e.buttons() & Qt.MiddleButton:
+            self.cam.pan(-dx*0.1, dy*0.1)
+            self.kick()
         self.last_pos = e.position()
+
+    def closeEvent(self, e):
+        self.render_timer.stop()
+        super().closeEvent(e)
 
 # ==================== 主窗口 ====================
 class MainWindow(QMainWindow):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("四元数 Julia / Mandelbrot - 熔岩")
+        super().__init__(); self.setWindowTitle("四元数 Julia / Mandelbrot - 熔岩与火山灰")
         self.cam = OrbitCamera(QVector3D(0,0,0), 3.6); self.cam.pitch = -30; self.cam._update_vectors()
         self._ui()
 
@@ -315,6 +517,12 @@ class MainWindow(QMainWindow):
         self.samp_l = QLabel(str(DEFAULT_SAMPLES))
         self.samp_s.valueChanged.connect(lambda v: (self.samp_l.setText(str(v)), self._reset()))
         g.addWidget(self.samp_s,2,1); g.addWidget(self.samp_l,2,2)
+
+        g.addWidget(QLabel("累积帧"),3,0); self.accum_s = QSlider(Qt.Horizontal)
+        self.accum_s.setRange(1,128); self.accum_s.setValue(DEFAULT_ACCUM)
+        self.accum_l = QLabel(str(DEFAULT_ACCUM))
+        self.accum_s.valueChanged.connect(lambda v: (self.accum_l.setText(str(v)), self._on_accum_changed(v)))
+        g.addWidget(self.accum_s,3,1); g.addWidget(self.accum_l,3,2)
         param.setLayout(g); lay.addWidget(param)
 
         # C 常数 (仅 Julia 可用)
@@ -358,7 +566,12 @@ class MainWindow(QMainWindow):
 
         self.gl = FractalWidget(self.cam)
         self.gl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.gl.first_frame_ready.connect(self._on_first_frame)
         splitter.addWidget(panel); splitter.addWidget(self.gl)
+        self.statusBar().showMessage("正在编译 GPU 着色器（首次启动可能需要几十秒）…")
+
+    def _on_first_frame(self):
+        self.statusBar().clearMessage()
 
     def _on_type_changed(self, idx):
         self.gl.mode = idx
@@ -412,12 +625,18 @@ class MainWindow(QMainWindow):
             inp.setText(f"{v:.4f}")
         self._update_plane()
 
+    def _on_accum_changed(self, v):
+        if getattr(self, "gl", None) is not None:
+            self.gl.max_accum = v
+            self.gl.kick()
+
     def _reset(self):
         self.gl.max_iter = self.iter_s.value()
         self.gl.prec = self.prec_s.value() / 100000
         self.gl.samples = self.samp_s.value()
         self.gl.power = self.power_spin.value()
-        self.gl.need_reset = True
+        self.gl.max_accum = self.accum_s.value()
+        self.gl.kick()
 
     def _set_dist(self, v):
         self.cam.distance = v / 10.0
@@ -437,4 +656,5 @@ if __name__ == "__main__":
     fmt = QSurfaceFormat(); fmt.setVersion(2,1); fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
     w = MainWindow(); w.resize(1100, 750); w.show()
+    app.processEvents()      # 先把窗口/状态栏画出来，再做首帧 JIT
     sys.exit(app.exec())

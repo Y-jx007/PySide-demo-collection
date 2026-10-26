@@ -1,11 +1,17 @@
-from custom_import import *
+from common.qt_base import (QApplication, QCheckBox, QColor, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QMessageBox, QPainter, QPen, QPointF, QPushButton, QRectF, QScrollArea, QSlider, QTimer, QVBoxLayout, QWidget, Qt, logging, sys, time)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QImage, QPainterPath
 
 import base64
 import zlib
 
-from scipy.ndimage import zoom
+from scipy.ndimage import zoom, gaussian_filter
+
+from circulation_data import (
+    RealWind, elevation_at, load_elevation, terrain_adjust,
+)
 
 # ==================== 海陆图 ====================
 # 1-bit 世界地图（160×72），与参考 shader 内嵌的是同一份数据，解开即可
@@ -42,11 +48,6 @@ def load_land():
 
 # ==================== 环流模型 ====================
 W, H = 160, 72
-
-
-def _smoothstep(a, b, x):
-    t = np.clip((x - a) / (b - a), 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
 
 
 def _blur_x(a, sigma):
@@ -116,11 +117,19 @@ def _ssf(a: ti.f32, b: ti.f32, x: ti.f32) -> ti.f32:
     return t * t * (3.0 - 2.0 * t)
 
 
+def _land_at(nw, nh):
+    """把 720×360 的海岸线掩膜抽到 nw×nh（第 0 行仍是南）。"""
+    fine = load_land_fine()[::-1]
+    ys = (np.arange(nh) * fine.shape[0] / nh).astype(int)
+    xs = (np.arange(nw) * fine.shape[1] / nw).astype(int)
+    return fine[np.ix_(ys, xs)]
+
+
 class WindSim:
     """气压场与风场，用 Taichi 并行算在 360×180 网格上。
 
-    参考 shader 在 144×72 上算，这里提高 2.5 倍；高斯模糊是可分离的，
-    两个方向各一个 kernel，每个格点并行累加。
+    旧版的解析气压场（不含温度）：海洋连续场 + 海陆差距项，南极陆地
+    因此是低压。这里保留 1° 地形，但只用于底图与风速修正。
     """
 
     NW, NH = 360, 180
@@ -128,9 +137,11 @@ class WindSim:
     def __init__(self):
         self.land = _land_at(self.NW, self.NH)          # 第 0 行是南
         self.lats = (180.0 * np.arange(self.NH) / self.NH - 90.0).astype(np.float32)
+        self.elev = elevation_at(self.NW, self.NH)
+        self.elev_s = gaussian_filter(np.maximum(self.elev, 0.0), 1.2).astype(np.float32)
 
         ti.reset()
-        ti.init(arch=ti.cpu, default_fp=ti.f32)
+        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=True)
         self.f_land = ti.field(ti.i32, (self.NH, self.NW))
         self.f_p0 = ti.field(ti.f32, (self.NH, self.NW))
         self.f_pd = ti.field(ti.f32, (self.NH, self.NW))
@@ -221,25 +232,17 @@ class WindSim:
         self._blur_y(45, 15.0)
         self._wind()
 
-    # ---------- 读回 ----------
     def pressure(self):
         return self.f_b2.to_numpy()
 
-    def wind_numpy(self):
-        return self.f_wind.to_numpy()
-
-
-def _ss(a, b, x):
-    t = min(max((x - a) / (b - a), 0.0), 1.0)
-    return t * t * (3.0 - 2.0 * t)
-
-
-def _land_at(nw, nh):
-    """把 720×360 的海岸线掩膜抽到 nw×nh（第 0 行仍是南）。"""
-    fine = load_land_fine()[::-1]
-    ys = (np.arange(nh) * fine.shape[0] / nh).astype(int)
-    xs = (np.arange(nw) * fine.shape[1] / nw).astype(int)
-    return fine[np.ix_(ys, xs)]
+    def wind_numpy(self, terrain_strength=1.0):
+        """返回 (NH, NW, 2) 风场；terrain_strength=0 时不做地形修正。"""
+        wind = self.f_wind.to_numpy()
+        if terrain_strength > 0.0:
+            u, v = terrain_adjust(wind[..., 0], wind[..., 1], self.elev_s,
+                                  float(terrain_strength))
+            wind = np.stack([u, v], axis=-1)
+        return wind
 
 
 # ==================== 画布 ====================
@@ -291,13 +294,25 @@ class CirculationApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("全球风场 · 气压 / 流线")
-        self.setGeometry(150, 110, 1180, 472)
+        self.setWindowTitle("全球环流 · 地形 / 真实风场")
+        self.setGeometry(150, 60, 1240, 820)
 
         self.wind = WindSim()
+        try:
+            self.real = RealWind()
+        except Exception:
+            self.real = None
+        self.real_mode = False
+        self.real_layer = "monthly"         # monthly / anomaly / trend
+        self.real_year_idx = len(self.real.year_values) - 1 if self.real is not None else 0
+        self.real_month_idx = len(self.real.month_values) - 1 if self.real is not None else 0
+        self.real_autoplay = False
+        self._year_tick = 0
         self.show_wind = True
         self.show_pressure = True
         self.show_grid = True
+        self.show_terrain = True
+        self.terrain_strength = 1.0
         self.auto_season = True
         self._day = 0.0            # 一年中的第几天
         self._season_t = 1.0
@@ -311,7 +326,14 @@ class CirculationApp(QMainWindow):
         self._land_timer = QTimer(self)
         self._land_timer.setSingleShot(True)
         self._land_timer.timeout.connect(self._apply_contrast)
+        self._terrain_timer = QTimer(self)
+        self._terrain_timer.setSingleShot(True)
+        self._terrain_timer.timeout.connect(self._apply_terrain)
+        self._change_rgb = None
+        self._change_a = None
         self.substeps = 4
+        # 初始风场使用界面滑杆的 150% 海陆差距。
+        self.wind.update(1.0, self._contrast)
         # speed_scale 由滑杆设置      # 每帧推进的子步数（每步 dt 很小）
         self._buf_x = np.full((self.BH, self.BW), -1.0, np.float32)
         self._buf_y = np.full((self.BH, self.BW), -1.0, np.float32)
@@ -335,8 +357,21 @@ class CirculationApp(QMainWindow):
         self._fps = 0.0
 
     # ---------- 风场（粒子直接采样，不再预放大到缓冲） ----------
+    def _current_wind(self):
+        """合成风场（含地形）或真实月均风场，统一到 WindSim 的网格。"""
+        if self.real_mode and self.real is not None:
+            w = self.real.field(self.real_year_idx, self.real_month_idx, self.real_layer)
+            nh, nw = self.wind.NH, self.wind.NW
+            if w.shape[:2] != (nh, nw):
+                w = np.stack([
+                    zoom(w[..., 0], (nh / w.shape[0], nw / w.shape[1]), order=1),
+                    zoom(w[..., 1], (nh / w.shape[0], nw / w.shape[1]), order=1),
+                ], axis=-1)
+            return w.astype(np.float32)
+        return self.wind.wind_numpy(self.terrain_strength)
+
     def _build_velocity(self):
-        w = self.wind.wind_numpy()                    # (180,360,2)，第 0 行是南
+        w = self._current_wind()                     # (nlat,nlon,2)，第 0 行是南
         nu = w[:, :, 0].astype(np.float32)
         nv = w[:, :, 1].astype(np.float32)
         if getattr(self, "_wu", None) is None:
@@ -346,7 +381,7 @@ class CirculationApp(QMainWindow):
             self._wu_a, self._wv_a = self._wu.copy(), self._wv.copy()
             self._wu_t, self._wv_t = nu, nv
             self._wphase = 0.0
-        mag = np.hypot(self._wu, self._wv)
+        mag = np.hypot(nu, nv)
         self._wref = max(1e-6, float(np.percentile(mag, 80)))
         self._wgain = self.BW / 144.0 * 0.65          # 参考的 1 像素/帧是相对 144 宽
 
@@ -360,6 +395,34 @@ class CirculationApp(QMainWindow):
         ys = (np.arange(BH) * fine.shape[0] / BH).astype(np.int32)
         xs = (np.arange(BW) * fine.shape[1] / BW).astype(np.int32)
         land = fine[np.ix_(ys, xs)]
+
+        # 地形底图：ETOPO1 海拔配色 + 坡向阴影。数据缺失时退回纸面底色。
+        if self.show_terrain:
+            try:
+                elev, _, _ = load_elevation()
+                e = elev[::-1].astype(np.float32)          # 北在上
+                e = zoom(e, (BH / e.shape[0], BW / e.shape[1]), order=1)[:BH, :BW]
+                h = np.maximum(e, 0.0)
+                stops = np.array([0.0, 300.0, 1000.0, 2500.0, 5000.0], np.float32)
+                cols = np.array([[204, 197, 176], [188, 171, 139], [160, 139, 112],
+                                 [138, 126, 116], [244, 246, 249]], np.float32)
+                terr = np.empty((BH, BW, 3), np.float32)
+                for c in range(3):
+                    terr[:, :, c] = np.interp(h, stops, cols[:, c])
+                gy, gx = np.gradient(h)
+                slope = np.hypot(gx, gy)
+                ref = max(1.0, float(np.percentile(slope, 90)))
+                light = -(gx + gy) / ref
+                shade = np.clip(1.0 + 0.22 * light, 0.78, 1.18)
+                terr *= shade[:, :, None]
+                # 高海拔（冰盖/雪山）提亮，避免整块 Antarctica 变成深灰。
+                ice = (h > 2200.0)[..., None]
+                terr = np.where(ice, terr * 0.35 + np.array([246, 248, 251], np.float32) * 0.65, terr)
+                a = land[..., None].astype(np.float32) * 0.62
+                rgb = rgb * (1.0 - a) + terr * a
+            except Exception as exc:
+                logging.warning("地形数据加载失败: %s", exc)
+
         coast = np.zeros_like(land)
         coast[1:, :] |= land[1:, :] != land[:-1, :]
         coast[:, 1:] |= land[:, 1:] != land[:, :-1]
@@ -395,15 +458,15 @@ class CirculationApp(QMainWindow):
         """LOW = 蓝，HIGH = 橙；经 0.9-0.8*rgb 反相后低压暖橙、高压淡蓝。
         配色在 360×180 上算完再放大，避免在大图上做浮点运算。"""
         p = np.flipud(self.wind.pressure())
-        floor_p = np.floor(p)
-        t1 = _smoothstep(1000.0, 1012.0, floor_p)[..., None]
-        t2 = _smoothstep(1012.0, 1024.0, floor_p)[..., None]
-        low = np.array([0.0, 0.5, 1.0], np.float32)
-        high = np.array([1.0, 0.5, 0.0], np.float32)
-        r = low * (1.0 - t1)
-        r = r * (1.0 - t2) + high * t2
-        rgb = 0.9 - 0.8 * (0.5 * r)
-        small = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+        # 低压暖橙、准静止面米白、高压蓝；1045+ 的极地高压用深蓝，
+        # 这样冬季南极高压不会和普通副热带高压混成一片。
+        stops = np.array([995.0, 1005.0, 1013.0, 1025.0, 1045.0, 1065.0], np.float32)
+        cols = np.array([[210, 120, 60], [236, 190, 140], [236, 238, 240],
+                         [150, 190, 225], [60, 100, 170], [30, 50, 100]], np.float32)
+        small = np.empty(p.shape + (3,), np.float32)
+        for c in range(3):
+            small[:, :, c] = np.interp(p, stops, cols[:, c])
+        small = np.clip(small, 0, 255).astype(np.uint8)
         BH, BW = self.BH, self.BW
         ys = (np.arange(BH) * small.shape[0] / BH).astype(np.int32)
         xs = (np.arange(BW) * small.shape[1] / BW).astype(np.int32)
@@ -439,6 +502,32 @@ class CirculationApp(QMainWindow):
         pr = self._pressure_rgb.astype(np.float32)
         # 气压层只做 62% 叠加，海岸线和纸面纹理仍然保留
         return base * 0.48 + pr * 0.52
+
+    # ---------- 真实年际变化着色 ----------
+    def _build_change_layer(self):
+        """年际变化模式下，用蓝/橙表示风向相对十年平均的偏转。"""
+        if not (self.real_mode and self.real is not None
+                and self.real_layer == "anomaly"):
+            self._change_rgb = None
+            self._change_a = None
+            return
+        d = self.real.direction_delta(self.real_year_idx, self.real_month_idx)
+        # 在角度空间做圆周平滑，避免 2.5° 格点直接放大后出现方块，
+        # 也避免 ±180° 附近的角度跳变。
+        rad = np.radians(d)
+        d = np.degrees(np.arctan2(gaussian_filter(np.sin(rad), 0.8),
+                                  gaussian_filter(np.cos(rad), 0.8))).astype(np.float32)
+        big = zoom(d, (self.BH / d.shape[0], self.BW / d.shape[1]), order=1)[:self.BH, :self.BW]
+        step = np.clip(big / 30.0, -1.0, 1.0)
+        paper = np.array([232, 231, 225], np.float32)
+        warm = np.array([214, 126, 62], np.float32)
+        cool = np.array([54, 112, 182], np.float32)
+        rgb = np.empty((self.BH, self.BW, 3), np.float32)
+        rgb[:] = paper * (1.0 - np.abs(step)[..., None])
+        rgb += warm * np.clip(step, 0.0, 1.0)[..., None]
+        rgb += cool * np.clip(-step, 0.0, 1.0)[..., None]
+        self._change_rgb = rgb
+        self._change_a = (np.clip(np.abs(big) / 30.0, 0.0, 1.0) * 0.55)[..., None].astype(np.float32)
 
     # ---------- 粒子推进（照 getPosition 的规则） ----------
     def _step_particles(self, px, py, dens, spawn, steps):
@@ -514,6 +603,11 @@ class CirculationApp(QMainWindow):
                 out[:, :, c] = base[:, :, c] * 0.48 + pr[:, :, c] * 0.52
         else:
             out[:] = self._base_f
+        if self._change_a is not None and self._change_rgb is not None:
+            a = self._change_a[:, :, 0]
+            inv = 1.0 - a
+            for c in range(3):
+                out[:, :, c] = out[:, :, c] * inv + self._change_rgb[:, :, c] * a
         # 逐通道就地混合，(H,W,1) 广播到 (H,W,3) 太慢
         if self.show_wind:
             a = self._dens_w
@@ -539,30 +633,54 @@ class CirculationApp(QMainWindow):
         self._fps = 0.9 * self._fps + 0.1 * (1.0 / max(1e-3, now - self._t_prev))
         self._t_prev = now
 
-        # 季节按天连续推进
-        if self.auto_season:
-            self._day += 1.2                        # 每帧 1.2 天，一年约 300 帧
-            if self._day >= 365.0:
-                self._day -= 365.0
-            self._season_t = 1.0 + self._day / 365.0 * 12.0
-        if hasattr(self, "lbl_month"):
-            m = int(self._day // 30.44) + 1
-            d = int(self._day - (m - 1) * 30.44) + 1
-            self.lbl_month.setText(f"{m} 月 {d} 日")
+        # 季节按天连续推进；真实模式下改为可选地逐月播放
+        if not self.real_mode:
+            if self.auto_season:
+                self._day += 1.2                    # 每帧 1.2 天，一年约 300 帧
+                if self._day >= 365.0:
+                    self._day -= 365.0
+                self._season_t = 1.0 + self._day / 365.0 * 12.0
+            if hasattr(self, "lbl_month"):
+                m = int(self._day // 30.44) + 1
+                d = int(self._day - (m - 1) * 30.44) + 1
+                self.lbl_month.setText(f"{m} 月 {d} 日")
+                if hasattr(self, "season_slider"):
+                    self.season_slider.blockSignals(True)
+                    self.season_slider.setValue(m)
+                    self.season_slider.blockSignals(False)
+                    self.season_lbl.setText(f"{m} 月")
+        elif (self.real_autoplay and self.real is not None
+              and self.real_layer != "trend"):
+            self._year_tick += 1
+            if self._year_tick >= 30:
+                self._year_tick = 0
+                month = self.real_month_idx + 1
+                year = self.real_year_idx
+                if month >= len(self.real.month_values):
+                    month = 0
+                    year = (year + 1) % len(self.real.year_values)
+                self.real_year_idx = year
+                self.year_slider.blockSignals(True)
+                self.year_slider.setValue(year)
+                self.year_slider.blockSignals(False)
+                self.month_slider.setValue(month)
 
         self._season_tick += 1
         self._blend_wind()
-        if self.show_pressure:
-            self._blend_pressure()
-        if self._season_tick % 10 == 0:
-            self.wind.update(self._season_t, self._contrast)
-            self._build_velocity()
+        if not self.real_mode:
             if self.show_pressure:
-                self._build_pressure()
+                self._blend_pressure()
+            if self._season_tick % 10 == 0:
+                self.wind.update(self._season_t, self._contrast)
+                self._build_velocity()
+                if self.show_pressure:
+                    self._build_pressure()
         if self.show_wind:
-            # 每帧走多步：步数上去，粒子看起来才够快
+            # 每帧走多步：步数上去，粒子看起来才够快。
+            # 真实风场更易汇聚成窄带，适当提高出生率，避免整张图只剩零星虚线。
+            spawn = 2.2e-4 * (2.8 if self.real_mode else 1.0)
             self._px_w, self._py_w, self._dens_w = self._step_particles(
-                self._px_w, self._py_w, self._dens_w, 2.2e-4, self.substeps)
+                self._px_w, self._py_w, self._dens_w, spawn, self.substeps)
         else:
             self._dens_w *= 0.9
         self._compose()
@@ -579,9 +697,9 @@ class CirculationApp(QMainWindow):
         root.setSpacing(10)
 
         panel = QWidget()
-        panel.setFixedWidth(272)
+        panel.setFixedWidth(286)
         pv = QVBoxLayout(panel)
-        pv.setSpacing(8)
+        pv.setSpacing(7)
         pv.setContentsMargins(0, 0, 0, 0)
 
         title = QLabel("全球环流")
@@ -590,7 +708,7 @@ class CirculationApp(QMainWindow):
         tf.setBold(True)
         title.setFont(tf)
         pv.addWidget(title)
-        sub = QLabel("气压梯度 + 科里奥利力 → 风\n风应力旋度 → 海洋环流")
+        sub = QLabel("气压梯度 + 科里奥利力 → 风\n地形减速/绕流 · 近十年真实风场")
         sub.setStyleSheet("color: #7a7a80;")
         sf = sub.font()
         sf.setPointSize(8)
@@ -599,19 +717,130 @@ class CirculationApp(QMainWindow):
 
         self.canvas = MapCanvas(self)
 
-        g1 = QGroupBox("时间")
+        # ---- 合成模式的季节推演 ----
+        g1 = QGroupBox("合成模式 · 季节")
         f1 = QFormLayout(g1)
         f1.setSpacing(6)
         f1.setContentsMargins(8, 8, 8, 8)
         self.lbl_month = QLabel("1 月 1 日")
         self.lbl_month.setStyleSheet("color: #45454a; font-size: 12px;")
         f1.addRow("日期", self.lbl_month)
+        row_season = QHBoxLayout()
+        row_season.setSpacing(6)
+        self.season_slider = QSlider(Qt.Horizontal)
+        self.season_slider.setRange(1, 12)
+        self.season_slider.setValue(1)
+        self.season_slider.valueChanged.connect(self._on_season)
+        row_season.addWidget(self.season_slider, 1)
+        self.season_lbl = QLabel("1 月")
+        self.season_lbl.setFixedWidth(40)
+        self.season_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row_season.addWidget(self.season_lbl)
+        f1.addRow("月份", row_season)
         self.chk_auto = QCheckBox("自动推演")
         self.chk_auto.setChecked(True)
         self.chk_auto.toggled.connect(self._on_auto)
         f1.addRow(self.chk_auto)
         pv.addWidget(g1)
+        self.time_group = g1
 
+        # ---- 真实月均风场 ----
+        g_real = QGroupBox("真实模式 · 2015–2024 月均")
+        fr = QVBoxLayout(g_real)
+        fr.setSpacing(4)
+        fr.setContentsMargins(8, 8, 8, 8)
+        self.chk_real = QCheckBox("启用真实月均风场")
+        self.chk_real.toggled.connect(self._on_real_mode)
+        if self.real is None:
+            self.chk_real.setEnabled(False)
+            self.chk_real.setToolTip("缺少 wind_real.npz，真实模式不可用")
+        fr.addWidget(self.chk_real)
+
+        row_layer = QHBoxLayout()
+        row_layer.setSpacing(6)
+        row_layer.addWidget(QLabel("图层"))
+        self.real_layer_combo = QComboBox()
+        self.real_layer_combo.addItems(["月均风场", "月际变化 Δ", "十年趋势"])
+        self.real_layer_combo.setEnabled(False)
+        self.real_layer_combo.currentIndexChanged.connect(self._on_real_layer)
+        row_layer.addWidget(self.real_layer_combo, 1)
+        fr.addLayout(row_layer)
+
+        row_year = QHBoxLayout()
+        row_year.setSpacing(6)
+        row_year.addWidget(QLabel("年份"))
+        self.year_slider = QSlider(Qt.Horizontal)
+        self.year_slider.setRange(0, max(0, len(self.real.year_values) - 1) if self.real else 0)
+        self.year_slider.setValue(self.real_year_idx)
+        self.year_slider.setEnabled(False)
+        self.year_slider.valueChanged.connect(self._on_real_year)
+        row_year.addWidget(self.year_slider, 1)
+        self.year_lbl = QLabel(f"{int(self.real.year_values[self.real_year_idx])} 年" if self.real else "—")
+        self.year_lbl.setFixedWidth(64)
+        self.year_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row_year.addWidget(self.year_lbl)
+        fr.addLayout(row_year)
+
+        row_month = QHBoxLayout()
+        row_month.setSpacing(6)
+        row_month.addWidget(QLabel("月份"))
+        self.month_slider = QSlider(Qt.Horizontal)
+        self.month_slider.setRange(0, max(0, len(self.real.month_values) - 1) if self.real else 0)
+        self.month_slider.setValue(self.real_month_idx)
+        self.month_slider.setEnabled(False)
+        self.month_slider.valueChanged.connect(self._on_real_month)
+        row_month.addWidget(self.month_slider, 1)
+        self.month_lbl = QLabel(f"{int(self.real.month_values[self.real_month_idx])} 月" if self.real else "—")
+        self.month_lbl.setFixedWidth(52)
+        self.month_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row_month.addWidget(self.month_lbl)
+        fr.addLayout(row_month)
+
+        self.chk_real_auto = QCheckBox("自动播放月份")
+        self.chk_real_auto.setEnabled(False)
+        self.chk_real_auto.toggled.connect(self._on_real_auto)
+        fr.addWidget(self.chk_real_auto)
+        src = QLabel("NCEP/NCAR Reanalysis 1 · 月平均 10 m 风")
+        src.setStyleSheet("color: #8a8a90;")
+        sf2 = src.font()
+        sf2.setPointSize(7)
+        src.setFont(sf2)
+        fr.addWidget(src)
+        pv.addWidget(g_real)
+        self.real_group = g_real
+
+        # ---- 地形 ----
+        g_terrain = QGroupBox("地形 / 海拔")
+        ft = QFormLayout(g_terrain)
+        ft.setSpacing(6)
+        ft.setContentsMargins(8, 8, 8, 8)
+        self.chk_terrain = QCheckBox("显示地形阴影与海拔配色")
+        self.chk_terrain.setChecked(True)
+        self.chk_terrain.toggled.connect(lambda c: self._toggle("show_terrain", c))
+        ft.addRow(self.chk_terrain)
+        self.terrain_slider = QSlider(Qt.Horizontal)
+        self.terrain_slider.setRange(0, 200)
+        self.terrain_slider.setValue(100)
+        self.terrain_slider.valueChanged.connect(self._on_terrain)
+        self.terrain_lbl = QLabel("100%")
+        self.terrain_lbl.setFixedWidth(46)
+        self.terrain_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row_t = QHBoxLayout()
+        row_t.setSpacing(6)
+        row_t.addWidget(self.terrain_slider, 1)
+        row_t.addWidget(self.terrain_lbl)
+        ft.addRow("影响（合成）", row_t)
+        note = QLabel("高地减速、绕流；真实风场已含地形")
+        note.setStyleSheet("color: #8a8a90;")
+        nf = note.font()
+        nf.setPointSize(7)
+        note.setFont(nf)
+        note.setWordWrap(True)
+        ft.addRow(note)
+        pv.addWidget(g_terrain)
+        self.terrain_group = g_terrain
+
+        # ---- 海陆差距 ----
         g_land = QGroupBox("海陆差距")
         f_land = QFormLayout(g_land)
         f_land.setSpacing(6)
@@ -629,7 +858,9 @@ class CirculationApp(QMainWindow):
         row_l.addWidget(self.land_lbl)
         f_land.addRow("强度", row_l)
         pv.addWidget(g_land)
+        self.land_group = g_land
 
+        # ---- 风速 ----
         g_speed = QGroupBox("风速")
         f_speed = QFormLayout(g_speed)
         f_speed.setSpacing(6)
@@ -648,25 +879,37 @@ class CirculationApp(QMainWindow):
         f_speed.addRow("倍率", row_s)
         pv.addWidget(g_speed)
 
+        # ---- 显示 ----
         g2 = QGroupBox("显示")
         v2 = QVBoxLayout(g2)
         v2.setSpacing(4)
         v2.setContentsMargins(8, 8, 8, 8)
-        for text, attr, checked in (("风场流线", "show_wind", True),
-                                    ("气压分布", "show_pressure", True),
-                                    ("经纬网", "show_grid", True)):
-            cb = QCheckBox(text)
+        self.chk_wind = QCheckBox("风场流线")
+        self.chk_pressure = QCheckBox("气压分布")
+        self.chk_grid = QCheckBox("经纬网")
+        for cb, attr, checked in ((self.chk_wind, "show_wind", True),
+                                  (self.chk_pressure, "show_pressure", True),
+                                  (self.chk_grid, "show_grid", True)):
             cb.setChecked(checked)
             cb.toggled.connect(lambda c, a=attr: self._toggle(a, c))
             v2.addWidget(cb)
         pv.addWidget(g2)
+        self.display_group = g2
 
         btn = QPushButton("重播粒子")
         btn.clicked.connect(self._reseed)
         pv.addWidget(btn)
         pv.addStretch()
 
-        root.addWidget(panel)
+        panel_scroll = QScrollArea()
+        panel_scroll.setWidgetResizable(True)
+        panel_scroll.setFixedWidth(304)
+        panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        panel_scroll.setFrameShape(QFrame.NoFrame)
+        panel_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        panel_scroll.setWidget(panel)
+        root.addWidget(panel_scroll)
+
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setSpacing(8)
@@ -674,12 +917,159 @@ class CirculationApp(QMainWindow):
         rv.addWidget(self.canvas, 1)
         root.addWidget(right, 1)
 
-        self.lbl_status = QLabel("细线是气流：每像素一个粒子，拖尾 0.9 衰减；勾选「气压分布」看高压低压区")
+        self.lbl_status = QLabel("")
         self.statusBar().addWidget(self.lbl_status, 1)
         self.lbl_fps = QLabel("–")
         self.lbl_fps.setMinimumWidth(70)
         self.lbl_fps.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.statusBar().addPermanentWidget(self.lbl_fps)
+        self._update_status()
+
+    # ---------- 真实模式 ----------
+    def _set_year_label(self):
+        if self.real is None:
+            return
+        if self.real_layer == "trend":
+            self.year_lbl.setText("2015–2024")
+            self.month_lbl.setText("全年")
+        else:
+            self.year_lbl.setText(f"{int(self.real.year_values[self.real_year_idx])} 年")
+            self.month_lbl.setText(f"{int(self.real.month_values[self.real_month_idx])} 月")
+
+    def _on_real_mode(self, on):
+        if on and self.real is None:
+            self.chk_real.setChecked(False)
+            QMessageBox.warning(self, "真实数据", "缺少 apps/Physics/wind_real.npz，无法启用真实模式。")
+            return
+        self.real_mode = bool(on)
+        self.time_group.setEnabled(not self.real_mode)
+        self.land_group.setEnabled(not self.real_mode)
+        self.chk_auto.setEnabled(not self.real_mode)
+        self.land_slider.setEnabled(not self.real_mode)
+        self.terrain_slider.setEnabled(not self.real_mode)
+        self.real_layer_combo.setEnabled(self.real_mode)
+        self.year_slider.setEnabled(self.real_mode and self.real_layer != "trend")
+        self.month_slider.setEnabled(self.real_mode and self.real_layer != "trend")
+        self.chk_real_auto.setEnabled(self.real_mode and self.real_layer != "trend")
+        self.chk_pressure.setEnabled(not self.real_mode)
+        self._year_tick = 0
+
+        if self.real_mode:
+            self._pressure_before_real = self.show_pressure
+            self.show_pressure = False
+            self.chk_pressure.setChecked(False)
+            self.lbl_month.setText("真实数据")
+            self._pressure_cur = None
+            self._pressure_rgb = None
+            self._prv_a = None
+            self._prv_b = None
+        else:
+            self.show_pressure = bool(getattr(self, "_pressure_before_real", True))
+            self.chk_pressure.setChecked(self.show_pressure)
+            m = int(self._day // 30.44) + 1
+            d = int(self._day - (m - 1) * 30.44) + 1
+            self.lbl_month.setText(f"{m} 月 {d} 日")
+            self.wind.update(self._season_t, self._contrast)
+            if self.show_pressure:
+                self._build_pressure()
+
+        self._build_velocity()
+        self._build_change_layer()
+        self._compose()
+        self.canvas.update()
+        self._update_status()
+
+    def _on_real_layer(self, index):
+        layers = ("monthly", "anomaly", "trend")
+        self.real_layer = layers[int(index)] if 0 <= int(index) < len(layers) else "monthly"
+        is_trend = self.real_layer == "trend"
+        self.year_slider.setEnabled(self.real_mode and not is_trend)
+        self.month_slider.setEnabled(self.real_mode and not is_trend)
+        self.chk_real_auto.setEnabled(self.real_mode and not is_trend)
+        self._set_year_label()
+        if self.real_mode:
+            self._build_velocity()
+            self._build_change_layer()
+            self._compose()
+            self.canvas.update()
+            self._update_status()
+
+    def _on_real_year(self, value):
+        if self.real is None:
+            return
+        self.real_year_idx = int(value)
+        self._set_year_label()
+        if self.real_mode:
+            self._build_velocity()
+            self._build_change_layer()
+            self._compose()
+            self.canvas.update()
+            self._update_status()
+
+    def _on_real_month(self, value):
+        if self.real is None:
+            return
+        self.real_month_idx = int(value)
+        self._set_year_label()
+        if self.real_mode:
+            self._build_velocity()
+            self._build_change_layer()
+            self._compose()
+            self.canvas.update()
+            self._update_status()
+
+    def _on_real_auto(self, on):
+        self.real_autoplay = bool(on)
+        self._year_tick = 0
+
+    # ---------- 地形 ----------
+    def _on_terrain(self, value):
+        self.terrain_strength = value / 100.0
+        self.terrain_lbl.setText(f"{value}%")
+        self._terrain_timer.start(140)
+
+    def _apply_terrain(self):
+        if self.real_mode:
+            return
+        self._build_velocity()
+        self._compose()
+        self.canvas.update()
+
+    def _update_status(self):
+        if self.real_mode and self.real is not None:
+            year = int(self.real.year_values[self.real_year_idx])
+            month = int(self.real.month_values[self.real_month_idx])
+            if self.real_layer == "anomaly":
+                text = (f"真实月际变化：{year} 年 {month} 月 − 同月 2015–2024 平均；"
+                        "蓝=顺时针，橙=逆时针（±30°）")
+            elif self.real_layer == "trend":
+                text = "真实十年趋势：2015–2024 年均值的线性拟合，流线为每十年变化（m/s）"
+            else:
+                text = (f"真实月均风场：{year} 年 {month} 月 · "
+                        "NCEP/NCAR Reanalysis 1（10 m）")
+        elif self.show_pressure:
+            text = "气压：橙=低压，蓝=高压；流线为合成风场。"
+        else:
+            text = "细线是气流：每像素一个粒子，拖尾 0.9 衰减；勾选「气压分布」看高压低压区"
+        self.lbl_status.setText(text)
+
+    def _on_season(self, month):
+        if self.real_mode:
+            return
+        self.auto_season = False
+        self.chk_auto.blockSignals(True)
+        self.chk_auto.setChecked(False)
+        self.chk_auto.blockSignals(False)
+        self._season_t = float(month)
+        self._day = (month - 1) * 365.0 / 12.0 + 1.0
+        self.season_lbl.setText(f"{month} 月")
+        self.lbl_month.setText(f"{month} 月")
+        self.wind.update(self._season_t, self._contrast)
+        self._build_velocity()
+        if self.show_pressure:
+            self._build_pressure()
+        self._compose()
+        self.canvas.update()
 
     def _on_land(self, v):
         self.land_lbl.setText(f"{v}%")
@@ -687,6 +1077,8 @@ class CirculationApp(QMainWindow):
         self._land_timer.start(160)          # 拖动时先攒着，松手再重算
 
     def _apply_contrast(self):
+        if self.real_mode:
+            return
         self.wind.update(self._season_t, self._contrast)
         self._build_velocity()
         if self.show_pressure:
@@ -702,7 +1094,7 @@ class CirculationApp(QMainWindow):
 
     def _toggle(self, attr, checked):
         setattr(self, attr, bool(checked))
-        if attr == "show_pressure" and checked:
+        if attr == "show_pressure" and checked and not self.real_mode:
             self._build_pressure()
         self._build_base()
         self._compose()

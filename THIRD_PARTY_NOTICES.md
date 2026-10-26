@@ -27,3 +27,36 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## ETOPO1 global relief
+
+`apps/Physics/worldelev.npz` is derived from ETOPO1, the 1 arc-minute global
+relief model of NOAA NGDC (now NCEI), sampled to a 1-degree grid.
+
+Amante, C. and B. W. Eakins, 2009: ETOPO1 1 Arc-Minute Global Relief Model:
+Procedures, Data Sources and Analysis. NOAA Technical Memorandum NESDIS
+NGDC-24, 19 pp.
+
+Source: https://www.ngdc.noaa.gov/mgg/global/global.html
+Access used: NOAA ERDDAP, https://cwcgom.aoml.noaa.gov/erddap/griddap/etopo180.html
+
+The data are provided free of charge for use and redistribution; NOAA and the
+data contributors make no warranty of accuracy or fitness for a particular
+purpose.
+
+## NCEP/NCAR Reanalysis 1 wind
+
+`apps/Physics/wind_real.npz` contains monthly mean 10 m wind fields of the
+NCEP/NCAR Reanalysis 1 for 2015-2024 (120 months), together with derived
+calendar-month climatologies and annual-mean linear trends. The data were
+obtained from the NOAA Physical Sciences Laboratory (PSL) through its THREDDS
+NetCDF Subset Service.
+
+Kalnay, E., et al., 1996: The NCEP/NCAR 40-Year Reanalysis Project. Bulletin
+of the American Meteorological Society, 77, 437-471.
+
+Source: https://psl.noaa.gov/data/gridded/data.ncep.reanalysis.html
+Service used: https://psl.noaa.gov/thredds/ncss/grid/Datasets/ncep.reanalysis/
+
+The data are provided by NOAA/OAR/ESRL PSL and are not subject to U.S.
+copyright; attribution is requested.

@@ -1,6 +1,8 @@
-from custom_import import *
+from common.qt_base import (QApplication, QCheckBox, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPushButton, QSlider, QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
 
-ti.init(arch=ti.gpu, default_fp=ti.f32)
+ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
 
 # ================== 常量 ==================
 FIELD_SIZE = 512

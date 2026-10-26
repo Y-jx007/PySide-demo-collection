@@ -8,7 +8,7 @@ the standard library.
 from __future__ import annotations
 
 # Category display order.  Unknown categories are appended alphabetically.
-CATEGORY_ORDER = ["Math", "Physics", "Fractals", "Cellular Automata", "实验"]
+CATEGORY_ORDER = ["Math", "Physics", "Fractals", "Cellular Automata", "Unpolished"]
 
 # Optional runtime dependencies: module -> install hint.
 INSTALL_HINTS = {
@@ -85,6 +85,14 @@ APPS = [
         "category": "Physics",
     },
     {
+        "title": "Noise",
+        "description": "环境噪声实时频谱、A 计权统计、1/f 斜率与长期规律",
+        "path": "Physics/Noise.py",
+        "friendly": "环境噪声分析",
+        "category": "Unpolished",
+        "requires": ["sounddevice", "matplotlib"],
+    },
+    {
         "title": "Snowflake",
         "description": "Reiter 雪花生长模型，六重对称枝晶",
         "path": "Cellular Automata/Snowflake.py",
@@ -96,6 +104,13 @@ APPS = [
         "description": "横梁承重：有限元算弯曲应力，超强度即断裂",
         "path": "Physics/Beam.py",
         "friendly": "横梁承重",
+        "category": "Physics",
+    },
+    {
+        "title": "Bremsstrahlung",
+        "description": "推迟 Liénard-Wiechert 场：轫致分量（红）与同步分量（蓝）",
+        "path": "Physics/Bremsstrahlung.py",
+        "friendly": "轫致/同步辐射",
         "category": "Physics",
     },
     {
@@ -178,6 +193,13 @@ APPS = [
         "category": "Cellular Automata",
     },
     {
+        "title": "Greenberg-Hastings",
+        "description": "激发介质元胞自动机：螺旋波、靶波与不应期",
+        "path": "Cellular Automata/Greenberg-Hastings.py",
+        "friendly": "激发介质",
+        "category": "Cellular Automata",
+    },
+    {
         "title": "Distill",
         "description": "神经网络元胞自动机",
         "path": "Cellular Automata/Distill.py",
@@ -185,83 +207,61 @@ APPS = [
         "category": "Cellular Automata",
         "requires": ["torch"],
     },
-    # ---------------- 实验 ----------------
+    # ---------------- Unpolished ----------------
     {
         "title": "Circulation",
-        "description": "全球环流：气压梯度推风，风应力旋度推海洋环流",
+        "description": "全球环流：解析气压 + 地形；真实模式看 2015–2024 月均风",
         "path": "Physics/Circulation.py",
         "friendly": "全球环流",
-        "category": "实验",
+        "category": "Unpolished",
     },
     {
         "title": "Erosion",
-        "description": "降雨冲刷地形，干后泥土龟裂",
+        "description": "降雨侵蚀 + 两层土壤水/蒸散 + K_I/K_IC 龟裂",
         "path": "Physics/Erosion.py",
         "friendly": "水力侵蚀",
-        "category": "实验",
+        "category": "Unpolished",
     },
     {
         "title": "Caustic",
         "description": "焦散/光线折射模拟",
         "path": "Physics/Caustic.py",
         "friendly": "焦散模拟",
-        "category": "实验",
+        "category": "Unpolished",
     },
     {
         "title": "MPM2D",
         "description": "2D MPM 材料：固体 / 雪 / 液体三种本构，照 taichi_elements 实现",
         "path": "Physics/MPM2D.py",
         "friendly": "MPM 材料",
-        "category": "实验",
-    },
-    {
-        "title": "2D Boids",
-        "description": "Boids 群体行为模拟",
-        "path": "2D Boids.py",
-        "friendly": "Boids群体行为",
-        "category": "实验",
-    },
-    {
-        "title": "2D Noise",
-        "description": "麦克风实时噪声频谱",
-        "path": "2D Noise.py",
-        "friendly": "实时噪声频谱",
-        "category": "实验",
-        "requires": ["sounddevice"],
+        "category": "Unpolished",
     },
     {
         "title": "2D Qusicrystal",
         "description": "二维准晶衍射图样",
         "path": "2D Qusicrystal.py",
         "friendly": "二维准晶",
-        "category": "实验",
+        "category": "Unpolished",
     },
     {
         "title": "Mass Spring",
         "description": "质点-弹簧系统",
         "path": "Mass Spring.py",
         "friendly": "质点弹簧系统",
-        "category": "实验",
+        "category": "Unpolished",
     },
     {
         "title": "Particle Lenia",
         "description": "粒子化 Lenia",
         "path": "Cellular Automata/Particle Lenia.py",
         "friendly": "粒子化Lenia",
-        "category": "实验",
-    },
-    {
-        "title": "Deformation",
-        "description": "网格形变可视化",
-        "path": "Physics/Deformation.py",
-        "friendly": "网格形变",
-        "category": "实验",
+        "category": "Unpolished",
     },
     {
         "title": "KAM",
         "description": "KAM 环面与标准映射",
         "path": "Physics/KAM.py",
         "friendly": "KAM环面",
-        "category": "实验",
+        "category": "Unpolished",
     },
 ]

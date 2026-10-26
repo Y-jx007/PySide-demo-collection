@@ -1,113 +1,201 @@
-﻿from custom_import import *
+from common.qt_base import (QApplication, QBrush, QColor, QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPainter, QPen, QPointF, QPolygonF, QPushButton, QRect, QSlider, QSpinBox, QSplitter, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, ctypes, math, sys)
+from common.numpy_base import (np)
+from common.numba_base import (njit)
+from common.opengl_base import (GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_DYNAMIC_DRAW, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_LINE_LOOP, GL_POINTS, GL_POINT_SPRITE, GL_PROGRAM_POINT_SIZE, GL_STATIC_DRAW, GL_VERTEX_SHADER, glBegin, glBindBuffer, glBufferData, glBufferSubData, glClear, glClearColor, glColor4f, glDeleteBuffers, glDeleteProgram, glDisableVertexAttribArray, glDrawArrays, glEnable, glEnableVertexAttribArray, glEnd, glGenBuffers, glGetUniformLocation, glLineWidth, glUniform2f, glUseProgram, glVertex2f, glVertexAttribPointer, glViewport)
 from OpenGL.GL import *
 from OpenGL.GL.shaders import compileProgram, compileShader
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QPolygonF
 
-# ========== Numba 加速的物理核心（仅操作物理数据，6列） ==========
-@njit(nogil=True, fastmath=True, cache=True)
-def update_positions_vectorized(physics, dt, width, height):
-    n = physics.shape[0]
-    if n == 0:
-        return
-    physics[:, 0] += physics[:, 2] * dt
-    physics[:, 1] += physics[:, 3] * dt
-    radii = physics[:, 4]
-    # 边界反弹
-    mask_left = physics[:, 0] - radii < 0
-    physics[mask_left, 0] = radii[mask_left]
-    physics[mask_left, 2] = -physics[mask_left, 2]
-    mask_right = physics[:, 0] + radii > width
-    physics[mask_right, 0] = width - radii[mask_right]
-    physics[mask_right, 2] = -physics[mask_right, 2]
-    mask_top = physics[:, 1] - radii < 0
-    physics[mask_top, 1] = radii[mask_top]
-    physics[mask_top, 3] = -physics[mask_top, 3]
-    mask_bottom = physics[:, 1] + radii > height
-    physics[mask_bottom, 1] = height - radii[mask_bottom]
-    physics[mask_bottom, 3] = -physics[mask_bottom, 3]
+# ========== Numba 加速的物理核心 ==========
+#
+# 状态用 5 条连续的 float32 数组保存（结构数组 → 数组结构），
+# 避免 (N, 6) 二维数组在 Numba 中的跨步访问，也避免逐帧产生掩码/临时数组。
+#
+# 碰撞检测使用计数排序的空间网格：
+#   * 格子边长 >= 2 * 半径，因此只需检查自身 + 4 个邻居格；
+#   * 用 starts/items 取代固定容量的 (格, 格, 128) 网格，不再静默丢球；
+#   * 只遍历“非空格子”，低密度下比扫描全部格子快一个数量级。
+
+CELL_TARGET_OCCUPANCY = 0.35   # 每格平均粒子数：格子数约为 3N，候选对最少
+MIN_CELL_SIZE = 0.25           # 物理像素；小半径+大数量时不要强行放大格子
+MAX_GRID_CELLS = 2_000_000     # 极端数量下限制网格内存（约 40–80 MB）
 
 
 @njit(nogil=True, fastmath=True, cache=True)
-def resolve_collision_vectorized(physics, i, j):
-    x1, y1, vx1, vy1, r1, m1 = physics[i]
-    x2, y2, vx2, vy2, r2, m2 = physics[j]
-    dx = x1 - x2
-    dy = y1 - y2
-    dist_sq = dx * dx + dy * dy
-    min_dist = r1 + r2
-    min_dist_sq = min_dist * min_dist
-    if dist_sq <= min_dist_sq and dist_sq > 0:
-        dist = math.sqrt(dist_sq)
-        nx = dx / dist
-        ny = dy / dist
-        dvx = vx1 - vx2
-        dvy = vy1 - vy2
-        vn = dvx * nx + dvy * ny
-        if vn > 0:
-            return
-        impulse = 2 * vn / (m1 + m2)
-        physics[i, 2] = vx1 - impulse * m2 * nx
-        physics[i, 3] = vy1 - impulse * m2 * ny
-        physics[j, 2] = vx2 + impulse * m1 * nx
-        physics[j, 3] = vy2 + impulse * m1 * ny
-        overlap = min_dist - dist
-        if overlap > 0:
-            total_m = m1 + m2
-            physics[i, 0] = x1 + overlap * nx * (m2 / total_m)
-            physics[i, 1] = y1 + overlap * ny * (m2 / total_m)
-            physics[j, 0] = x2 - overlap * nx * (m1 / total_m)
-            physics[j, 1] = y2 - overlap * ny * (m1 / total_m)
-
-
-@njit(nogil=True, fastmath=True, cache=True)
-def check_collisions_with_dynamic_grid(physics, width, height,
-                                       grid, grid_counts, max_capacity):
-    n = physics.shape[0]
-    if n < 2:
-        return
-    avg_per_cell = 8
-    grid_size = int(math.sqrt(n / avg_per_cell))
-    grid_size = max(5, grid_size)          # 移除上限，让网格自由扩展
-    cell_w = width / grid_size
-    cell_h = height / grid_size
-    grid_counts.fill(0)
-    xs = physics[:, 0]
-    ys = physics[:, 1]
+def integrate_positions(x, y, vx, vy, radius, dt, width, height):
+    """位置积分 + 四壁反弹，单趟完成，不分配临时数组。"""
+    n = x.shape[0]
     for i in range(n):
-        cx = min(max(0, int(xs[i] / cell_w)), grid_size - 1)
-        cy = min(max(0, int(ys[i] / cell_h)), grid_size - 1)
-        cnt = grid_counts[cy, cx]
-        if cnt < max_capacity:
-            grid[cy, cx, cnt] = i
-            grid_counts[cy, cx] = cnt + 1
-    for cy in range(grid_size):
-        for cx in range(grid_size):
-            count = grid_counts[cy, cx]
-            for i_idx in range(count):
-                i = grid[cy, cx, i_idx]
-                for j_idx in range(i_idx + 1, count):
-                    j = grid[cy, cx, j_idx]
-                    resolve_collision_vectorized(physics, i, j)
-            for dy in range(0, 2):
-                for dx in range(-1 if dy == 0 else 0, 2):
-                    if dx == 0 and dy == 0:
-                        continue
-                    ny = cy + dy
-                    nx = cx + dx
-                    if 0 <= ny < grid_size and 0 <= nx < grid_size:
-                        nbr_count = grid_counts[ny, nx]
-                        for i_idx in range(count):
-                            i = grid[cy, cx, i_idx]
-                            for j_idx in range(nbr_count):
-                                j = grid[ny, nx, j_idx]
-                                if i < j:
-                                    resolve_collision_vectorized(physics, i, j)
+        xi = x[i] + vx[i] * dt
+        yi = y[i] + vy[i] * dt
+        if xi < radius:
+            xi = radius
+            vx[i] = -vx[i]
+        elif xi > width - radius:
+            xi = width - radius
+            vx[i] = -vx[i]
+        if yi < radius:
+            yi = radius
+            vy[i] = -vy[i]
+        elif yi > height - radius:
+            yi = height - radius
+            vy[i] = -vy[i]
+        x[i] = xi
+        y[i] = yi
+
+
+@njit(inline="always")
+def _resolve_pair(x, y, vx, vy, radius, i, j):
+    """等质量弹性碰撞：先做包围盒剔除，再算冲量与位置修正。"""
+    sr = radius + radius
+    dx = x[i] - x[j]
+    if dx > sr or dx < -sr:
+        return
+    dy = y[i] - y[j]
+    if dy > sr or dy < -sr:
+        return
+    dist_sq = dx * dx + dy * dy
+    if dist_sq > sr * sr or dist_sq <= 0.0:
+        return
+    dist = math.sqrt(dist_sq)
+    inv = 1.0 / dist
+    nx = dx * inv
+    ny = dy * inv
+    dvx = vx[i] - vx[j]
+    dvy = vy[i] - vy[j]
+    vn = dvx * nx + dvy * ny
+    if vn > 0.0:            # 已经在分离
+        return
+    # 等质量：冲量强度就是 vn，速度沿法线交换
+    vx[i] -= vn * nx
+    vy[i] -= vn * ny
+    vx[j] += vn * nx
+    vy[j] += vn * ny
+    half = (sr - dist) * 0.5
+    x[i] += half * nx
+    y[i] += half * ny
+    x[j] -= half * nx
+    y[j] -= half * ny
 
 
 @njit(nogil=True, fastmath=True, cache=True)
-def calculate_speeds_vectorized(physics):
-    vx = physics[:, 2]
-    vy = physics[:, 3]
-    return np.sqrt(vx * vx + vy * vy)
+def build_cell_grid(x, y, grid_w, grid_h, inv_cell_w, inv_cell_h,
+                    cell_ids, counts, cursor, starts, items, occupied):
+    """把粒子按格子做计数排序，返回非空格子数。"""
+    ncells = grid_w * grid_h
+    counts.fill(0)
+    n = x.shape[0]
+    for i in range(n):
+        cx = int(x[i] * inv_cell_w)
+        if cx < 0:
+            cx = 0
+        elif cx >= grid_w:
+            cx = grid_w - 1
+        cy = int(y[i] * inv_cell_h)
+        if cy < 0:
+            cy = 0
+        elif cy >= grid_h:
+            cy = grid_h - 1
+        cell = cy * grid_w + cx
+        cell_ids[i] = cell
+        counts[cell] += 1
+
+    total = 0
+    n_occupied = 0
+    for cell in range(ncells):
+        cnt = counts[cell]
+        if cnt:
+            occupied[n_occupied] = cell
+            n_occupied += 1
+        starts[cell] = total
+        cursor[cell] = total
+        total += cnt
+    starts[ncells] = total
+
+    for i in range(n):
+        cell = cell_ids[i]
+        pos = cursor[cell]
+        items[pos] = i
+        cursor[cell] = pos + 1
+    return n_occupied
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def resolve_grid_collisions(x, y, vx, vy, radius, starts, items,
+                            occupied, n_occupied, grid_w, grid_h):
+    """遍历非空格子：自身配对 + 右 / 左上 / 上 / 右上，每对只处理一次。"""
+    row = 0
+    next_row = grid_w
+    for oc in range(n_occupied):
+        cell = occupied[oc]
+        while cell >= next_row:
+            next_row += grid_w
+            row += 1
+        cx = cell - (next_row - grid_w)
+        cy = row
+        start = starts[cell]
+        end = starts[cell + 1]
+        for a in range(start, end):
+            i = items[a]
+            for b in range(a + 1, end):
+                _resolve_pair(x, y, vx, vy, radius, i, items[b])
+            if cx + 1 < grid_w:
+                s2 = starts[cell + 1]
+                e2 = starts[cell + 2]
+                for b in range(s2, e2):
+                    _resolve_pair(x, y, vx, vy, radius, i, items[b])
+            if cy + 1 < grid_h:
+                up = cell + grid_w
+                if cx > 0:
+                    s2 = starts[up - 1]
+                    e2 = starts[up]
+                    for b in range(s2, e2):
+                        _resolve_pair(x, y, vx, vy, radius, i, items[b])
+                s2 = starts[up]
+                e2 = starts[up + 1]
+                for b in range(s2, e2):
+                    _resolve_pair(x, y, vx, vy, radius, i, items[b])
+                if cx + 1 < grid_w:
+                    s2 = starts[up + 1]
+                    e2 = starts[up + 2]
+                    for b in range(s2, e2):
+                        _resolve_pair(x, y, vx, vy, radius, i, items[b])
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def compute_speeds(vx, vy, out):
+    for i in range(out.shape[0]):
+        out[i] = math.sqrt(vx[i] * vx[i] + vy[i] * vy[i])
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def write_colors(speeds, min_speed, max_speed, attributes):
+    """把速率映射到颜色，直接写入 GPU 属性缓冲，不产生中间数组。"""
+    n = speeds.shape[0]
+    inv = 0.0
+    if max_speed > min_speed:
+        inv = 1.0 / (max_speed - min_speed)
+    for i in range(n):
+        if inv > 0.0:
+            norm = (speeds[i] - min_speed) * inv
+            if norm < 0.0:
+                norm = 0.0
+            elif norm > 1.0:
+                norm = 1.0
+        else:
+            norm = 0.5
+        attributes[i, 1] = 100.0 / 255.0
+        attributes[i, 2] = (200.0 - 50.0 * norm) / 255.0
+        attributes[i, 3] = (100.0 + 155.0 * norm) / 255.0
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def pack_positions(x, y, out):
+    """把 x / y 打包成渲染用的连续 (N, 2) 缓冲。"""
+    for i in range(out.shape[0]):
+        out[i, 0] = x[i]
+        out[i, 1] = y[i]
 
 
 @njit(fastmath=True, cache=True)
@@ -117,22 +205,68 @@ def maxwell_distribution(v, v_p):
     return (v / (v_p * v_p)) * math.exp(-v * v / (2 * v_p * v_p))
 
 
+def create_grid_balls(n, radius, speed, width, height):
+    """在整块画布上均匀撒球（抖动网格）。
+
+    旧实现按 2r 间距从左上角逐行填充，球数远小于网格容量时会挤在顶部
+    一条几十像素的带里，局部密度约为平均值的 15 倍，碰撞开销成倍增加。
+    这里按画布宽高比铺满整个窗口，并用 ±0.3 格抖动避免规则点阵感。
+    """
+    n = int(n)
+    width = max(float(width), 1.0)
+    height = max(float(height), 1.0)
+    radius = max(float(radius), 1e-3)
+    speed = max(float(speed), 0.0)
+
+    cols = max(1, int(math.ceil(math.sqrt(n * width / height))))
+    rows = max(1, int(math.ceil(n / cols)))
+    sx = width / cols
+    sy = height / rows
+
+    idx = np.arange(n, dtype=np.int64)
+    col = idx % cols
+    row = idx // cols
+    rnd = np.random.random((2, n))
+    x = (col + 0.2 + 0.6 * rnd[0]) * sx
+    y = (row + 0.2 + 0.6 * rnd[1]) * sy
+    lo_x, hi_x = min(radius, width * 0.5), max(width - radius, width * 0.5)
+    lo_y, hi_y = min(radius, height * 0.5), max(height - radius, height * 0.5)
+    np.clip(x, lo_x, hi_x, out=x)
+    np.clip(y, lo_y, hi_y, out=y)
+
+    theta = np.random.uniform(0.0, 2.0 * math.pi, n)
+    vx = np.cos(theta) * speed
+    vy = np.sin(theta) * speed
+
+    return (x.astype(np.float32), y.astype(np.float32),
+            vx.astype(np.float32), vy.astype(np.float32))
+
+
 # ========== OpenGL 仿真控件 ==========
 
 class GLSimulationWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 分离物理数据 (N x 6) 和颜色 (N x 3, 0-255 整数)
-        self.physics = np.zeros((0, 6), dtype=np.float32)
-        self.colors = np.zeros((0, 3), dtype=np.float32)
+        # 物理状态：结构数组拆成 5 条连续数组
+        self.x = np.zeros(0, dtype=np.float32)
+        self.y = np.zeros(0, dtype=np.float32)
+        self.vx = np.zeros(0, dtype=np.float32)
+        self.vy = np.zeros(0, dtype=np.float32)
+        self.radius = 3.0
         self.speed_array = np.zeros(0, dtype=np.float32)
 
+        # 渲染缓冲（预分配，逐帧原地填充）
+        self.pos_buffer = np.zeros((0, 2), dtype=np.float32)
+        self.attr_buffer = np.zeros((0, 4), dtype=np.float32)
+
         self.timer = QTimer(self)
+        self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.update_simulation)
         self.dt = 0.05        # 固定物理步长
         self.setMinimumSize(500, 500)
 
         self.shader_program = None
+        self.uniform_screen = -1
         self.vbo_positions = None
         self.vbo_attributes = None
         # 记录 VBO 内当前元素数量，用于 glBufferSubData 优化
@@ -141,22 +275,50 @@ class GLSimulationWidget(QOpenGLWidget):
         # 当颜色或半径变化时，需要重新上传属性缓冲
         self.attributes_dirty = True
 
-        self.grid = None
-        self.grid_counts = None
-        self.max_cell_capacity = 128
+        # 空间网格（尺寸随球数/窗口/半径变化时重建）
+        self.grid_w = 0
+        self.grid_h = 0
+        self.cell_w = 1.0
+        self.cell_h = 1.0
+        self.inv_cell_w = 1.0
+        self.inv_cell_h = 1.0
+        self.cell_ids = None
+        self.cell_counts = None
+        self.cell_cursor = None
+        self.cell_starts = None
+        self.cell_items = None
+        self.cell_occupied = None
+        self._grid_ready = False
+        self._grid_dirty = True
+        self._grid_key = None
+
+        self._color_tick = 0
+        self._color_interval = 5
+
         self.current_dpr = 1.0
         self.physical_width = 500
         self.physical_height = 500
         self.reset_callback = None
 
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._on_resize_timeout)
+
     def closeEvent(self, event):
-        # 停止物理更新定时器
+        # 停止物理更新与延迟重置定时器
         self.timer.stop()
-        # 可选：释放物理数组，释放 CPU 内存
-        self.physics = np.zeros((0, 6), dtype=np.float32)
+        self._resize_timer.stop()
+        # 释放物理数组，释放 CPU 内存
+        self.x = np.zeros(0, dtype=np.float32)
+        self.y = np.zeros(0, dtype=np.float32)
+        self.vx = np.zeros(0, dtype=np.float32)
+        self.vy = np.zeros(0, dtype=np.float32)
         self.speed_array = np.zeros(0, dtype=np.float32)
-        self.grid = None
-        self.grid_counts = None
+        self.pos_buffer = np.zeros((0, 2), dtype=np.float32)
+        self.attr_buffer = np.zeros((0, 4), dtype=np.float32)
+        self.cell_ids = self.cell_counts = self.cell_cursor = None
+        self.cell_starts = self.cell_items = self.cell_occupied = None
+        self._grid_ready = False
         # 清理 OpenGL 资源（避免少量 GPU 负担）
         self.makeCurrent()
         if self.vbo_positions:
@@ -209,6 +371,7 @@ class GLSimulationWidget(QOpenGLWidget):
         vs = compileShader(vertex_src, GL_VERTEX_SHADER)
         fs = compileShader(fragment_src, GL_FRAGMENT_SHADER)
         self.shader_program = compileProgram(vs, fs)
+        self.uniform_screen = glGetUniformLocation(self.shader_program, "screen_size")
         self.vbo_positions = glGenBuffers(1)
         self.vbo_attributes = glGenBuffers(1)
 
@@ -217,11 +380,21 @@ class GLSimulationWidget(QOpenGLWidget):
         phys_w = int(w * dpr)
         phys_h = int(h * dpr)
         glViewport(0, 0, phys_w, phys_h)
-        self.physical_width = phys_w
-        self.physical_height = phys_h
+        self.physical_width = max(1, phys_w)
+        self.physical_height = max(1, phys_h)
         self.current_dpr = dpr
-        if self.reset_callback and self.physics.shape[0] > 0:
+        if self.reset_callback is not None and self.x.size > 0:
+            # 拖拽改变窗口大小时每帧重建几千/几十万个球会严重卡顿，
+            # 停手 150 ms 后再按新尺寸重建。
+            self._resize_timer.start(150)
+        else:
+            self._grid_dirty = True
+
+    def _on_resize_timeout(self):
+        if self.reset_callback is not None:
             self.reset_callback()
+        else:
+            self._grid_dirty = True
 
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT)
@@ -238,38 +411,34 @@ class GLSimulationWidget(QOpenGLWidget):
         glVertex2f(-1.0, 1.0)
         glEnd()
 
-        n = self.physics.shape[0]
+        n = self.x.size
         if n == 0:
             return
 
         glUseProgram(self.shader_program)
-        screen_size_loc = glGetUniformLocation(self.shader_program, "screen_size")
-        glUniform2f(screen_size_loc, self.physical_width, self.physical_height)
+        glUniform2f(self.uniform_screen, self.physical_width, self.physical_height)
 
         # ---- 上传位置数据 ----
-        pos_data = np.ascontiguousarray(self.physics[:, :2])  # 确保 C 连续
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
+        pos_bytes = n * 2 * 4
         if n != self.vbo_pos_capacity:
-            glBufferData(GL_ARRAY_BUFFER, pos_data.nbytes, pos_data, GL_DYNAMIC_DRAW)
+            glBufferData(GL_ARRAY_BUFFER, pos_bytes, self.pos_buffer, GL_DYNAMIC_DRAW)
             self.vbo_pos_capacity = n
         else:
-            glBufferSubData(GL_ARRAY_BUFFER, 0, pos_data.nbytes, pos_data)
+            glBufferSubData(GL_ARRAY_BUFFER, 0, pos_bytes, self.pos_buffer)
 
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
 
-        # ---- 上传属性数据（半径 + 颜色） ----
-        if self.attributes_dirty:
-            attr = np.zeros((n, 4), dtype=np.float32)
-            attr[:, 0] = self.physics[:, 4]               # 半径
-            attr[:, 1:4] = self.colors / 255.0            # 颜色归一化
-            attr_data = np.ascontiguousarray(attr)
+        # ---- 上传属性数据（半径 + 颜色），只在颜色变化时上传 ----
+        if self.attributes_dirty and self.attr_buffer.shape[0] == n:
             glBindBuffer(GL_ARRAY_BUFFER, self.vbo_attributes)
+            attr_bytes = n * 4 * 4
             if n != self.vbo_attr_capacity:
-                glBufferData(GL_ARRAY_BUFFER, attr_data.nbytes, attr_data, GL_STATIC_DRAW)
+                glBufferData(GL_ARRAY_BUFFER, attr_bytes, self.attr_buffer, GL_STATIC_DRAW)
                 self.vbo_attr_capacity = n
             else:
-                glBufferSubData(GL_ARRAY_BUFFER, 0, attr_data.nbytes, attr_data)
+                glBufferSubData(GL_ARRAY_BUFFER, 0, attr_bytes, self.attr_buffer)
             self.attributes_dirty = False
 
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_attributes)
@@ -290,79 +459,91 @@ class GLSimulationWidget(QOpenGLWidget):
         glUseProgram(0)
 
     def set_balls(self, n_balls, radius, initial_speed, phys_width, phys_height):
-        if n_balls <= 0:
-            self.physics = np.zeros((0, 6), dtype=np.float32)
-            self.colors = np.zeros((0, 3), dtype=np.float32)
+        n = max(0, int(n_balls))
+        self.physical_width = max(1, int(phys_width))
+        self.physical_height = max(1, int(phys_height))
+
+        if n == 0:
+            self.x = np.zeros(0, dtype=np.float32)
+            self.y = np.zeros(0, dtype=np.float32)
+            self.vx = np.zeros(0, dtype=np.float32)
+            self.vy = np.zeros(0, dtype=np.float32)
             self.speed_array = np.zeros(0, dtype=np.float32)
+            self.pos_buffer = np.zeros((0, 2), dtype=np.float32)
+            self.attr_buffer = np.zeros((0, 4), dtype=np.float32)
+            self._grid_ready = False
+            self._grid_key = None
+            self.attributes_dirty = True
+            self.update()
             return
-        cols = max(1, int(phys_width / (2 * radius)))
-        rows = max(1, int(phys_height / (2 * radius)))
-        self.physics, initial_colors = self._create_grid_balls(
-            n_balls, radius, initial_speed, phys_width, phys_height, rows, cols)
-        self.colors = initial_colors
-        self.speed_array = np.zeros(len(self.physics), dtype=np.float32)
-        self._update_speeds_cache()
-        self._update_colors_cache()          # 根据速度更新颜色
-        self.attributes_dirty = True
-        self._ensure_grid_capacity()
 
-    def _create_grid_balls(self, n, radius, speed, width, height, rows, cols):
-        physics = np.zeros((n, 6), dtype=np.float32)
-        colors = np.zeros((n, 3), dtype=np.float32)
-        placed = 0
-        for row in range(rows):
-            for col in range(cols):
-                if placed >= n:
-                    break
-                x = col * (2 * radius) + radius
-                y = row * (2 * radius) + radius
-                x = min(x, width - radius)
-                y = min(y, height - radius)
-                angle = np.random.uniform(0, 2 * np.pi)
-                vx = math.cos(angle) * speed
-                vy = math.sin(angle) * speed
-                physics[placed] = [x, y, vx, vy, radius, 1.0]
-                colors[placed] = [100, 200, 100]      # 默认绿色
-                placed += 1
-        return physics[:placed], colors[:placed]
+        self.radius = max(float(radius), 1e-3)
+        self.x, self.y, self.vx, self.vy = create_grid_balls(
+            n, self.radius, initial_speed,
+            self.physical_width, self.physical_height)
 
-    def _update_speeds_cache(self):
-        if self.physics.shape[0] > 0:
-            self.speed_array = calculate_speeds_vectorized(self.physics)
+        self.speed_array = np.empty(n, dtype=np.float32)
+        compute_speeds(self.vx, self.vy, self.speed_array)
 
-    def _update_colors_cache(self):
-        n = self.physics.shape[0]
-        if n == 0 or len(self.speed_array) == 0:
-            return
-        speeds = self.speed_array
-        max_s = speeds.max()
-        min_s = speeds.min()
-        if max_s > min_s:
-            norm = (speeds - min_s) / (max_s - min_s)
-        else:
-            norm = np.full_like(speeds, 0.5)
-        self.colors[:, 0] = 100
-        self.colors[:, 1] = 200 - 50 * norm
-        self.colors[:, 2] = 100 + 155 * norm
-        self.attributes_dirty = True
+        self.pos_buffer = np.empty((n, 2), dtype=np.float32)
+        pack_positions(self.x, self.y, self.pos_buffer)
 
-    def _ensure_grid_capacity(self):
-        """根据当前球数动态分配网格，确保所有球都能进入格子。"""
-        n = self.physics.shape[0]
+        self.attr_buffer = np.empty((n, 4), dtype=np.float32)
+        self.attr_buffer[:, 0] = self.radius
+        self._update_colors()
+
+        self._color_tick = 0
+        # 球越多，颜色刷新/属性上传越稀疏，避免每帧 16N 字节的带宽
+        self._color_interval = max(5, min(60, 5 + n // 25000))
+
+        self._grid_dirty = True
+        self._ensure_grid()
+        self.update()
+
+    def _ensure_grid(self):
+        """按当前球数、窗口尺寸和半径分配网格（尺寸不变时复用）。"""
+        n = self.x.size
         if n < 2:
-            self.grid = None
-            self.grid_counts = None
+            self._grid_ready = False
+            self._grid_key = None
             return
-        avg_per_cell = 8
-        gs = max(5, int(math.sqrt(n / avg_per_cell)))
-        # 预留容量：最坏情况下少数格子可能集中多数球，取平均密度的 3 倍，但不超 n
-        capacity = max(128, int(n * 3 / (gs * gs)))
-        capacity = min(capacity, n)
-        if (self.grid is None or self.grid.shape[0] != gs or
-                self.grid.shape[2] < capacity):
-            self.grid = np.zeros((gs, gs, capacity), dtype=np.int32)
-            self.grid_counts = np.zeros((gs, gs), dtype=np.int32)
-            self.max_cell_capacity = capacity
+
+        width = max(1, int(self.physical_width))
+        height = max(1, int(self.physical_height))
+        target = math.sqrt(width * height * CELL_TARGET_OCCUPANCY / n)
+        cell = max(2.0 * self.radius, target, MIN_CELL_SIZE)
+        grid_w = max(1, int(width // cell))
+        grid_h = max(1, int(height // cell))
+        # 极端参数下限制格子数，换取可控内存
+        while grid_w * grid_h > MAX_GRID_CELLS:
+            cell *= 1.3
+            grid_w = max(1, int(width // cell))
+            grid_h = max(1, int(height // cell))
+
+        key = (n, width, height, grid_w, grid_h)
+        if key == self._grid_key:
+            self._grid_dirty = False
+            self._grid_ready = True
+            return
+
+        # 向下取整保证实际格宽 >= 2 * 半径，邻居只需看一圈
+        self.grid_w = grid_w
+        self.grid_h = grid_h
+        self.cell_w = width / grid_w
+        self.cell_h = height / grid_h
+        self.inv_cell_w = 1.0 / self.cell_w
+        self.inv_cell_h = 1.0 / self.cell_h
+
+        ncells = grid_w * grid_h
+        self.cell_ids = np.empty(n, dtype=np.int32)
+        self.cell_counts = np.empty(ncells, dtype=np.int32)
+        self.cell_cursor = np.empty(ncells + 1, dtype=np.int32)
+        self.cell_starts = np.empty(ncells + 1, dtype=np.int32)
+        self.cell_items = np.empty(n, dtype=np.int32)
+        self.cell_occupied = np.empty(min(n, ncells), dtype=np.int32)
+        self._grid_key = key
+        self._grid_dirty = False
+        self._grid_ready = True
 
     def start_simulation(self):
         self.timer.start(16)          # 约 60 fps 的物理更新
@@ -370,54 +551,60 @@ class GLSimulationWidget(QOpenGLWidget):
     def stop_simulation(self):
         self.timer.stop()
 
-    def update_simulation(self):
-        if self.physics.shape[0] == 0:
+    def _update_speeds_cache(self):
+        n = self.x.size
+        if n == 0:
+            self.speed_array = np.zeros(0, dtype=np.float32)
             return
-        width, height = self.physical_width, self.physical_height
+        if self.speed_array.shape[0] != n:
+            self.speed_array = np.empty(n, dtype=np.float32)
+        compute_speeds(self.vx, self.vy, self.speed_array)
 
-        # 使用固定时间步长，每帧执行一次物理步和碰撞检测
-        update_positions_vectorized(self.physics, self.dt, width, height)
+    def _update_colors(self):
+        n = self.speed_array.shape[0]
+        if n == 0 or self.attr_buffer.shape[0] != n:
+            return
+        min_s = float(self.speed_array.min())
+        max_s = float(self.speed_array.max())
+        write_colors(self.speed_array, min_s, max_s, self.attr_buffer)
+        self.attributes_dirty = True
 
-        n = self.physics.shape[0]
-        if n > 100 and self.grid is not None:
-            check_collisions_with_dynamic_grid(
-                self.physics, width, height,
-                self.grid, self.grid_counts, self.max_cell_capacity)
-        elif n >= 2:
-            self._simple_collision_check()
+    def update_simulation(self):
+        n = self.x.size
+        if n == 0:
+            return
+        if self._grid_dirty or self._grid_key is None:
+            self._ensure_grid()
 
-        # 每 5 帧更新一次速度与颜色（降低颜色更新开销）
-        if not hasattr(self, '_color_tick'):
-            self._color_tick = 0
+        update_width = max(1, self.physical_width)
+        update_height = max(1, self.physical_height)
+        integrate_positions(self.x, self.y, self.vx, self.vy, self.radius,
+                            self.dt, update_width, update_height)
+
+        if n >= 2 and self._grid_ready:
+            n_occupied = build_cell_grid(
+                self.x, self.y, self.grid_w, self.grid_h,
+                self.inv_cell_w, self.inv_cell_h,
+                self.cell_ids, self.cell_counts, self.cell_cursor,
+                self.cell_starts, self.cell_items, self.cell_occupied)
+            if n_occupied:
+                resolve_grid_collisions(
+                    self.x, self.y, self.vx, self.vy, self.radius,
+                    self.cell_starts, self.cell_items, self.cell_occupied,
+                    n_occupied, self.grid_w, self.grid_h)
+
+        pack_positions(self.x, self.y, self.pos_buffer)
+        compute_speeds(self.vx, self.vy, self.speed_array)
+
         self._color_tick += 1
-        if self._color_tick >= 5:
+        if self._color_tick >= self._color_interval:
             self._color_tick = 0
-            self._update_speeds_cache()
-            self._update_colors_cache()
+            self._update_colors()
 
         self.update()
 
-    def _simple_collision_check(self):
-        """小规模时的扫描法碰撞检测（不依赖网格）。"""
-        n = self.physics.shape[0]
-        if n < 2:
-            return
-        indices = np.argsort(self.physics[:, 0])
-        for i_idx in range(n):
-            i = indices[i_idx]
-            xi, yi, ri = self.physics[i, 0], self.physics[i, 1], self.physics[i, 4]
-            max_x = xi + 2 * ri
-            for j_idx in range(i_idx + 1, n):
-                j = indices[j_idx]
-                if self.physics[j, 0] > max_x:
-                    break
-                dx = xi - self.physics[j, 0]
-                dy = yi - self.physics[j, 1]
-                if dx * dx + dy * dy <= (ri + self.physics[j, 4]) ** 2:
-                    resolve_collision_vectorized(self.physics, i, j)
 
-
-# ========== 直方图控件（不变） ==========
+# ========== 直方图控件 ==========
 
 class HistogramWidget(QWidget):
     def __init__(self, parent=None):
@@ -428,12 +615,23 @@ class HistogramWidget(QWidget):
         self.bar_spacing = 0
         self.initial_speed = 20.0
         self.setMinimumSize(500, 500)
+        self._bins = None
+        self._brushes = []
+        self._brush_bins = -1
 
     def update_data(self, speed_array):
         self.speed_data = speed_array if speed_array is not None and len(speed_array) > 0 else None
         if self.speed_data is not None:
-            self.max_speed = np.max(self.speed_data)
+            self.max_speed = max(1e-6, float(np.max(self.speed_data)))
+        self._recompute_bins()
         self.update()
+
+    def _recompute_bins(self):
+        if self.speed_data is None or self.max_speed <= 0:
+            self._bins = None
+            return
+        self._bins = np.histogram(self.speed_data, bins=self.bin_count,
+                                  range=(0, self.max_speed))[0]
 
     def set_initial_speed(self, speed):
         self.initial_speed = speed
@@ -441,6 +639,8 @@ class HistogramWidget(QWidget):
 
     def set_bin_count(self, count):
         self.bin_count = max(1, count)
+        self._brush_bins = -1
+        self._recompute_bins()
         self.update()
 
     def set_bar_spacing(self, spacing):
@@ -451,10 +651,19 @@ class HistogramWidget(QWidget):
         ratio = idx / total
         return QColor(100, int(200 - 50 * ratio), int(100 + 155 * ratio))
 
+    def _brushes_for_bins(self):
+        if self._brush_bins != self.bin_count:
+            self._brushes = [QBrush(self.get_color_for_bin(i, self.bin_count))
+                             for i in range(self.bin_count)]
+            self._brush_bins = self.bin_count
+        return self._brushes
+
     def paintEvent(self, event):
         with QPainter(self) as painter:
-            painter.setRenderHint(QPainter.Antialiasing)
-            if self.speed_data is None:
+            # 坐标轴和柱子都是横平竖直的，关掉抗锯齿后填充/描边更快；
+            # 理论曲线再单独打开，保持平滑。
+            painter.setRenderHint(QPainter.Antialiasing, False)
+            if self.speed_data is None or self._bins is None:
                 painter.setPen(QPen(Qt.black))
                 painter.drawText(self.rect(), Qt.AlignCenter, "等待数据...")
                 return
@@ -472,40 +681,49 @@ class HistogramWidget(QWidget):
                 painter.drawLine(int(x), self.height() - margin - 5, int(x), self.height() - margin + 5)
                 painter.drawText(int(x - 10), self.height() - margin + 20, f"{val:.1f}")
             # 直方图柱
-            bins = np.histogram(self.speed_data, bins=self.bin_count, range=(0, self.max_speed))[0]
-            max_count = np.max(bins) if len(bins) > 0 else 1
+            bins = self._bins
+            max_count = int(np.max(bins)) if len(bins) > 0 else 1
+            if max_count <= 0:
+                max_count = 1
             for i in range(6):
                 y = self.height() - margin - i * (graph_h / 5)
                 val = i * (max_count / 5)
                 painter.drawLine(margin - 5, int(y), margin + 5, int(y))
                 painter.drawText(margin - 40, int(y + 5), f"{val:.0f}")
             bar_w = max(1, (graph_w / self.bin_count) - self.bar_spacing)
+            brushes = self._brushes_for_bins()
+            rects = []
             for i, count in enumerate(bins):
                 if count == 0:
                     continue
-                x = margin + i * (graph_w / self.bin_count) + self.bar_spacing / 2
+                x = int(margin + i * (graph_w / self.bin_count) + self.bar_spacing / 2)
                 bar_h = (count / max_count) * graph_h
-                y = self.height() - margin - bar_h
-                painter.setPen(QPen(Qt.black, 1))
-                painter.setBrush(QBrush(self.get_color_for_bin(i, self.bin_count)))
-                painter.drawRect(int(x), int(y), int(bar_w), int(bar_h))
+                y = int(self.height() - margin - bar_h)
+                rects.append(QRect(x, y, int(bar_w), int(bar_h)))
+                # 先无边框填充，最后一次性描边，避免每个柱子两次绘制
+                painter.fillRect(rects[-1], brushes[i])
                 if bar_h > 15:
                     painter.setPen(QPen(Qt.black))
-                    painter.drawText(int(x), int(y - 5), f"{count}")
-            # 麦克斯韦理论曲线
+                    painter.drawText(x, y - 5, f"{count}")
+            if rects:
+                painter.setPen(QPen(Qt.black, 1))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRects(rects)
+            # 麦克斯韦理论曲线：一次性画折线，避免 100 次 drawLine
             v_p = self.initial_speed / math.sqrt(2)
             max_v = self.max_speed
-            peak = maxwell_distribution(v_p, v_p)
-            painter.setPen(QPen(Qt.black, 2))
-            points = []
-            for v in np.linspace(0, max_v, 100):
-                x = margin + (v / max_v) * graph_w
-                y_val = maxwell_distribution(v, v_p)
-                y = self.height() - margin - (y_val / peak) * graph_h
-                points.append((x, y))
-            for k in range(len(points) - 1):
-                painter.drawLine(int(points[k][0]), int(points[k][1]),
-                                 int(points[k+1][0]), int(points[k+1][1]))
+            if v_p > 0 and max_v > 0:
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                peak = (1.0 / v_p) * math.exp(-0.5)
+                vs = np.linspace(0, max_v, 100)
+                ys = (vs / (v_p * v_p)) * np.exp(-vs * vs / (2 * v_p * v_p))
+                poly = QPolygonF()
+                for v, y_val in zip(vs, ys):
+                    poly.append(QPointF(margin + (v / max_v) * graph_w,
+                                        self.height() - margin - (y_val / peak) * graph_h))
+                painter.setPen(QPen(Qt.black, 2))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPolyline(poly)
             # 标签
             painter.rotate(-90)
             painter.drawText(-self.height()//2-15, 20, "数量")
@@ -527,12 +745,17 @@ class MaxwellBoltzmannApp(QMainWindow):
         self.main_layout.addWidget(splitter)
 
         self.simulation_widget = GLSimulationWidget()
-        self.simulation_widget.set_reset_callback(self.reset_simulation)
+        self.simulation_widget.set_reset_callback(self._reset_after_resize)
         splitter.addWidget(self.simulation_widget)
 
         self.histogram_widget = HistogramWidget()
         splitter.addWidget(self.histogram_widget)
         splitter.setSizes([600, 600])
+
+        # 参数拖动/连续输入时合并重置请求，避免每个键击都重建全部小球
+        self._reset_timer = QTimer(self)
+        self._reset_timer.setSingleShot(True)
+        self._reset_timer.timeout.connect(self.reset_simulation)
 
         self.setup_control_panel()
         self.ball_count = 2000
@@ -546,8 +769,9 @@ class MaxwellBoltzmannApp(QMainWindow):
         self.update_timer.start(100)
 
     def closeEvent(self, event):
-        # 停止直方图更新定时器
+        # 停止直方图更新与延迟重置定时器
         self.update_timer.stop()
+        self._reset_timer.stop()
         # 强制关闭仿真控件（会触发上面的 closeEvent）
         self.simulation_widget.close()
         event.accept()
@@ -625,7 +849,15 @@ class MaxwellBoltzmannApp(QMainWindow):
                                          self.initial_speed, pw, ph)
         self.update_histogram()
 
+    def _schedule_reset(self, delay_ms=120):
+        self._reset_timer.start(delay_ms)
+
+    def _reset_after_resize(self):
+        """窗口尺寸变化后仅按新尺寸重排小球，不改变运行/暂停状态。"""
+        self.create_balls()
+
     def reset_simulation(self):
+        self._reset_timer.stop()
         self.create_balls()
         self.simulation_widget.start_simulation()
 
@@ -642,16 +874,16 @@ class MaxwellBoltzmannApp(QMainWindow):
         self.speed_spin.blockSignals(False)
         self.initial_speed = new_speed
         self.histogram_widget.set_initial_speed(new_speed)
-        self.reset_simulation()
+        self._schedule_reset()
 
     def on_initial_speed_changed(self, val):
         self.initial_speed = val
         self.histogram_widget.set_initial_speed(val)
-        self.reset_simulation()
+        self._schedule_reset()
 
     def on_ball_radius_changed(self, val):
         self.ball_radius = val
-        self.reset_simulation()
+        self._schedule_reset()
 
     def update_histogram(self):
         self.histogram_widget.update_data(self.simulation_widget.speed_array)

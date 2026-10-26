@@ -1,129 +1,40 @@
-﻿from custom_import import *
+from common.taichi_base import (ti)
+from common.custom_base import (BaseFractalWidget, c64)
+from common.qt_base import (QApplication, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPainter, QSpinBox, QVBoxLayout, Qt, sys)
 
-ti.init(arch=ti.gpu)
+from fractal_common import (
+    DualCanvasFractalWindow,
+    compile_complex_function,
+    draw_orbit,
+    hint_label,
+)
+from fractal_kernels import (
+    MANDELBROT_FUNCTION_NAMES,
+    compute_orbit,
+    mandelbrot_preset,
+    render_mandelbrot,
+)
 
-# -------------------- 预设函数表 --------------------
-@ti.func
-def preset_func(z: c64, func_type: ti.i32) -> c64:
-    result = z
-    if func_type == 0:
-        result = csqr(z)
-    elif func_type == 1:
-        result = cmul(z, csqr(z))
-    elif func_type == 2:
-        result = csqr(csqr(z))
-    elif func_type == 3:
-        z2 = csqr(z)
-        z3 = cmul(z, z2)
-        result = cmul(z2, z3)
-    elif func_type == 4:
-        result = csqr(z) + z
-    elif func_type == 5:
-        result = cdiv(c64(1.0, 0.0), z)
-    elif func_type == 6:
-        result = csin(z)
-    elif func_type == 7:
-        result = ccos(z)
-    elif func_type == 8:
-        result = cexp(z)
-    elif func_type == 9:
-        result = cconj(csqr(z))
-    elif func_type == 10:
-        result = csqr(c64(ti.abs(z.x), ti.abs(z.y)))
-    else:
-        result = csqr(z)
-    return result
+ti.init(arch=ti.gpu, offline_cache=True)
 
-# 自定义函数默认占位
-custom_func = csqr
+INFO_TEXT = (
+    "左键 切换实时更新 · 中键 拖拽 · 滚轮 缩放\n"
+    "左 Mandelbrot · 右 Julia（鼠标选取 c）"
+)
+CUSTOM_PLACEHOLDER = (
+    "输入表达式，如: csqr(z) + csin(z)\n"
+    "可用: csqr, cconj, cmul, cdiv, csin,\n"
+    "      ccos, cexp, clog, cpow(z, n)"
+)
 
-# -------------------- 分形内核（支持自定义函数和轨道绘制） --------------------
-fractal_kernel = None
-
-def build_kernel():
-    global fractal_kernel
-    @ti.kernel
-    def render(
-        pixels: ti.template(),
-        width: ti.i32, height: ti.i32,
-        max_iter: ti.i32, escape_radius: ti.f64,
-        c_real: ti.f64, c_imag: ti.f64,
-        display_mode: ti.i32,
-        view_scale: ti.f64, view_center_x: ti.f64, view_center_y: ti.f64,
-        func_type: ti.i32,
-        use_custom: ti.i32,
-        mouse_wx: ti.f64, mouse_wy: ti.f64, mouse_valid: ti.i32
-    ):
-        ti.loop_config(block_dim=256)
-        for i, j in ti.ndrange(width, height):
-            aspect = ti.cast(width, ti.f64) / ti.cast(height, ti.f64)
-            uv_x = (ti.cast(i, ti.f64) / ti.cast(width, ti.f64) - 0.5) * 2.0 * aspect
-            uv_y = (0.5 - ti.cast(j, ti.f64) / ti.cast(height, ti.f64)) * 2.0
-            uv_x = uv_x * view_scale + view_center_x
-            uv_y = uv_y * view_scale + view_center_y
-
-            z = c64(0.0, 0.0)
-            c = c64(0.0, 0.0)
-            if display_mode == 0:       # Mandelbrot
-                c = c64(uv_x, uv_y)
-            else:                       # Julia
-                c = c64(c_real, c_imag)
-                z = c64(uv_x, uv_y)
-
-            iterations = 0
-            escaped = False
-            for _ in range(max_iter):
-                if (z.x * z.x + z.y * z.y) > escape_radius * escape_radius:
-                    escaped = True
-                    break
-                if use_custom:
-                    z = custom_func(z) + c
-                else:
-                    z = preset_func(z, func_type) + c
-                iterations += 1
-
-            color_r, color_g, color_b = 1.0, 1.0, 1.0
-            if escaped:
-                log_zn = ti.log(z.x * z.x + z.y * z.y) / 2.0
-                nu = ti.log(log_zn / ti.log(escape_radius)) / ti.log(2.0)
-                smooth_iter = ti.cast(iterations, ti.f64) + 1.0 - nu
-                cval = ti.cast(smooth_iter / ti.cast(max_iter, ti.f64), ti.f32)
-                color_r = color_g = color_b = cval
-
-            # 轨道绘制（仅 Mandelbrot 模式且鼠标有效时）
-            if display_mode == 0 and mouse_valid:
-                orbit_z = c64(0.0, 0.0)
-                orbit_c = c64(mouse_wx, mouse_wy)
-                for _ in range(max_iter):
-                    next_z = custom_func(orbit_z) + orbit_c if use_custom else preset_func(orbit_z, func_type) + orbit_c
-                    ab = next_z - orbit_z
-                    ap = c64(uv_x, uv_y) - orbit_z
-                    dot_ab_ab = ab.x * ab.x + ab.y * ab.y
-                    t = 0.0
-                    if dot_ab_ab > 1e-12:
-                        t = ti.math.clamp((ap.x * ab.x + ap.y * ab.y) / dot_ab_ab, 0.0, 1.0)
-                    closest = orbit_z + t * ab
-                    dx = uv_x - closest.x
-                    dy = uv_y - closest.y
-                    dist_sq = dx * dx + dy * dy
-                    threshold = 0.001 * view_scale
-                    if dist_sq < threshold * threshold:
-                        color_r, color_g, color_b = 0.95, 0.76, 0.07
-                        break
-                    orbit_z = next_z
-                    if orbit_z.x * orbit_z.x + orbit_z.y * orbit_z.y > escape_radius * escape_radius:
-                        break
-
-            pixels[j, i] = pack_color(color_r, color_g, color_b)
-    fractal_kernel = render
-
-build_kernel()
 
 # -------------------- 显示组件 --------------------
 class MandelJuliaWidget(BaseFractalWidget):
     def __init__(self, parent, is_left):
         super().__init__(parent, is_left)
         self.view_scale = 1.0
+        self._orbit_key = None
+        self._orbit_points = None
 
     def compute_image(self):
         w, h, rw, rh = self.get_render_dims()
@@ -131,264 +42,237 @@ class MandelJuliaWidget(BaseFractalWidget):
             return
         self.ensure_taichi_field(rw, rh)
         app = self.parent_app
+        transform = self.view_transform(rw, rh)
 
-        # 计算鼠标世界坐标（用于轨道）
-        mouse_wx, mouse_wy = 0.0, 0.0
-        mouse_valid = 0
-        if app.mouse_pos[0] >= 0:
-            aspect = w / h if h > 0 else 1.0
-            norm_x = (app.mouse_pos[0] / w - 0.5) * 2.0 * aspect
-            norm_y = (0.5 - app.mouse_pos[1] / h) * 2.0
-            mouse_wx = norm_x * self.view_scale + self.view_center[0]
-            mouse_wy = norm_y * self.view_scale + self.view_center[1]
-            if self.is_left:
-                if app.realtime_update:
-                    mouse_valid = 1
-                else:
-                    mouse_wx, mouse_wy = app.fixed_orbit_pos
-                    mouse_valid = 1
-            else:
-                if not app.realtime_update:
-                    mouse_wx, mouse_wy = app.fixed_orbit_pos
-                    mouse_valid = 1
-
-        fractal_kernel(
+        custom = bool(app.using_custom_function)
+        func = app.custom_function if custom else mandelbrot_preset
+        # func_type is ignored when a custom function is active; pin it to 0
+        # so the warmed kernel and the render call share one specialization.
+        func_type = 0 if custom else app.function_type
+        render_mandelbrot(
             self.taichi_field, rw, rh,
             app.max_iterations, float(app.escape_radius),
-            app.c_real, app.c_imag,
+            float(app.c_real), float(app.c_imag),
             0 if self.is_left else 1,
-            float(self.view_scale), float(self.view_center[0]), float(self.view_center[1]),
-            app.function_type, 1 if app.using_custom_function else 0,
-            mouse_wx, mouse_wy, mouse_valid
+            transform.scale_x, transform.offset_x,
+            transform.scale_y, transform.offset_y,
+            func, custom, func_type,
         )
         self.field_to_image(rw, rh, w, h)
+        app.ensure_orbit_kernel_warm()
+
+    def _orbit_position(self):
+        """Return the world-space orbit seed, or None when no mouse is set."""
+        app = self.parent_app
+        if app.mouse_pos[0] < 0:
+            return None
+        if app.realtime_update:
+            return self.screen_to_world(app.mouse_pos[0], app.mouse_pos[1])
+        return float(app.fixed_orbit_pos[0]), float(app.fixed_orbit_pos[1])
+
+    def _current_orbit(self):
+        position = self._orbit_position()
+        if position is None:
+            return None
+        app = self.parent_app
+        key = (
+            app.function_revision,
+            bool(app.using_custom_function),
+            app.function_type,
+            float(position[0]), float(position[1]),
+            int(app.max_iterations),
+            float(app.escape_radius),
+        )
+        if key != self._orbit_key:
+            self._orbit_points = app.compute_orbit(position[0], position[1])
+            self._orbit_key = key
+        return self._orbit_points
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.is_left:
+            return
+        points = self._current_orbit()
+        if points is None:
+            return
+        painter = QPainter(self)
+        draw_orbit(painter, points, self.view_transform())
+        painter.end()
+
 
 # -------------------- 主窗口 --------------------
-class ComplexDynamicsApp(QMainWindow):
+class ComplexDynamicsApp(DualCanvasFractalWindow):
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Mandelbrot / Julia 集 — 双精度 Taichi GPU")
-        self.setGeometry(100, 100, 1200, 700)
-
+        super().__init__(
+            "Mandelbrot / Julia 集 — 双精度 Taichi GPU",
+            INFO_TEXT,
+            default_view_scale=1.0,
+        )
         self.max_iterations = 250
         self.escape_radius = 4.0
         self.c_real = -0.7
         self.c_imag = 0.27015
-        self.mouse_pos = [-1.0, -1.0]
         self.function_type = 0
-        self.realtime_update = True
+        self.custom_function = None
         self.fixed_orbit_pos = [0.0, 0.0]
-        self.fixed_c_value = [-0.7, 0.27015]
-        self.using_custom_function = False
-        self.antialias_factor = 1
 
+        self._orbit_points_field = None
+        self._orbit_length_field = None
+        self._orbit_capacity = 0
+        self._warmup_field = None
+        self._warmup_orbit_field = None
+        self._warmup_orbit_length = None
+        self._orbit_warm_revision = -1
         self.setup_ui()
 
-    def setup_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.addWidget(self.create_control_panel())
-        main_layout.addWidget(self.create_display_area())
+    # ------------------------------------------------------------------
+    # 控件
+    # ------------------------------------------------------------------
+    def create_parameter_group(self):
+        group = QGroupBox("参数设置")
+        form = QFormLayout(group)
+        form.setContentsMargins(12, 16, 12, 8)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(4)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
 
-    def create_control_panel(self):
-        widget = QWidget()
-        widget.setMaximumHeight(150)
-        layout = QHBoxLayout(widget)
-        layout.setSpacing(6)
-
-        # 参数组
-        param_group = QGroupBox("参数设置")
-        param_group.setFixedWidth(200)
-        param_layout = QVBoxLayout(param_group)
-
-        # 函数
-        func_layout = QHBoxLayout()
-        func_layout.addWidget(QLabel("函数:"))
         self.function_combo = QComboBox()
-        self.function_combo.addItems([
-            "z²", "z³", "z⁴", "z⁵", "z²+z", "1/z",
-            "sin(z)", "cos(z)", "exp(z)", "conj(z²)", "(|Re|+i|Im|)²"
-        ])
+        self.function_combo.addItems(MANDELBROT_FUNCTION_NAMES)
+        self.function_combo.setFixedSize(132, 26)
+        self.function_combo.setToolTip("选择迭代函数；首次切换会编译专用内核")
         self.function_combo.currentIndexChanged.connect(self.on_function_changed)
-        self.function_combo.setFixedWidth(120)
-        func_layout.addWidget(self.function_combo)
-        param_layout.addLayout(func_layout)
+        form.addRow("函数:", self.function_combo)
 
-        # 迭代次数
-        iter_layout = QHBoxLayout()
-        iter_layout.addWidget(QLabel("迭代:"))
         self.iter_spin = QSpinBox()
         self.iter_spin.setRange(50, 50000)
         self.iter_spin.setValue(self.max_iterations)
+        self.iter_spin.setFixedSize(132, 26)
+        self.iter_spin.setToolTip("最大迭代次数")
         self.iter_spin.valueChanged.connect(self.on_parameters_changed)
-        self.iter_spin.setFixedWidth(120)
-        iter_layout.addWidget(self.iter_spin)
-        param_layout.addLayout(iter_layout)
+        form.addRow("迭代:", self.iter_spin)
 
-        # 逃逸半径
-        radius_layout = QHBoxLayout()
-        radius_layout.addWidget(QLabel("半径:"))
         self.radius_spin = QDoubleSpinBox()
         self.radius_spin.setRange(2.0, 20.0)
+        self.radius_spin.setDecimals(2)
         self.radius_spin.setValue(self.escape_radius)
+        self.radius_spin.setFixedSize(132, 26)
+        self.radius_spin.setToolTip("逃逸半径")
         self.radius_spin.valueChanged.connect(self.on_parameters_changed)
-        self.radius_spin.setFixedWidth(120)
-        radius_layout.addWidget(self.radius_spin)
-        param_layout.addLayout(radius_layout)
+        form.addRow("半径:", self.radius_spin)
 
-        # 抗锯齿
-        aa_layout = QHBoxLayout()
-        aa_layout.addWidget(QLabel("抗锯齿:"))
-        self.aa_combo = QComboBox()
-        self.aa_combo.addItems(["1x (无)", "2x", "4x"])
-        self.aa_combo.currentIndexChanged.connect(self.on_aa_changed)
-        self.aa_combo.setFixedWidth(120)
-        aa_layout.addWidget(self.aa_combo)
-        param_layout.addLayout(aa_layout)
+        form.addRow("抗锯齿:", self.create_antialias_combo())
+        return group
 
-        layout.addWidget(param_group)
+    def create_custom_group(self):
+        group = QGroupBox("自定义函数 (Taichi 表达式)")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(12, 16, 12, 10)
+        layout.setSpacing(6)
+        layout.addWidget(self.create_custom_edit(CUSTOM_PLACEHOLDER, 80))
 
-        # 状态与控制组
-        status_group = QGroupBox("状态与控制")
-        status_group.setFixedWidth(380)
-        status_layout = QVBoxLayout(status_group)
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        footer.addWidget(hint_label("仅执行本地可信表达式"))
+        footer.addStretch(1)
+        footer.addWidget(self.create_apply_button())
+        layout.addLayout(footer)
+        layout.addStretch(1)
+        return group
 
-        self.c_label = QLabel(f"c = {self.c_real:.4f} + {self.c_imag:.4f}i")
-        self.c_label.setAlignment(Qt.AlignCenter)
-        status_layout.addWidget(self.c_label)
+    def create_canvas(self, is_left):
+        return MandelJuliaWidget(self, is_left)
 
-        btn_layout = QHBoxLayout()
-        self.realtime_btn = QPushButton("实时更新: 开")
-        self.realtime_btn.setFixedWidth(90)
-        self.realtime_btn.clicked.connect(self.toggle_realtime_update)
-        btn_layout.addWidget(self.realtime_btn)
-
-        reset_btn = QPushButton("重置视图")
-        reset_btn.setFixedWidth(90)
-        reset_btn.clicked.connect(self.reset_views)
-        btn_layout.addWidget(reset_btn)
-
-        apply_btn = QPushButton("应用自定义函数")
-        apply_btn.setFixedWidth(120)
-        apply_btn.clicked.connect(self.apply_custom_function)
-        btn_layout.addWidget(apply_btn)
-        status_layout.addLayout(btn_layout)
-
-        info = QLabel("左键:切换实时更新  中键:拖拽  滚轮:缩放\n左:Mandelbrot  右:Julia (鼠标选取c)")
-        info.setWordWrap(True)
-        status_layout.addWidget(info)
-
-        layout.addWidget(status_group)
-
-        # 自定义函数输入
-        custom_group = QGroupBox("自定义函数 (Taichi 表达式)")
-        custom_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        custom_layout = QVBoxLayout(custom_group)
-        self.custom_edit = QPlainTextEdit()
-        self.custom_edit.setMaximumHeight(80)
-        self.custom_edit.setPlaceholderText(
-            "输入表达式，如: csqr(z) + csin(z)\n"
-            "可用: csqr, cconj, cmul, cdiv, csin, ccos, cexp, clog, cpow(z, n)"
-        )
-        custom_layout.addWidget(self.custom_edit)
-        layout.addWidget(custom_group)
-
-        return widget
-
-    def create_display_area(self):
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        splitter = QSplitter(Qt.Horizontal)
-        self.left_widget = MandelJuliaWidget(self, is_left=True)
-        self.right_widget = MandelJuliaWidget(self, is_left=False)
-        splitter.addWidget(self.left_widget)
-        splitter.addWidget(self.right_widget)
-        splitter.setSizes([500, 500])
-        layout.addWidget(splitter)
-        return widget
-
-    def set_c_value(self, real, imag, update_spinners=True):
-        self.c_real = real
-        self.c_imag = imag
-        self.c_label.setText(f"c = {real:.4f} + {imag:.4f}i")
-        self.left_widget.needs_recompute = True
-        self.right_widget.needs_recompute = True
-
-    def set_fixed_positions(self):
-        self.fixed_c_value = [self.c_real, self.c_imag]
-        if self.mouse_pos[0] >= 0:
-            w = self.left_widget.width()
-            h = self.left_widget.height()
-            aspect = w / h if h > 0 else 1.0
-            norm_x = (self.mouse_pos[0] / w - 0.5) * 2.0 * aspect
-            norm_y = (0.5 - self.mouse_pos[1] / h) * 2.0
-            self.fixed_orbit_pos[0] = norm_x * self.left_widget.view_scale + self.left_widget.view_center[0]
-            self.fixed_orbit_pos[1] = norm_y * self.left_widget.view_scale + self.left_widget.view_center[1]
-        self.left_widget.needs_recompute = True
-        self.right_widget.needs_recompute = True
-
+    # ------------------------------------------------------------------
+    # 参数与交互
+    # ------------------------------------------------------------------
     def on_function_changed(self, idx):
         self.using_custom_function = False
-        self.function_type = idx
-        self.left_widget.needs_recompute = True
-        self.right_widget.needs_recompute = True
-
-    def on_aa_changed(self, idx):
-        self.antialias_factor = 2 ** idx
-        self.left_widget.needs_recompute = True
-        self.right_widget.needs_recompute = True
+        self.function_type = int(idx)
+        self.function_revision += 1
+        self.mark_all_dirty()
 
     def on_parameters_changed(self):
         self.max_iterations = self.iter_spin.value()
         self.escape_radius = self.radius_spin.value()
-        self.left_widget.needs_recompute = True
-        self.right_widget.needs_recompute = True
+        self.mark_all_dirty()
 
-    def toggle_realtime_update(self):
-        self.realtime_update = not self.realtime_update
-        self.realtime_btn.setText(f"实时更新: {'开' if self.realtime_update else '关'}")
-        if not self.realtime_update:
-            self.set_fixed_positions()
-        self.left_widget.needs_recompute = True
-        self.right_widget.needs_recompute = True
+    def set_fixed_positions(self):
+        if self.mouse_pos[0] >= 0 and self.left_widget is not None:
+            real, imag = self.left_widget.screen_to_world(
+                self.mouse_pos[0], self.mouse_pos[1]
+            )
+            self.fixed_orbit_pos[0] = real
+            self.fixed_orbit_pos[1] = imag
 
-    def reset_views(self):
-        for w in (self.left_widget, self.right_widget):
-            w.view_center = [0.0, 0.0]
-            w.view_scale = 1.0
-            w.needs_recompute = True
+    # ------------------------------------------------------------------
+    # 自定义函数
+    # ------------------------------------------------------------------
+    def _warm_up_custom(self, func):
+        """Compile the custom kernels now so errors appear in the dialog."""
+        if self._warmup_field is None:
+            self._warmup_field = ti.field(dtype=ti.u32, shape=(1, 1))
+        render_mandelbrot(
+            self._warmup_field, 1, 1, 2, float(self.escape_radius),
+            float(self.c_real), float(self.c_imag), 0,
+            2.0, 0.0, -2.0, 0.0,
+            func, True, 0,
+        )
+
+        if self._warmup_orbit_field is None:
+            self._warmup_orbit_field = ti.field(dtype=c64, shape=(3,))
+            self._warmup_orbit_length = ti.field(dtype=ti.i32, shape=())
+        compute_orbit(
+            self._warmup_orbit_field, self._warmup_orbit_length,
+            2, 0.0, 0.0, float(self.escape_radius),
+            func, True, 0,
+        )
+        ti.sync()
+
+    def _build_custom(self, expression):
+        func = compile_complex_function(expression, "custom_func")
+        self._warm_up_custom(func)
+        self.custom_function = func
 
     def apply_custom_function(self):
-        code = self.custom_edit.toPlainText().strip()
-        if not code:
-            QMessageBox.warning(self, "警告", "请输入自定义函数表达式")
+        self.apply_custom_expression(
+            self.custom_edit.toPlainText(),
+            self._build_custom,
+            "自定义函数已应用！",
+        )
+
+    # ------------------------------------------------------------------
+    # 轨道叠加
+    # ------------------------------------------------------------------
+    def ensure_orbit_kernel_warm(self):
+        """Compile the overlay kernel with the first render of a function."""
+        if self._orbit_warm_revision == self.function_revision:
             return
+        # A seed just outside the escape radius keeps this throw-away orbit
+        # short even when the user selected a very high iteration count.
+        self.compute_orbit(float(self.escape_radius) * 2.0, 0.0)
+        self._orbit_warm_revision = self.function_revision
 
-        scope = {
-            'ti': ti,
-            'c64': c64,
-            'csqr': csqr, 'cconj': cconj, 'cmul': cmul,
-            'cdiv': cdiv, 'csin': csin, 'ccos': ccos,
-            'cexp': cexp, 'clog': clog, 'cpow': cpow,
-        }
-        try:
-            func_def = f"def custom_func(z: c64) -> c64:\n    return {code}\n"
-            exec(func_def, scope)
-            global custom_func
-            custom_func = scope['custom_func']
-            build_kernel()
-            self.using_custom_function = True
-            self.left_widget.needs_recompute = True
-            self.right_widget.needs_recompute = True
-            QMessageBox.information(self, "成功", "自定义函数已应用！")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"编译失败:\n{str(e)}")
+    def compute_orbit(self, c_real, c_imag):
+        max_iter = max(1, int(self.max_iterations))
+        capacity = max_iter + 1
+        if self._orbit_points_field is None or self._orbit_capacity != capacity:
+            self._orbit_points_field = ti.field(dtype=c64, shape=(capacity,))
+            self._orbit_length_field = ti.field(dtype=ti.i32, shape=())
+            self._orbit_capacity = capacity
 
-    def closeEvent(self, event):
-        self.left_widget.timer.stop()
-        self.right_widget.timer.stop()
-        event.accept()
+        custom = bool(self.using_custom_function)
+        func = self.custom_function if custom else mandelbrot_preset
+        func_type = 0 if custom else self.function_type
+        compute_orbit(
+            self._orbit_points_field, self._orbit_length_field,
+            max_iter, float(c_real), float(c_imag), float(self.escape_radius),
+            func, custom, func_type,
+        )
+        count = int(self._orbit_length_field[None])
+        return self._orbit_points_field.to_numpy()[:count].copy()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

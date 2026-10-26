@@ -1,5 +1,9 @@
-from custom_import import *
+from common.qt_base import (QApplication, QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPushButton, QRect, QSlider, QTimer, QVBoxLayout, QWidget, Qt, os, sys, time)
+from common.numpy_base import (np)
+import os
 from PySide6.QtGui import QImage
+
+from soil_water import SoilWater
 
 # ==================== 地形与侵蚀 ====================
 def _blur3(a):
@@ -74,13 +78,19 @@ class ErosionSim:
     def __init__(self, size=320, seed=1):
         self.size = size
         self.rng = np.random.default_rng(seed)
-        self.h = self._make_terrain()
+        # 小尺度泥地是平面，不再生成地形/坡度。
+        self.h = np.zeros((self.size, self.size), dtype=np.float32)
         self.h0 = self.h.copy()
-        self._update_relief()
-        self.moisture = np.full((size, size), 0.85, dtype=np.float32)   # 逐格含水量
+        self._relief = np.zeros((size, size), dtype=np.float32)
         self.raining = False
         self.drying = False
-        self.rain_rate = 320
+        self.rain_mm_h = 15.0
+        self.dt_min = 20.0
+        self.temp_c = 25.0
+        self.rh = 55.0
+        self.wind = 2.0
+        self.soil_clay = 0.35
+        self.fracture_kic = 0.030e6      # MPa*m^0.5
 
         # 侵蚀参数
         self.inertia = 0.35
@@ -118,9 +128,44 @@ class ErosionSim:
         # 干缩拉应力、裂缝张开度
         self.stress = np.zeros((size, size), dtype=np.float32)
         self.crack = np.zeros((size, size), dtype=np.float32)
+        self.crack_target = np.zeros((size, size), dtype=np.float32)
+        # 裂缝开合不是开关：黏土吸水膨胀/失水收缩需要时间。
+        self.crack_tau_open = 720.0       # min
+        self.crack_tau_close = 480.0      # min
+        # 两层土壤水：0-10 cm 表层 + 10-50 cm 根区
+        self.soil = SoilWater(self.fines, self.soil_clay)
+        self.moisture = np.zeros((size, size), dtype=np.float32)
+        self.moisture[:] = self.soil.wetness
         # 雨滴携带的细颗粒比例
         self.sed_fine = np.zeros(self.MAX_DROPS, dtype=np.float32)
         self._build_texture()
+        # 细胞型断裂近似：能量最小化的 Voronoi 板块边界作为裂缝路径，
+        # 开合由线弹性断裂力学 K_I/K_IC + COD 控制。
+        self.crack[:] = 0.0
+        # 离线 CZM 裂缝场：多个独立 Voronoi 图案组成的 bank。
+        self.show_czm = False
+        self.czm_bank = None
+        self.czm_frames = None
+        self.czm_levels = None
+        self.czm_variant = 0
+        try:
+            z = np.load(os.path.join(os.path.dirname(__file__), "czm_fields.npz"))
+            self.czm_bank = z["frames"].astype(np.float32) / 255.0
+            self.czm_levels = z["levels"].astype(np.float32)
+            self.czm_variant = int(self.rng.integers(len(self.czm_bank)))
+            self.czm_frames = self.czm_bank[self.czm_variant]
+        except Exception:
+            try:
+                z = np.load(os.path.join(os.path.dirname(__file__), "czm_field.npz"))
+                self.czm_frames = z["frames"].astype(np.float32) / 255.0
+                self.czm_levels = z["levels"].astype(np.float32)
+            except Exception:
+                self.czm_frames = None
+        # 裂缝开合不是随土壤水瞬时切换：给 CZM 帧选择加一个吸水/干燥滞后。
+        self.czm_shrink_state = None
+        self.czm_tau_open = 240.0       # min
+        self.czm_tau_close = 900.0      # min
+
 
     # ---------- 地形 ----------
     def _make_terrain(self):
@@ -143,15 +188,21 @@ class ErosionSim:
         return (h * 1.6).astype(np.float32)
 
     def reset(self):
-        self.h = self._make_terrain()
+        # 小尺度泥地是平面，不再生成地形/坡度。
+        self.h = np.zeros((self.size, self.size), dtype=np.float32)
         self.h0 = self.h.copy()
-        self._update_relief()
-        self.moisture[:] = 0.85
+        self._relief = np.zeros((self.size, self.size), dtype=np.float32)
         self.fines[:] = 0.78
         self.fines += 0.16 * (value_noise(self.size, self.rng, octaves=3, base=4) - 0.5)
         np.clip(self.fines, 0.15, 1.0, out=self.fines)
+        self.soil.reset(self.fines, self.soil_clay)
+        self.moisture[:] = self.soil.wetness
         self.stress[:] = 0.0
         self.crack[:] = 0.0
+        self.crack_target[:] = 0.0
+        self.czm_shrink_state = None
+        if self.czm_bank is not None:
+            self.choose_czm_variant()
         self.count = 0
         self.total_drops = 0
         self._build_texture()
@@ -163,7 +214,37 @@ class ErosionSim:
 
     @property
     def dryness(self):
-        return float(1.0 - self.moisture.mean())
+        return self.soil.dryness
+
+    @property
+    def crack_relaxing(self):
+        return bool(np.mean(np.abs(self.crack_target - self.crack)) > 0.001)
+
+    @property
+    def czm_relaxing(self):
+        if not (self.show_czm and self.czm_frames is not None):
+            return False
+        target = float(np.clip(self.soil.shrinkage.mean(), 0.0, 1.0))
+        return self.czm_shrink_state is not None and abs(target - self.czm_shrink_state) > 0.002
+
+    def choose_czm_variant(self):
+        """切换到另一组预计算的 Voronoi 裂缝图案。"""
+        if self.czm_bank is None:
+            return
+        self.czm_variant = int(self.rng.integers(len(self.czm_bank)))
+        self.czm_frames = self.czm_bank[self.czm_variant]
+        self.czm_shrink_state = 0.0
+        self.crack[:] = 0.0
+
+    def new_crack_pattern(self):
+        """重新生成一组随机板块边界；在“已闭合”状态下开启新一轮干燥时调用。"""
+        if self.show_czm and self.czm_bank is not None:
+            self.choose_czm_variant()
+            return
+        self._build_texture()
+        self.crack[:] = 0.0
+        self.crack_target[:] = 0.0
+        self.czm_shrink_state = None
 
     # ---------- 龟裂 ----------
     def _build_texture(self):
@@ -174,7 +255,8 @@ class ErosionSim:
         """
         n = self.size
         rng = self.rng
-        cell = max(12.0, n / 9.0)
+        # 每次重建裂缝网络都换一组板块尺度/抖动，干裂形态不会每次一样。
+        cell = max(10.0, n / (8.0 + 4.0 * float(self.rng.random())))
         gr = int(np.ceil(n / cell)) + 1
         gsz = gr + 2
         jitter = 0.85
@@ -304,10 +386,6 @@ class ErosionSim:
         self.py[:n] = ny
         self.life[:n] -= 1
 
-        # 记录湿润痕迹
-        self.moisture[yi, xi] += 0.02
-        np.clip(self.moisture, 0.0, 1.0, out=self.moisture)
-
         dead = (self.life[:n] <= 0) | (self.wat[:n] < 0.02) | (nx < 1) | (ny < 1) \
             | (nx > self.size - 2) | (ny > self.size - 2)
         if dead.any():
@@ -319,48 +397,82 @@ class ErosionSim:
             self.count = m
 
     # ---------- 每帧 ----------
+    def _et0(self):
+        """FAO-56 Penman-Monteith 潜在蒸散（mm/day，简化净辐射）。"""
+        t = float(self.temp_c)
+        es = 0.6108 * np.exp(17.27 * t / (t + 237.3))
+        ea = es * float(self.rh) / 100.0
+        delta = 4098.0 * es / (t + 237.3) ** 2
+        gamma = 0.066
+        rn = 12.0                       # MJ/m2/day，固定晴空近似
+        u2 = max(0.1, float(self.wind))
+        num = 0.408 * delta * rn + gamma * 900.0 / (t + 273.0) * u2 * max(0.0, es - ea)
+        den = delta + gamma * (1.0 + 0.34 * u2)
+        return float(np.clip(num / max(den, 1e-6), 0.0, 12.0))
+
+    def set_clay(self, value):
+        self.soil_clay = float(np.clip(value, 0.05, 0.75))
+        self.soil.clay_bias = self.soil_clay
+        self.soil.update_texture(self.fines)
+        self.moisture[:] = self.soil.wetness
+
     def step(self):
-        loss = np.float32(0.0)
         if self.raining:
-            self.add_rain(self.rain_rate)
-            # 下雨时地面趋近饱和，雨水在低洼处积得更多
-            self.moisture += 0.006 * (1.0 - self.moisture)
+            self.soil.step(self.rain_mm_h, self._et0(), self.dt_min)
         elif self.drying:
-            # 逐格蒸发：高处、坡地干得快，低洼处保留水分
-            rate = 0.0035 * (0.65 + 0.75 * np.clip(self._relief, 0.0, 1.0))
-            loss = rate
-            self.moisture -= rate
-        else:
-            self.moisture -= 0.0004
-        np.clip(self.moisture, 0.0, 1.0, out=self.moisture)
-        self.step_drops()
-        np.clip(self.h, 0.0, 3.0, out=self.h)
-        self._update_cracks(loss)
+            self.soil.step(0.0, self._et0(), self.dt_min)
+        self.moisture[:] = self.soil.wetness
+        self._update_cracks()
 
     # ---------- 龟裂（几何来自板块边界，开合由应力决定） ----------
-    def _update_cracks(self, loss):
-        """准静态干缩应力：干得越透、细泥越多，拉应力越大。
+    def _update_cracks(self):
+        """细胞型线弹性断裂模型。
 
-        裂缝的几何来自板块边界（`crack_edge`——泥向各自收缩中心坍缩，边界处受拉，
-        这正是干缩龟裂成多边形的物理来源）；但**开不开裂、开多宽**由这里的应力决定。
-        所以被雨水冲刷过的沟床只要还是泥质、只要干了，一样会裂。
+        多边形拓扑来自能量最小化的 Voronoi 板块边界；但裂缝是否张开由
+        mode-I 应力强度因子控制：
+
+            K_I = sigma * sqrt(pi * a) >= K_IC
+
+        sigma 是受限干缩应力（E * 收缩应变），a 是单元半长；裂缝宽度取
+        COD ~ 2*sigma*a/E。再湿润时 K_I 下降，裂缝闭合。
         """
-        dry = np.clip(1.0 - self.moisture, 0.0, 1.0)
-        self.stress = self.stress_gain * self.fines * dry
+        if self.show_czm and self.czm_frames is not None:
+            target = float(np.clip(self.soil.shrinkage.mean(), 0.0, 1.0))
+            if self.czm_shrink_state is None:
+                self.czm_shrink_state = target
+            tau = self.czm_tau_close if target < self.czm_shrink_state else self.czm_tau_open
+            alpha = 1.0 - np.exp(-self.dt_min / max(tau, 1.0))
+            self.czm_shrink_state += alpha * (target - self.czm_shrink_state)
+            s = float(np.clip(self.czm_shrink_state, 0.0, 1.0))
+            pos = float(np.interp(s, self.czm_levels, np.arange(len(self.czm_levels))))
+            i0 = int(np.floor(pos))
+            i1 = min(i0 + 1, len(self.czm_levels) - 1)
+            f = pos - i0
+            self.crack[:] = ((1.0 - f) * self.czm_frames[i0] +
+                             f * self.czm_frames[i1])
+            return
+        shrink = self.soil.shrinkage
+        clay = self.soil.clay
+        E = 25.0e6
+        KIC = self.fracture_kic
+        sigma = E * 0.012 * shrink * (0.45 + 0.90 * clay)
+        cell = max(12.0, self.size / 9.0)
+        a_m = cell * 0.5 * 0.003
+        k1 = sigma * np.sqrt(np.pi * a_m)
+        ratio = np.clip((k1 - KIC) / KIC, 0.0, 1.0)
 
-        # 几何：板块边界处受拉；宽度随干燥程度增加
-        mean_dry = float(dry.mean())
-        w = 0.55 + 1.15 * mean_dry
+        cod_px = 2.0 * sigma * a_m / E / 0.003 * 4.0
+        mean_ratio = float(ratio.mean())
+        w = 0.45 + float(np.clip(cod_px.mean(), 0.0, 2.2)) + 1.10 * mean_ratio
         edge_mask = 1.0 - smoothstep(w * 0.5, w * 1.9, self.crack_edge)
-        # 只有应力足够大（干透、细泥多）的地方才真正裂开
-        opening = np.clip((self.stress - 0.20) * 2.2, 0.0, 1.0)
-        self.crack = np.clip(edge_mask * opening, 0.0, 1.0)
-
-        # 裂缝里的水分蒸发更快
-        wet_crack = self.crack > 0.35
-        self.moisture[wet_crack] -= 0.010
-        np.clip(self.moisture, 0.0, 1.0, out=self.moisture)
-
+        opening = np.clip(ratio * (0.45 + 0.55 * clay), 0.0, 1.0)
+        self.stress = sigma
+        target = np.clip(edge_mask * opening, 0.0, 1.0)
+        # 开启/闭合都按指数松弛：τ_open ~ 12 h，τ_close ~ 8 h。
+        tau = np.where(target < self.crack, self.crack_tau_close, self.crack_tau_open)
+        alpha = 1.0 - np.exp(-self.dt_min / np.maximum(tau, 1.0))
+        self.crack += alpha * (target - self.crack)
+        self.crack_target = target
 
 # ==================== 画布 ====================
 class TerrainCanvas(QWidget):
@@ -401,32 +513,11 @@ class TerrainCanvas(QWidget):
     def _render_image(self):
         sim = self.sim
         n = sim.size
-        h = _blur3(_blur3(sim.h))     # 显示用平滑：抹掉单格开凿痕迹
-
-        # 裂缝两侧的泥板会翘起：用裂缝场的晕边做抬升（只影响显示）
-        rim = np.clip(_blur3(sim.crack) - sim.crack, 0.0, 1.0)
-        h = h + rim * 0.02
-
-        hmin, hmax = float(h.min()), float(h.max())
-        hn = (h - hmin) / max(1e-6, hmax - hmin)
-
-        # 光影
-        gy, gx = np.gradient(h)
-        exag = n * 0.30
-        nx, ny, nz = -gx * exag, -gy * exag, np.ones_like(hn)
-        inv = 1.0 / np.sqrt(nx * nx + ny * ny + nz * nz)
-        light = (nx * -0.48 + ny * -0.48 + nz * 0.73) * inv
-        shade = np.clip(0.74 + 0.52 * light, 0.40, 1.3)
-
-        wetfield = _blur3(sim.moisture)
-
-        if self._soil_lut is None:
-            self._build_soil_lut()
-        idx = (hn * 255.0).astype(np.int32) * 256 + (np.clip(wetfield * 1.15, 0, 1) * 255.0).astype(np.int32)
-        rgb = self._soil_lut[idx].astype(np.float32)
-
-        if self.show_shade:
-            rgb *= shade[..., None]
+        wetfield = _blur3(sim.soil.wetness)
+        dry = np.array([188, 162, 118], np.float32)
+        wetc = np.array([118, 92, 66], np.float32)
+        rgb = dry[None, None, :] * (1.0 - wetfield[..., None]) + \
+            wetc[None, None, :] * wetfield[..., None]
 
         # 粗砂（细颗粒被冲走的地方）偏灰、颗粒感强；细泥偏暖
         coarse = np.clip((0.62 - sim.fines) * 1.8, 0.0, 1.0)[..., None]
@@ -435,11 +526,10 @@ class TerrainCanvas(QWidget):
 
         # 积水 / 湿润
         if self.show_water:
-            pond = np.clip((0.16 - hn) / 0.16, 0.0, 1.0) * np.clip((wetfield - 0.90) * 8.0, 0, 1)
-            water = np.clip(pond, 0.0, 1.0)[..., None]
+            water = np.clip(sim.soil.pond / 3.0, 0.0, 1.0)[..., None]
             rgb = rgb * (1 - water * 0.75) + np.array([70, 118, 165], np.float32) * (water * 0.75)
 
-        # 龟裂：直接读应力模型产出的裂缝场
+        # 龟裂
         if self.show_cracks:
             crack = np.clip(_blur3(sim.crack) * 1.2, 0.0, 1.0)[..., None]
             rgb = rgb * (1 - crack * 0.85) + np.array([40, 32, 25], np.float32) * (crack * 0.85)
@@ -494,11 +584,11 @@ class TerrainCanvas(QWidget):
 class ErosionApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("水力侵蚀 · 干燥龟裂")
+        self.setWindowTitle("泥地干裂 · 土壤水")
         self.setGeometry(120, 70, 1080, 800)
 
         self.size = 320
-        self.sim = ErosionSim(self.size, seed=1)
+        self.sim = ErosionSim(self.size, seed=None)
         self.init_ui()
 
         self.timer = QTimer()
@@ -531,10 +621,11 @@ class ErosionApp(QMainWindow):
 
         self.lbl_status = QLabel("点「降雨」开始冲刷，点「干燥」看泥面开裂")
         self.statusBar().addWidget(self.lbl_status, 1)
-        self.lbl_dry = QLabel("干燥 0%")
+        self.lbl_dry = QLabel("含水 –")
+        self.lbl_water = QLabel("地表水 0.0 mm")
         self.lbl_drops = QLabel("雨滴 0")
         self.lbl_fps = QLabel("帧率 –")
-        for w in (self.lbl_dry, self.lbl_drops, self.lbl_fps):
+        for w in (self.lbl_dry, self.lbl_water, self.lbl_drops, self.lbl_fps):
             self.statusBar().addPermanentWidget(w)
         self._frames = 0
         self._fps_t = time.perf_counter()
@@ -560,39 +651,42 @@ class ErosionApp(QMainWindow):
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.rain_slider = QSlider(Qt.Horizontal)
-        self.rain_slider.setRange(40, 1200)
-        self.rain_slider.setValue(self.sim.rain_rate)
+        self.rain_slider.setRange(0, 60)
+        self.rain_slider.setValue(int(self.sim.rain_mm_h))
         self.rain_slider.valueChanged.connect(self.on_rain_rate)
-        self.rain_label = QLabel(str(self.sim.rain_rate))
-        self.rain_label.setFixedWidth(44)
+        self.rain_label = QLabel(f"{self.sim.rain_mm_h:.0f} mm/h")
+        self.rain_label.setFixedWidth(56)
         self.rain_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         r = QHBoxLayout()
         r.setSpacing(4)
         r.addWidget(self.rain_slider, 1)
         r.addWidget(self.rain_label)
-        form.addRow("雨量", r)
+        form.addRow("雨强", r)
 
-        reset_btn = QPushButton("重置地形")
+        self._slider(form, "气温", 5, 40, int(self.sim.temp_c),
+                     lambda v: setattr(self.sim, "temp_c", float(v)))
+        self._slider(form, "湿度", 20, 100, int(self.sim.rh),
+                     lambda v: setattr(self.sim, "rh", float(v)))
+        self._slider(form, "风速", 0, 8, int(self.sim.wind),
+                     lambda v: setattr(self.sim, "wind", float(v)))
+
+        reset_btn = QPushButton("重置泥面")
         reset_btn.clicked.connect(self.reset)
         form.addRow("", reset_btn)
         vbox.addLayout(form)
         layout.addWidget(group)
 
     def _build_erosion_group(self, layout):
-        group = QGroupBox("侵蚀参数")
+        group = QGroupBox("土壤")
         form = QFormLayout(group)
         form.setSpacing(4)
         form.setContentsMargins(6, 6, 6, 6)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        self.sl_erode, _ = self._slider(form, "侵蚀", 5, 100, int(self.sim.erode * 100),
-                                        lambda v: setattr(self.sim, "erode", v / 100.0))
-        self.sl_deposit, _ = self._slider(form, "沉积", 5, 100, int(self.sim.deposit * 100),
-                                          lambda v: setattr(self.sim, "deposit", v / 100.0))
-        self.sl_inertia, _ = self._slider(form, "惯性", 0, 95, int(self.sim.inertia * 100),
-                                          lambda v: setattr(self.sim, "inertia", v / 100.0))
-        self.sl_capacity, _ = self._slider(form, "携沙", 10, 100, int(self.sim.capacity * 10),
-                                           lambda v: setattr(self.sim, "capacity", v / 10.0))
+        self.sl_clay, _ = self._slider(form, "黏粒", 5, 75, int(self.sim.soil_clay * 100),
+                                       lambda v: self.sim.set_clay(v / 100.0))
+        self.sl_kic, _ = self._slider(form, "韧性", 10, 60, int(self.sim.fracture_kic / 1000.0),
+                                      lambda v: setattr(self.sim, "fracture_kic", v * 1000.0))
         layout.addWidget(group)
 
     def _slider(self, form, text, lo, hi, value, setter):
@@ -619,9 +713,9 @@ class ErosionApp(QMainWindow):
         group = QGroupBox("显示")
         vbox = QVBoxLayout(group)
         vbox.setSpacing(2)
-        for text, attr, default in (("光影", "show_shade", True),
-                                    ("积水 / 湿润", "show_water", True),
-                                    ("干燥龟裂", "show_cracks", True)):
+        for text, attr, default in (("积水 / 湿润", "show_water", True),
+                                    ("干燥龟裂", "show_cracks", True),
+                                    ("CZM 裂缝（离线）", "show_czm", False)):
             cb = QCheckBox(text)
             cb.setChecked(default)
             cb.toggled.connect(lambda checked, a=attr: self._toggle(a, checked))
@@ -629,6 +723,11 @@ class ErosionApp(QMainWindow):
         layout.addWidget(group)
 
     def _toggle(self, attr, checked):
+        if attr == "show_czm":
+            self.sim.show_czm = bool(checked)
+            self.sim._update_cracks()
+            self.canvas.invalidate()
+            return
         setattr(self.canvas, attr, bool(checked))
         self.canvas.invalidate()
 
@@ -639,7 +738,7 @@ class ErosionApp(QMainWindow):
         if self.sim.raining:
             self.sim.drying = False
             self.dry_btn.setText("干燥")
-            self.lbl_status.setText("正在降雨冲刷…")
+            self.lbl_status.setText("降雨入渗/径流中；裂缝随湿润闭合…")
 
     def toggle_dry(self):
         self.sim.drying = not self.sim.drying
@@ -647,31 +746,36 @@ class ErosionApp(QMainWindow):
         if self.sim.drying:
             self.sim.raining = False
             self.rain_btn.setText("降雨")
-            self.lbl_status.setText("泥土干燥中，裂纹逐渐张开…")
+            if float(self.sim.crack.mean()) < 0.005:
+                # 裂缝已闭合：换一组图案，避免每次干裂同一张图。
+                self.sim.new_crack_pattern()
+            self.lbl_status.setText("干燥中：K_I ≥ K_IC 时裂缝缓慢张开…")
 
     def reset(self):
         self.sim.reset()
         self.canvas.invalidate()
-        self.lbl_status.setText("地形已重置")
+        self.update_stats()
+        self.lbl_status.setText("地形与土壤水已重置")
 
     def on_rain_rate(self, v):
-        self.sim.rain_rate = v
-        self.rain_label.setText(str(v))
+        self.sim.rain_mm_h = float(v)
+        self.rain_label.setText(f"{v} mm/h")
 
     def tick(self):
         sim = self.sim
-        busy = sim.raining or sim.drying or sim.count > 0
+        busy = (sim.raining or sim.drying or sim.count > 0 or
+                sim.crack_relaxing or sim.czm_relaxing)
         if not busy:
             return
         sim.step()
-        if sim.raining:
-            sim.step()          # 下雨时每帧推进两步，视觉速度不变但重绘次数少一半
         self.canvas.invalidate()
         self.update_stats()
         self._frames += 1
 
     def update_stats(self):
-        self.lbl_dry.setText(f"干燥 {self.sim.dryness * 100:.0f}%")
+        wet = float(self.sim.soil.wetness.mean()) * 100.0
+        self.lbl_dry.setText(f"表土含水 {wet:.0f}%")
+        self.lbl_water.setText(f"地表水 {float(self.sim.soil.pond.mean()):.1f} mm")
         self.lbl_drops.setText(f"雨滴 {self.sim.count:,}")
         now = time.perf_counter()
         if now - self._fps_t >= 0.5:

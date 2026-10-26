@@ -1,6 +1,6 @@
 # PySide 绘图工具集 — 数学与物理可视化
 
-一个基于 **PySide6 + Taichi + OpenGL** 的交互式数学/物理可视化工具集，包含 28 个可独立运行的应用。
+一个基于 **PySide6 + Taichi + OpenGL** 的交互式数学/物理可视化工具集，包含 34 个可独立运行的应用。
 
 ## 界面预览
 
@@ -30,6 +30,7 @@
 | **Ising** | 二维伊辛模型，参考 [Ising.js](https://mattbierbaum.github.io/ising.js/) |
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
+| **Bremsstrahlung** | 变速圆周电子：真实推迟 Liénard-Wiechert 辐射场，按加速度平行/垂直分量显示轫致（红）与同步（蓝），远场 FFT 频谱加色叠加 |
 
 ### Fractals
 
@@ -48,24 +49,35 @@
 |------|------|
 | **Lenia** | 连续元胞自动机，参考 [Lenia](https://chakazul.github.io/Lenia/JavaScript/Lenia.html) |
 | **Conway** | 生命游戏，14 个经典预设（滑翔机枪、脉冲星等）、残影轨迹、滚轮缩放 |
+| **Greenberg-Hastings** | 激发介质元胞自动机：静息/激发/不应期三态，支持螺旋波、靶波、随机激发和点击刺激；正方形格点的 Moore 邻域会形成方形波前 |
 | **Distill** | 神经网络元胞自动机，参考 [Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)，需要 PyTorch |
 | **Snowflake** | Reiter 雪花生长模型，六重对称枝晶，参考 [Reiter 2005](http://www.patarnott.com/pdf/SnowCrystalGrowth.pdf) |
 
-### 实验（未完全打磨）
+### Unpolished（未打磨）
 
 | 应用 | 说明 |
 |------|------|
-| **Circulation** | 全球风场：解析式海平面气压 + 地转风，Taichi 并行算在 360×180 网格上，海岸线用 Natural Earth 720×360 数据；可叠加气压配色 |
-| **Erosion** | 降雨冲刷地形（雨滴侵蚀），干燥后按 Voronoi 板块边界张开泥土龟裂 |
+| **Circulation** | 全球环流：合成模式用解析气压 + 地转风 + ETOPO1 地形；真实模式用 NCEP/NCAR 2015–2024 月平均 10 m 风，可看月均、月际 Δ 与十年趋势 |
+| **Erosion** | 小尺度平面泥地；两层土壤水（入渗/径流/下渗/蒸散）+ Voronoi 多边形 cohesive 网络干裂，黏粒/气温/湿度/风速/韧性可调 |
 | **Caustic** | 焦散/光线折射模拟 |
 | **MPM2D** | 2D MLS-MPM 材料演示：固体（弹性）/ 雪（塑性）/ 液体（J 驱动压力），本构与参数照 taichi_elements 的 mpm_solver；鼠标可倾倒材料 |
-| **2D Boids** | Boids 群体行为 |
-| **2D Noise** | 麦克风实时噪声频谱（需要 sounddevice） |
+| **Noise** | 环境噪声：A 计权声级、L10/L50/L90、1/f 斜率、小时/长期历史（需要 sounddevice + matplotlib） |
 | **2D Qusicrystal** | 二维准晶衍射图样 |
 | **Mass Spring** | 质点-弹簧系统 |
 | **Particle Lenia** | 粒子化 Lenia |
-| **Deformation** | 网格形变可视化 |
 | **KAM** | KAM 环面与标准映射 |
+
+## Noise
+
+Noise 用麦克风实时统计环境噪声：
+
+- A 计权声级、10 s Leq、L10/L50/L90、峰值/波峰因数、主频；
+- 50–2000 Hz 频谱对数斜率 α（0 白、1 粉红/1/f、2 红/棕），并叠加拟合线与 1/f 参考线；
+- 时域波形、A 计权频谱、声级历史、声级分布、1/f–能量密度图；
+- 1/f–能量密度图：横轴是线性的 1/f（ms），纵轴是**未计权**能量密度（FS²/Hz），默认取 30 s 时间平均（可选 5/10/30/60 s）；对 S(f)=C/f，令 x=1/f 得到 S=Cx，应呈过原点的直线。上一版误用了 A 计权谱，低频被衰减，才会看起来随 1/f 下降；
+- 每秒把一条聚合记录（含 α）写入 logs/noise_history.sqlite，并显示最近 7 天的小时均值与 7 d α；
+- 校准滑杆 -30…+30 dB，默认满幅按 94 dB 估算；
+- 演示模式默认只勾选 1/f；1/f^0.5、1/f、1/f^1.5、1/f²、白噪声、180 Hz 瞬态都是独立可选项，可任意组合；全都不勾选或无输入信号时清空实时统计，不再把数值 epsilon 底噪显示成能量；演示数据不写入历史。无输入设备或设置 NOISE_DEMO=1 时自动进入演示模式。
 
 ## 快速开始
 
@@ -88,6 +100,8 @@ pip install -r requirements-distill.txt
 ```bash
 python main.py
 ```
+
+主界面支持直接拖动卡片调整顺序和分类，布局保存在 `launcher_layout.json`（已加入 `.gitignore`）。
 
 主界面会为每个应用启动**独立子进程**，因此可以同时打开多个应用，互不影响 Taichi / OpenGL / PyTorch 运行时；关闭主界面时会一并关闭子进程。
 
@@ -115,17 +129,40 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ├── main.py                  # 启动器：画廊 + 子进程管理
 ├── app_runner.py            # 单应用运行入口（配置 sys.path / cwd）
 ├── apps_manifest.py         # 应用清单：标题、描述、分类、依赖
-├── apps/
-│   ├── custom_import.py     # 公共导入中心
+├── common/                  # 共享导入与基础模块
+│   ├── qt_base.py           # Qt + 标准库
+│   ├── numpy_base.py        # NumPy + Pillow
+│   ├── taichi_base.py       # Taichi
+│   ├── numba_base.py        # Numba
+│   ├── opengl_base.py       # OpenGL
+│   ├── mp_base.py           # mpmath
+│   ├── custom_base.py       # custom_function / dynamic_fractal
 │   ├── custom_function.py   # Taichi 复数运算与自定义表达式
 │   ├── utils.py             # OrbitCamera, ColorButton
-│   ├── dynamic_fractal.py   # 分形画布基类
-│   ├── reaction_diffusion.py# 反应扩散基类
+│   ├── dynamic_fractal.py   # 分形画布基类 + 视图坐标变换
+│   └── reaction_diffusion.py# 反应扩散基类
+├── apps/                    # 只放应用与 app 专用数据/助手
+│   ├── Cellular Automata/Greenberg-Hastings.py # 激发介质 CA
+│   ├── Cellular Automata/greenberg_hastings_model.py
+│   ├── Fractals/
+│   │   ├── fractal_common.py # 双画布窗口、自定义函数、轨道叠加
+│   │   └── fractal_kernels.py# Mandelbrot/Newton Taichi 内核
+│   ├── Physics/circulation_data.py # 地形 / 真实风场数据助手
+│   ├── Physics/soil_water.py       # Erosion 的两层土壤水/蒸散模型
+│   ├── Physics/Bremsstrahlung.py     # 轫致/同步辐射可视化
+│   ├── Physics/lienard_wiechert.py    # 推迟 LW 场
+│   ├── Physics/lw_taichi.py            # 1024×1024 Taichi 场核
+│   ├── Physics/Noise.py            # 环境噪声实时统计与长期历史
+│   ├── Physics/noise_dsp.py        # A 计权 / Leq / 频谱
+│   ├── Physics/noise_history.py    # SQLite 长期记录
+│   ├── Physics/worldelev.npz       # ETOPO1 1° 海拔
+│   ├── Physics/wind_real.npz       # NCEP 2015–2024 月平均 10 m 风
 │   ├── Math/ Physics/ Fractals/ Cellular Automata/
-│   └── 2D *.py, Mass Spring.py
+│   └── 2D Qusicrystal.py, Mass Spring.py
 ├── models/                  # Distill 预训练模型
 ├── images/                  # 卡片缩略图
-├── tests/                   # 导入 / manifest 冒烟测试
+├── tools/                   # 数据重建、Lenia 预设搜索、CZM bank
+├── tests/                   # 导入 / manifest / 数据冒烟测试
 ├── style.qss                # 统一 QSS（Arnold 使用）
 ├── requirements.txt
 ├── requirements-distill.txt
@@ -137,10 +174,53 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 - **进程隔离**：每个应用一个子进程，Taichi/OpenGL/PyTorch 不会互相重置；单个应用崩溃不影响启动器
 - **双精度 GPU 分形**：Mandelbrot/Julia 使用 Taichi `f64` 复数内核
 - **交互式探索**：鼠标拖拽平移、滚轮缩放、实时参数调节
+- **地形 / 海拔**：ETOPO1 1° 起伏用于底图阴影、海拔配色，以及合成风场的减速与绕流
+- **合成气压场**：解析式海平面气压 + 地转风；地形用于底图阴影、减速与绕流。合成场是教学/对照模型，南极陆地保持旧版的低压形态
+- **真实气候数据**：NCEP/NCAR Reanalysis 1 的 2015–2024 月平均 10 m 风，支持逐月播放、同月 Δ 与十年趋势
+- **土壤水与断裂**：Erosion 用两层水量平衡（Green-Ampt 入渗、Penman-Monteith 蒸散、径流/下渗）驱动湿润；CZM 裂缝由 Voronoi 多边形 cohesive 网络离线计算，按土壤收缩率选帧
 - **抗锯齿**：1x / 2x / 4x 超采样
 - **颜色自定义**：ColorButton 原生颜色选择器
 - **PNG 导出**：Fourier、Arnold、IFS、Lindenmayer、Qusicrystal 支持
 - **JIT 加速**：Numba 编译热点路径，NumPy 批量渲染
+
+### Circulation 的地形与真实风场数据
+
+- **地形**：`apps/Physics/worldelev.npz` 是 ETOPO1（NOAA NGDC）的 1° 抽样，用于底图海拔配色、坡向阴影，以及合成模式的减速/绕流修正。界面里的“地形影响”可在 0–200% 调节；真实风场本身已包含地形效应，因此该滑杆只作用于合成模式。
+- **海岸线**：`worldmask.npz` 为 Natural Earth 720×360 海陆掩膜。
+- **说明**：合成场是旧版解析气压（不含温度），南极陆地是低压；真实月平均风场请用“真实模式”，它来自完整原始方程 GCM 的再分析产品。
+- **真实风场**：`apps/Physics/wind_real.npz` 来自 NCEP/NCAR Reanalysis 1（观测同化的再分析产品）的月平均 10 m 风，2015–2024 共 120 个月，插值到 2.5° 网格。界面可选年份和月份，逐月播放；“月际变化 Δ”是相对 2015–2024 同月平均的 Δ 风；“十年趋势”是年均值的线性拟合（m/s per decade）。10 个年均值上的趋势只用于展示，不用于气候归因。
+- **重建数据**：`python tools/build_circulation_data.py`。数据源为 NOAA ERDDAP（ETOPO1）和 NOAA PSL NetCDF Subset Service（NCEP/NCAR），无需 API key。来源与引用见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+### Erosion 的 Voronoi CZM 场
+
+apps/Physics/czm_fields.npz 保存 4 组独立 Voronoi 多边形 cohesive 网络的 9 级裂缝场（4×9×320×320）。Erosion 的“CZM 裂缝（离线）”开关按当前土壤水平均收缩率在帧间插值；干燥步仍由 SoilWater 驱动。
+
+    python tools/build_czm_bank.py
+
+只保留运行所需文件：
+
+- tools/cohesive_voronoi_desiccation.py：Voronoi 多边形 cohesive 求解器；
+- tools/build_czm_bank.py：生成多组裂缝场；
+- apps/Physics/czm_fields.npz：预计算裂缝场；
+- apps/Physics/soil_water.py：两层土壤水。
+
+原先的 1D/2D patch test、单缺口、多单元缺口、Q4 网络等验证脚本已删除；它们只用于开发期验证，不参与应用启动。
+
+### CZM 图案随机化与降雨滞后
+
+Erosion 启动时从 4 组图案中随机选一组；裂缝完全闭合后开启新一轮干燥时再换一组，避免每次干裂同一张图。
+
+CZM 帧选择带一阶滞后：张开 τ≈240 min、闭合 τ≈900 min；降雨时裂缝逐渐变浅，不会一帧消失。
+
+### 启动与导入优化
+
+- 启动器卡片缩略图改为首次绘制时用 QImageReader 加载，去掉每卡 QGraphicsDropShadowEffect；
+- 每个 app 的 wildcard 导入已删除，改为按需导入：
+  - qt_base：Qt + 标准库 + utils；
+  - numpy_base：NumPy + Pillow；
+  - taichi_base：Taichi；numba_base：Numba；opengl_base：OpenGL；mp_base：mpmath；custom_base：custom_function / dynamic_fractal。
+- 纯 Qt 应用不再导入 Taichi/OpenGL；所有 app 的公共冒烟测试仍通过。
+- 所有 ti.init 已启用 offline_cache；Cplot 的 cplot/matplotlib 改为首次绘图时导入。
 
 ## 开发与测试
 
@@ -154,6 +234,8 @@ python -m unittest discover -s tests -v
 - `apps_manifest.py` 中登记的应用文件都存在
 - 应用路径/标题唯一、分类合法
 - `app_runner.py` 存在
+- Circulation 的 ETOPO1 海拔、2015–2024 逐月真实风场，以及旧合成气压场的南极低压回归
+- Erosion 的两层土壤水质量平衡、Voronoi CZM 场与降雨闭合滞后
 
 CI 见 `.github/workflows/ci.yml`：静态编译 + manifest 测试，以及在 Windows 上安装依赖后的导入冒烟测试。
 
@@ -211,7 +293,7 @@ python tools/search_lenia_presets.py --trials 300 --save
 
 ## 已知限制
 
-- 实验分类中的应用没有缩略图，界面与稳定性未完全打磨。
+- Unpolished 分类中的应用默认不配缩略图（Noise 例外，保留界面预览），界面与稳定性未完全打磨。
 - 分形渲染仍在 GUI 线程同步计算；4x 抗锯齿 + 高迭代次数时缩放会短暂卡顿。
 - `eval` / `exec` 用于用户自定义表达式，仅应输入本地可信内容，不构成安全沙箱。
 

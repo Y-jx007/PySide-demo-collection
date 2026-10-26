@@ -1,4 +1,5 @@
-from custom_import import *
+from common.qt_base import (ColorButton, QApplication, QCheckBox, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QLineF, QMainWindow, QPainter, QPen, QPushButton, QScrollArea, QSlider, QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, sys, time)
+from common.numpy_base import (np)
 from PySide6.QtCore import QLineF
 
 # ==================== 经典预设图案 ====================

@@ -1,6 +1,9 @@
-﻿from custom_import import *
+from common.qt_base import (QApplication, QCheckBox, QColor, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPainter, QPen, QPushButton, QSlider, QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, sys)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
+from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_FLOAT, GL_LUMINANCE, GL_NEAREST, GL_QUADS, GL_RGB, GL_TEXTURE_2D, GL_UNSIGNED_BYTE, glTexSubImage2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, glBegin, glBindTexture, glClear, glEnable, glEnd, glGenTextures, glLoadIdentity, glTexCoord2f, glTexImage2D, glTexParameteri, glVertex2f, glViewport)
 
-ti.init(arch=ti.gpu)
+ti.init(arch=ti.gpu, offline_cache=True)
 
 # ── 序参量曲线组件 ──────────────────────────
 class OrderParameterWidget(QWidget):
@@ -78,7 +81,7 @@ class IsingModel:
         self.spins = ti.field(ti.i8, (size, size))
         self.temperature_field = ti.field(ti.f32, ())
         self.updates_per_step_field = ti.field(ti.i32, ())
-        self.texture_field = ti.field(ti.f32, (size, size, 3))
+        self.texture_field = ti.field(ti.u8, (size, size))
 
         # 用于存储磁化和能量的输出字段
         self._mag_out = ti.field(ti.f32, ())
@@ -91,10 +94,8 @@ class IsingModel:
     @ti.kernel
     def update_texture(self):
         for i, j in self.spins:
-            value = (ti.cast(self.spins[i, j], ti.f32) + 1.0) * 0.5
-            self.texture_field[i, j, 0] = value
-            self.texture_field[i, j, 1] = value
-            self.texture_field[i, j, 2] = value
+            value = 255 if self.spins[i, j] > 0 else 0
+            self.texture_field[i, j] = ti.cast(value, ti.u8)
 
     @ti.kernel
     def taichi_checkerboard_step(self, mask_type: ti.i32):
@@ -104,14 +105,16 @@ class IsingModel:
         half = (grid * grid + 1) // 2
         p = ti.min(1.0, ups / half)
 
-        for i, j in ti.ndrange(grid, grid):
-            if (mask_type == 0 and (i + j) % 2 == 0) or (mask_type == 1 and (i + j) % 2 == 1):
-                if ti.random() < p:
-                    nb_sum = (self.spins[(i - 1) % grid, j] + self.spins[(i + 1) % grid, j] +
-                              self.spins[i, (j - 1) % grid] + self.spins[i, (j + 1) % grid])
-                    dE = 2.0 * self.spins[i, j] * nb_sum
-                    if dE <= 0.0 or ti.random() < ti.exp(-dE / T):
-                        self.spins[i, j] = -self.spins[i, j]
+        # Launch only the selected colour of the checkerboard.  The old
+        # version mapped the full grid and discarded half the threads.
+        for a, j in ti.ndrange(grid // 2, grid):
+            i = 2 * a + ((j + mask_type) % 2)
+            if ti.random() < p:
+                nb_sum = (self.spins[(i - 1) % grid, j] + self.spins[(i + 1) % grid, j] +
+                          self.spins[i, (j - 1) % grid] + self.spins[i, (j + 1) % grid])
+                dE = 2.0 * self.spins[i, j] * nb_sum
+                if dE <= 0.0 or ti.random() < ti.exp(-dE / T):
+                    self.spins[i, j] = -self.spins[i, j]
 
     @ti.kernel
     def taichi_monte_carlo_step(self):
@@ -197,11 +200,15 @@ class IsingModelGLWidget(QOpenGLWidget):
         self.sim = IsingModel(self.grid_size)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_model)
-        self.timer.start(0)
+        self.timer.start(16)
         self.setMinimumSize(540, 540)
 
         self.last_mask = 0
         self.texture_id = None
+        self.texture_size = None
+        self._sim_dirty = True
+        self._measure_counter = 0
+        self._measure_interval = 5
 
     def initializeGL(self):
         glEnable(GL_TEXTURE_2D)
@@ -218,11 +225,18 @@ class IsingModelGLWidget(QOpenGLWidget):
     def paintGL(self):
         glClear(GL_COLOR_BUFFER_BIT)
         glLoadIdentity()
-        self.sim.update_texture()
-        tex_data = self.sim.texture_field.to_numpy()
         glBindTexture(GL_TEXTURE_2D, self.texture_id)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, self.grid_size, self.grid_size,
-                     0, GL_RGB, GL_FLOAT, tex_data)
+        if self._sim_dirty:
+            self.sim.update_texture()
+            tex_data = self.sim.texture_field.to_numpy()
+            if self.texture_size != self.grid_size:
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, self.grid_size, self.grid_size,
+                             0, GL_LUMINANCE, GL_UNSIGNED_BYTE, tex_data)
+                self.texture_size = self.grid_size
+            else:
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, self.grid_size, self.grid_size,
+                                GL_LUMINANCE, GL_UNSIGNED_BYTE, tex_data)
+            self._sim_dirty = False
         glBegin(GL_QUADS)
         glTexCoord2f(0, 0); glVertex2f(-1, -1)
         glTexCoord2f(1, 0); glVertex2f(1, -1)
@@ -241,6 +255,9 @@ class IsingModelGLWidget(QOpenGLWidget):
 
         self.sim = IsingModel(size)
         self.grid_size = size
+        self.texture_size = None
+        self._sim_dirty = True
+        self._measure_counter = 0
 
         self.sim.set_temperature(T)
         self.sim.is_paused = paused
@@ -265,9 +282,13 @@ class IsingModelGLWidget(QOpenGLWidget):
                 else:
                     self.sim.taichi_monte_carlo_step()
 
-        mag, eng = self.sim.calculate_observables()
-        if hasattr(self, 'data_callback'):
-            self.data_callback(mag, eng)
+        self._sim_dirty = True
+        self._measure_counter += 1
+        if self._measure_counter >= self._measure_interval:
+            self._measure_counter = 0
+            mag, eng = self.sim.calculate_observables()
+            if hasattr(self, 'data_callback'):
+                self.data_callback(mag, eng)
         self.update()
 
     def set_data_callback(self, cb):
@@ -284,6 +305,8 @@ class IsingModelGLWidget(QOpenGLWidget):
         self.sim.use_checkerboard = val
     def reset_spins(self):
         self.sim.reset_spins()
+        self._sim_dirty = True
+        self._measure_counter = 0
     def toggle_pause(self):
         self.sim.is_paused = not self.sim.is_paused
     def set_use_wolff(self, val):
@@ -481,6 +504,7 @@ class MainWindow(QMainWindow):
     def _set_all_spins(self, val):
         arr = np.full((self.gl_widget.grid_size, self.gl_widget.grid_size), val, dtype=np.int8)
         self.gl_widget.sim.spins.from_numpy(arr)
+        self.gl_widget._sim_dirty = True
         self.gl_widget.update()
 
     def _set_antiferro(self):
@@ -489,6 +513,7 @@ class MainWindow(QMainWindow):
         arr[1::2, ::2] = -1
         arr[::2, 1::2] = -1
         self.gl_widget.sim.spins.from_numpy(arr)
+        self.gl_widget._sim_dirty = True
         self.gl_widget.update()
 
     def closeEvent(self, event):

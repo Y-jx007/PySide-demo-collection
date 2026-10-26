@@ -1,4 +1,6 @@
-from custom_import import *
+from common.qt_base import (QApplication, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QOpenGLWidget, QPainter, QPen, QPoint, QPushButton, QRect, QScrollArea, QSettings, QSlider, QSplitter, QTabWidget, QTimer, QVBoxLayout, QWidget, Qt, Signal, os, re, sys)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
 import re
 from PySide6.QtCore import QSettings
 import matplotlib.pyplot as plt
@@ -105,7 +107,7 @@ def _random_state_kernel(state: ti.template()):
 def _draw_points_batch_kernel(state: ti.template(),
                               points: ti.types.ndarray(dtype=ti.f32, ndim=2),
                               brush_size: ti.i32):
-    for idx in range(points.shape[0]):
+    for idx in ti.ndrange(points.shape[0]):
         px = ti.cast(points[idx, 0], ti.i32)
         py = ti.cast(points[idx, 1], ti.i32)
         value = points[idx, 2]
@@ -115,6 +117,17 @@ def _draw_points_batch_kernel(state: ti.template(),
         ):
             if (j - px) ** 2 + (i - py) ** 2 <= brush_size ** 2:
                 state[i, j] = value
+
+@ti.kernel
+def _render_display_kernel(state: ti.template(), lut: ti.template(),
+                           out: ti.template(), step: ti.i32):
+    for i, j in ti.ndrange(out.shape[0], out.shape[1]):
+        value = state[i * step, j * step]
+        idx = ti.cast(ti.min(255.0, ti.max(0.0, value * 255.0)), ti.i32)
+        out[i, j, 0] = lut[idx, 0]
+        out[i, j, 1] = lut[idx, 1]
+        out[i, j, 2] = lut[idx, 2]
+
 
 @ti.kernel
 def _step_kernel(state: ti.template(), new_state: ti.template(),
@@ -144,7 +157,7 @@ class LeniaSimulation:
     def __init__(self, field_size=256):
         # 每个 Simulation 实例创建前重置 Taichi 上下文（单实例模式）
         ti.reset()
-        ti.init(arch=ti.gpu, default_fp=ti.f32)
+        ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
 
         self.field_size = field_size
         # 创建所有 Taichi 字段
@@ -155,6 +168,14 @@ class LeniaSimulation:
         self.kernel_dx   = ti.field(dtype=ti.i32, shape=MAX_KERNEL_ELEMENTS)
         self.kernel_dy   = ti.field(dtype=ti.i32, shape=MAX_KERNEL_ELEMENTS)
         self.kernel_count = ti.field(dtype=ti.i32, shape=())
+        # GPU-side display conversion: state -> indexed LUT -> RGB.
+        self.display_size = min(512, field_size)
+        self.display_step = max(1, field_size // self.display_size)
+        self.display_rgb = ti.field(ti.u8, shape=(self.display_size, self.display_size, 3))
+        self.display_lut = ti.field(ti.u8, shape=(256, 3))
+
+    def set_lut(self, lut):
+        self.display_lut.from_numpy(np.ascontiguousarray(lut, dtype=np.uint8))
 
     def random_state(self):
         _random_state_kernel(self.state)
@@ -227,6 +248,11 @@ class LeniaSimulation:
         self.kernel_dy.from_numpy(_pad(dys, MAX_KERNEL_ELEMENTS, np.int32))
         self.kernel_count[None] = count
 
+    def render_display_numpy(self) -> np.ndarray:
+        _render_display_kernel(self.state, self.display_lut,
+                               self.display_rgb, self.display_step)
+        return self.display_rgb.to_numpy()
+
     def get_state_numpy(self) -> np.ndarray:
         return self.state.to_numpy()
 
@@ -273,6 +299,7 @@ class LeniaCanvas(QOpenGLWidget):
         self.last_point = None
 
         self._lut = (cm.cubehelix(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
+        self.sim.set_lut(self._lut)
         self._display_img = QImage(self.canvas_size, self.canvas_size, QImage.Format_RGB888)
         self._display_img.fill(Qt.black)
 
@@ -292,11 +319,8 @@ class LeniaCanvas(QOpenGLWidget):
         painter.end()
 
     def _make_display_image(self):
-        arr = self.sim.get_state_numpy()
-        idx = np.clip((arr * 255).astype(np.uint8), 0, 255)
-        rgb = self._lut[idx]
-        img = np.ascontiguousarray(rgb)
-        fs = int(self.field_size)
+        img = np.ascontiguousarray(self.sim.render_display_numpy())
+        fs = img.shape[0]
         src = QImage(img.data, fs, fs, fs * 3, QImage.Format_RGB888)
         self._display_img = src.scaled(self.canvas_size, self.canvas_size,
                                        Qt.IgnoreAspectRatio, Qt.FastTransformation)
@@ -332,6 +356,7 @@ class LeniaCanvas(QOpenGLWidget):
         self.last_point = None
         self._flush_timer.stop()
         self._flush_draw_queue()
+        self.update_display()
 
     def _enqueue_brush(self, pos: QPoint):
         px = int(pos.x() / self.canvas_size * self.field_size)
@@ -340,7 +365,7 @@ class LeniaCanvas(QOpenGLWidget):
         py = max(0, min(self.field_size - 1, py))
         self._draw_queue.append((px, py, self.draw_value))
         if not self._flush_timer.isActive():
-            self._flush_timer.start(5)
+            self._flush_timer.start(8)
 
     def _enqueue_line(self, p1, p2):
         x1, y1 = p1.x(), p1.y()
@@ -368,7 +393,19 @@ class LeniaCanvas(QOpenGLWidget):
         pts = np.array(self._draw_queue, dtype=np.float32)
         self.sim.draw_points_batch(pts, self.brush_size)
         self._draw_queue.clear()
-        self.update_display()
+        # Immediate visual feedback without copying/colour-mapping the whole
+        # 1024² field on every mouse event.
+        radius = max(1, int(round(self.brush_size * self.canvas_size / self.field_size)))
+        painter = QPainter(self._display_img)
+        painter.setPen(Qt.NoPen)
+        for px, py, value in pts:
+            colour = self._lut[min(255, max(0, int(value * 255)))]
+            painter.setBrush(QColor(int(colour[0]), int(colour[1]), int(colour[2])))
+            cx = int(px / self.field_size * self.canvas_size)
+            cy = int(py / self.field_size * self.canvas_size)
+            painter.drawEllipse(QPoint(cx, cy), radius, radius)
+        painter.end()
+        self.update()
 
     def center_on_activity(self, threshold=0.1):
         self.sim.center_on_activity(threshold)
@@ -428,6 +465,8 @@ class LeniaApp(QMainWindow):
         self.sim_timer.timeout.connect(self.run_simulation)
 
         self.update_kernel()
+        # Compile the brush kernel before the first interactive stroke.
+        self.sim.draw_points_batch(np.zeros((1, 3), dtype=np.float32), 1)
         self.sim.random_state()
         self.canvas.update_display()
         self.kernel_preview.update_preview(self.sim.get_kernel_preview())
@@ -715,10 +754,13 @@ class LeniaApp(QMainWindow):
             self.sim_timer.stop()
         # 重新创建模拟实例
         self.sim = LeniaSimulation(new_size)
+        self.sim.set_lut(self.canvas._lut)
         self.canvas.sim = self.sim
         self.canvas.set_field_size(new_size)
         self.canvas._lut = (cm.cubehelix(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
         self.update_kernel()
+        # Compile the brush kernel before the first interactive stroke.
+        self.sim.draw_points_batch(np.zeros((1, 3), dtype=np.float32), 1)
         self.sim.random_state()
         self.canvas.update_display()
         self.kernel_preview.update_preview(self.sim.get_kernel_preview())
@@ -808,9 +850,11 @@ class LeniaApp(QMainWindow):
 
         if field_size != self.sim.field_size:
             self.sim = LeniaSimulation(field_size)
+            self.sim.set_lut(self.canvas._lut)
             self.canvas.sim = self.sim
             self.canvas.set_field_size(field_size)
             self.canvas._lut = (cm.cubehelix(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
+            self.sim.draw_points_batch(np.zeros((1, 3), dtype=np.float32), 1)
             self.res_combo.blockSignals(True)
             self.res_combo.setCurrentText(str(field_size))
             self.res_combo.blockSignals(False)

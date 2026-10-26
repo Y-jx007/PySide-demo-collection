@@ -1,4 +1,6 @@
-from custom_import import *
+from common.qt_base import (QApplication, QCheckBox, QFileDialog, QFont, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPixmap, QProgressBar, QPushButton, QSize, QSlider, QSpinBox, QSplitter, QThread, QVBoxLayout, QWidget, Qt, Signal, os, sys)
+from common.numpy_base import (Image, np)
+from common.numba_base import (njit, prange)
 
 # ========== 核心变换（不变）==========
 @njit(parallel=True, nogil=True, cache=True)
@@ -48,11 +50,11 @@ class CatMapWorker(QThread):
     frame_ready = Signal(np.ndarray, int)        # 帧, 当前全局迭代次数
     period_found = Signal(int)                   # 周期
 
-    def __init__(self, image_array, original_hash, p, q, max_iterations,
+    def __init__(self, image_array, reference_image, p, q, max_iterations,
                  start_iteration=0, update_interval=20):
         super().__init__()
         self.image_array = image_array.copy()
-        self.original_hash = original_hash
+        self.reference_image = reference_image.copy()
         self.p = p
         self.q = q
         self.max_iterations = max_iterations
@@ -74,7 +76,7 @@ class CatMapWorker(QThread):
             iter_count += 1
 
             # 只需检查是否回到原始图像
-            if hashlib.md5(current.tobytes()).hexdigest() == self.original_hash:
+            if np.array_equal(current, self.reference_image):
                 period = abs(iter_count) if iter_count != 0 else 0
                 if period > 0:
                     self.period_found.emit(period)
@@ -103,7 +105,7 @@ class CatMapWidget(QMainWindow):
         super().__init__()
         self.original_image = None
         self.current_image = None
-        self.original_hash = None
+        self.original_state = None
         self.worker = None
         self.global_iteration = 0         # 带符号的全局迭代计数
         self.detected_period = 0
@@ -122,9 +124,6 @@ class CatMapWidget(QMainWindow):
             spin.valueChanged.connect(callback)
         layout.addWidget(spin)
         return layout, spin
-
-    def _fast_hash(self, img):
-        return hashlib.md5(img.tobytes()).hexdigest()
 
     def _update_all_info(self):
         self.iteration_label.setText(f"迭代次数: {self.global_iteration}")
@@ -148,7 +147,7 @@ class CatMapWidget(QMainWindow):
 
     def _full_reset_state(self, image):
         self.current_image = image.copy()
-        self.original_hash = self._fast_hash(image)
+        self.original_state = image.copy()
         self.global_iteration = 0
         self.detected_period = 0
         self.period_candidates = []
@@ -390,7 +389,7 @@ class CatMapWidget(QMainWindow):
 
     def _check_period(self):
         """简单检测：当前图像等于原始图像 且 迭代次数≠0"""
-        if self.global_iteration != 0 and self._fast_hash(self.current_image) == self.original_hash:
+        if self.global_iteration != 0 and np.array_equal(self.current_image, self.original_state):
             self._record_period(abs(self.global_iteration))
             self.status_label.setText(f"找到周期: {self.detected_period}")
 
@@ -403,7 +402,7 @@ class CatMapWidget(QMainWindow):
 
         self.worker = CatMapWorker(
             self.current_image,
-            self.original_hash,
+            self.original_state,
             self.p_spinbox.value(),
             self.q_spinbox.value(),
             self.iter_spinbox.value(),

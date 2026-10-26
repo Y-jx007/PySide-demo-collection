@@ -4,16 +4,14 @@ import time
 import subprocess
 import importlib.util
 import logging
-import io
+import json
 
-from PIL import Image, ImageOps
-
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QCursor, QPainter, QPixmap, QColor
+from PySide6.QtCore import Qt, QTimer, QSize, Signal, QMimeData, QPoint, QEvent, QVariantAnimation
+from PySide6.QtGui import QFont, QFontMetrics, QCursor, QPainter, QPixmap, QImage, QImageReader, QDrag
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame, QMessageBox,
-    QSizePolicy, QGraphicsDropShadowEffect
+    QSizePolicy
 )
 
 from apps_manifest import APPS, CATEGORY_ORDER, INSTALL_HINTS
@@ -36,9 +34,9 @@ CARD_CONTAINER_RADIUS = 6
 CARD_BUTTON_RADIUS = 4
 
 CARD_LAYOUT_SPACING = 6
-CARD_LAYOUT_MARGINS = (12, 12, 12, 12)
+CARD_LAYOUT_MARGINS = (8, 8, 8, 8)
 CARD_TEXT_LAYOUT_SPACING = 2
-CARD_TEXT_LAYOUT_MARGINS = (6, 4, 6, 4)
+CARD_TEXT_LAYOUT_MARGINS = (4, 4, 4, 4)
 
 CARD_BORDER_WIDTH = 2
 
@@ -58,13 +56,15 @@ LAUNCHER_DEFAULT_HEIGHT = 800
 LAUNCHER_MAIN_MARGINS = (24, 4, 24, 4)
 
 INFO_FONT_SIZE = 8
-INFO_DEFAULT = "选择工具开始使用 | 绘图工具集 v1.1"
+INFO_DEFAULT = "选择工具开始使用 | 拖动卡片可排序或换分类 | 绘图工具集 v1.1"
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 APPS_DIR = os.path.join(PROJECT_DIR, "apps")
 
 FAMILY_TITLE = "Segoe UI"
 FAMILY_DEFAULT = "Microsoft YaHei"
+APP_CARD_MIME = "application/x-pyside-app-card"
+LAYOUT_PATH = os.path.join(PROJECT_DIR, "launcher_layout.json")
 
 
 class HScrollArea(QScrollArea):
@@ -86,43 +86,58 @@ class HScrollArea(QScrollArea):
 
 # ===================== 应用卡片 =====================
 class AppCard(QFrame):
-    def __init__(self, title, description, command, bg_image_path=None, disabled=False, parent=None):
+    def __init__(self, title, description, command, bg_image_path=None,
+                 disabled=False, parent=None, app_path=None):
         super().__init__(parent)
         self.title = title
         self.description = description
         self.command = command
         self.disabled = disabled
+        self.app_path = app_path
+        self.category_widget = None
+        self._drag_start = None
+        self.setCursor(Qt.OpenHandCursor)
+        self.setAcceptDrops(True)
         self._color_pixmap = None
         self._gray_pixmap = None
+        self._bg_image_path = bg_image_path
+        self._image_loaded = False
         self._hover = False
-        self._load_background(bg_image_path)
         self.setup_ui()
         self.setup_styles()
         self._apply_styles(hovered=False)
 
-    def _load_background(self, image_path):
+    def _load_background(self, image_path=None):
+        """延迟到首次绘制再读图；启动时不再解码 32 张缩略图。"""
+        if self._image_loaded:
+            return
+        self._image_loaded = True
+        image_path = image_path or self._bg_image_path
+        if not image_path or not os.path.exists(image_path):
+            return
         inner_w = CARD_WIDTH - 2 * CARD_BORDER_WIDTH
         inner_h = CARD_HEIGHT - 2 * CARD_BORDER_WIDTH
-
-        if image_path and os.path.exists(image_path):
-            try:
-                img = Image.open(image_path)
-                img = ImageOps.fit(img, (inner_w, inner_h),
-                                   Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-                buffer_color = io.BytesIO()
-                img.save(buffer_color, format='PNG')
-                self._color_pixmap = QPixmap()
-                self._color_pixmap.loadFromData(buffer_color.getvalue())
-
-                gray_img = img.convert('L').convert('RGB')
-                buffer_gray = io.BytesIO()
-                gray_img.save(buffer_gray, format='PNG')
-                self._gray_pixmap = QPixmap()
-                self._gray_pixmap.loadFromData(buffer_gray.getvalue())
-            except Exception as e:
-                logging.warning(f"无法加载背景图片 {image_path}: {e}")
+        try:
+            reader = QImageReader(image_path)
+            reader.setAutoTransform(True)
+            img = reader.read()
+            if img.isNull():
+                logging.warning(f"无法加载背景图片 {image_path}: {reader.errorString()}")
+                return
+            img = img.scaled(inner_w, inner_h, Qt.KeepAspectRatioByExpanding,
+                             Qt.SmoothTransformation)
+            x = max(0, (img.width() - inner_w) // 2)
+            y = max(0, (img.height() - inner_h) // 2)
+            img = img.copy(x, y, inner_w, inner_h)
+            self._color_pixmap = QPixmap.fromImage(img)
+            gray = img.convertToFormat(QImage.Format_Grayscale8)
+            self._gray_pixmap = QPixmap.fromImage(gray)
+        except Exception as e:
+            logging.warning(f"无法加载背景图片 {image_path}: {e}")
 
     def paintEvent(self, event):
+        if not self._image_loaded:
+            self._load_background()
         # 先绘制样式表背景和边框
         super().paintEvent(event)
 
@@ -145,6 +160,7 @@ class AppCard(QFrame):
 
         self.text_container = QWidget()
         self.text_container.setAttribute(Qt.WA_StyledBackground, True)
+        self.text_container.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.text_container.setStyleSheet(f"""
             background-color: rgba(255, 255, 255, 0.8);
             border-radius: {CARD_CONTAINER_RADIUS}px;
@@ -160,12 +176,14 @@ class AppCard(QFrame):
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setWordWrap(True)
         self.title_label.setStyleSheet("color: #222; background: transparent; border: none;")
+        self.title_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
         self.desc_label = QLabel(self.description)
         self.desc_label.setFont(QFont(FAMILY_TITLE, CARD_DESC_FONT_SIZE))
         self.desc_label.setWordWrap(True)
         self.desc_label.setAlignment(Qt.AlignCenter)
         self.desc_label.setStyleSheet("color: #444; background: transparent; border: none;")
+        self.desc_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
         text_layout.addWidget(self.title_label)
         text_layout.addWidget(self.desc_label)
@@ -192,12 +210,9 @@ class AppCard(QFrame):
         self.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
 
     def setup_styles(self):
+        # 每张卡片一个 QGraphicsDropShadowEffect 会显著拖慢首屏；
+        # 边框已经足够区分卡片，阴影改为不创建。
         self.setAttribute(Qt.WA_StyledBackground, True)
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(CARD_SHADOW_BLUR)
-        shadow.setOffset(CARD_SHADOW_OFFSET_X, CARD_SHADOW_OFFSET_Y)
-        shadow.setColor(QColor(0, 0, 0, 30))
-        self.setGraphicsEffect(shadow)
 
     def _apply_styles(self, hovered=False):
         if self.disabled:
@@ -256,6 +271,63 @@ class AppCard(QFrame):
                 }}
             """)
 
+    def dragEnterEvent(self, event):
+        if self.category_widget is not None:
+            self.category_widget.dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self.category_widget is not None:
+            self.category_widget._drop_event_obj = self
+            try:
+                self.category_widget.dragMoveEvent(event)
+            finally:
+                self.category_widget._drop_event_obj = None
+
+    def dragLeaveEvent(self, event):
+        if self.category_widget is not None:
+            self.category_widget.dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        if self.category_widget is None:
+            event.ignore()
+            return
+        self.category_widget._drop_event_obj = self
+        try:
+            self.category_widget.dropEvent(event)
+        finally:
+            self.category_widget._drop_event_obj = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None or not (event.buttons() & Qt.LeftButton):
+            return
+        if (event.position().toPoint() - self._drag_start).manhattanLength() < QApplication.startDragDistance():
+            return
+        self._drag_start = None
+        if not self.app_path:
+            return
+        pix = self.grab()
+        launcher = self.window()
+        if not hasattr(launcher, "begin_card_drag") or not launcher.begin_card_drag(self):
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(APP_CARD_MIME, self.app_path.encode("utf-8"))
+        drag.setMimeData(mime)
+        drag.setPixmap(pix)
+        drag.setHotSpot(QPoint(pix.width() // 2, pix.height() // 2))
+        drag.exec(Qt.MoveAction)
+        if not launcher.card_drag_finished():
+            launcher.cancel_card_drag()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
+
     def enterEvent(self, event):
         if not self.disabled:
             self._hover = True
@@ -273,21 +345,14 @@ class AppCard(QFrame):
 
 # ===================== 分类槽 =====================
 class CategoryWidget(QFrame):
+    card_dropped = Signal(object, int)
+
     def __init__(self, category_name, parent=None):
         super().__init__(parent)
         self.category_name = category_name
+        self.setAcceptDrops(True)
         self.setup_ui()
-        radius = CATEGORY_RADIUS
-        self.setStyleSheet(f"""
-            CategoryWidget {{
-                background-color: #e9ecef;
-                border-top: 2px solid #adb5bd;
-                border-left: 2px solid #adb5bd;
-                border-bottom: 2px solid #ffffff;
-                border-right: 2px solid #ffffff;
-                border-radius: {radius}px;
-            }}
-        """)
+        self._apply_style(False)
 
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
@@ -323,7 +388,128 @@ class CategoryWidget(QFrame):
         self.cards_layout.addStretch()
 
         self.scroll_area.setWidget(self.cards_container)
+        for drop_target in (self.scroll_area, self.scroll_area.viewport(), self.cards_container):
+            drop_target.setAcceptDrops(True)
+            drop_target.installEventFilter(self)
         main_layout.addWidget(self.scroll_area, 1)
+
+    def _apply_style(self, active):
+        radius = CATEGORY_RADIUS
+        border = "#495057" if active else "#adb5bd"
+        background = "#f1f3f5" if active else "#e9ecef"
+        self.setStyleSheet(f"""
+            CategoryWidget {{
+                background-color: {background};
+                border-top: 2px solid {border};
+                border-left: 2px solid {border};
+                border-bottom: 2px solid #ffffff;
+                border-right: 2px solid #ffffff;
+                border-radius: {radius}px;
+            }}
+        """)
+
+    def card_count(self):
+        return sum(
+            1 for i in range(self.cards_layout.count())
+            if isinstance(self.cards_layout.itemAt(i).widget(), AppCard)
+        )
+
+    def remove_card(self, card):
+        self.cards_layout.removeWidget(card)
+        card.category_widget = None
+        QTimer.singleShot(0, self._update_height)
+
+    def _insert_position(self, card_index):
+        """Layout index before the card_index-th AppCard."""
+        seen = 0
+        for i in range(self.cards_layout.count()):
+            item = self.cards_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, AppCard):
+                if seen == card_index:
+                    return i
+                seen += 1
+        return max(0, self.cards_layout.count() - 1)
+
+    def insert_card(self, card, index):
+        index = max(0, min(int(index), self.card_count()))
+        pos = self._insert_position(index)
+        self.cards_layout.insertWidget(pos, card, 0, Qt.AlignTop)
+        card.category_widget = self
+        QTimer.singleShot(0, self._update_height)
+
+    def insert_placeholder(self, placeholder, index):
+        index = max(0, min(int(index), self.card_count()))
+        pos = self._insert_position(index)
+        self.cards_layout.insertWidget(pos, placeholder, 0, Qt.AlignTop)
+        QTimer.singleShot(0, self._update_height)
+
+    def remove_placeholder(self, placeholder):
+        if self.cards_layout.indexOf(placeholder) >= 0:
+            self.cards_layout.removeWidget(placeholder)
+            placeholder.setParent(None)
+            QTimer.singleShot(0, self._update_height)
+
+    def placeholder_card_index(self, placeholder):
+        seen = 0
+        for i in range(self.cards_layout.count()):
+            item = self.cards_layout.itemAt(i)
+            w = item.widget() if item else None
+            if w is placeholder:
+                return seen
+            if isinstance(w, AppCard):
+                seen += 1
+        return seen
+
+    def _drop_index(self, event, source=None):
+        source = source or self
+        global_pos = source.mapToGlobal(event.position().toPoint())
+        local = self.cards_container.mapFromGlobal(global_pos)
+        x = local.x()
+        index = 0
+        for i in range(self.cards_layout.count()):
+            item = self.cards_layout.itemAt(i)
+            card = item.widget() if item else None
+            if isinstance(card, AppCard) and x > card.geometry().center().x():
+                index += 1
+        return index
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(APP_CARD_MIME):
+            event.acceptProposedAction()
+            self._apply_style(True)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(APP_CARD_MIME):
+            event.acceptProposedAction()
+            handler = getattr(self.window(), "update_drag_target", None)
+            if handler is not None:
+                handler(self, event)
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._apply_style(False)
+        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            handler = getattr(self.window(), "leave_drag_target", None)
+            if handler is not None:
+                handler(self)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._apply_style(False)
+        if not event.mimeData().hasFormat(APP_CARD_MIME):
+            event.ignore()
+            return
+        path = bytes(event.mimeData().data(APP_CARD_MIME)).decode("utf-8")
+        card = self.window().card_for_path(path)
+        if card is None:
+            event.ignore()
+            return
+        self.card_dropped.emit(card, self._drop_index(event, getattr(self, "_drop_event_obj", None)))
+        event.acceptProposedAction()
 
     def _content_height(self):
         """分类行只占卡片实际高度；有横向滚动条时再补上滚动条高度。"""
@@ -343,6 +529,7 @@ class CategoryWidget(QFrame):
     def add_card(self, card: AppCard):
         # 顶部对齐，避免 QHBoxLayout 把 150px 卡片在 188px 行里垂直居中
         self.cards_layout.insertWidget(self.cards_layout.count() - 1, card, 0, Qt.AlignTop)
+        card.category_widget = self
         QTimer.singleShot(0, self._update_height)
 
 
@@ -352,6 +539,16 @@ class ApplicationLauncher(QMainWindow):
         super().__init__()
         self.active_processes = []   # 每个 app 一个独立子进程
         self.cards = []
+        self.cards_by_path = {}
+        self.category_widgets = []
+        self.category_by_name = {}
+        self._drag_card = None
+        self._drag_source_cat = None
+        self._drag_source_index = -1
+        self._placeholder = None
+        self._placeholder_cat = None
+        self._placeholder_anim = None
+        self._drag_done = False
         self._closing = False
 
         logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -405,34 +602,249 @@ class ApplicationLauncher(QMainWindow):
         module_path = os.path.join(APPS_DIR, module_subpath.replace('/', os.sep))
         return lambda: self.launch_app(module_path, friendly_name)
 
+    def _new_category(self, category_name):
+        existing = self.category_by_name.get(category_name)
+        if existing is not None:
+            return existing
+        cat_widget = CategoryWidget(category_name)
+        cat_widget.card_dropped.connect(self._on_card_dropped)
+        self.categories_layout.addWidget(cat_widget)
+        self.category_widgets.append(cat_widget)
+        self.category_by_name[category_name] = cat_widget
+        return cat_widget
+
+    def _add_card(self, cat_widget, app):
+        if app["path"] in self.cards_by_path:
+            return
+        command = self._make_launcher(app["path"], app["friendly"])
+        module_filename = os.path.basename(app["path"])
+        image_name = os.path.splitext(module_filename)[0] + ".png"
+        image_path = os.path.join(PROJECT_DIR, "images", image_name)
+        card = AppCard(
+            app["title"], app["description"], command,
+            bg_image_path=image_path, app_path=app["path"],
+        )
+        self.cards.append(card)
+        self.cards_by_path[app["path"]] = card
+        cat_widget.add_card(card)
+
     def _create_category(self, category_name, items):
         """创建分类槽并添加卡片"""
-        cat_widget = CategoryWidget(category_name)
-        self.categories_layout.addWidget(cat_widget)
-
+        cat_widget = self._new_category(category_name)
         for app in items:
-            command = self._make_launcher(app["path"], app["friendly"])
-            module_filename = os.path.basename(app["path"])
-            image_name = os.path.splitext(module_filename)[0] + ".png"
-            image_path = os.path.join(PROJECT_DIR, "images", image_name)
-            card = AppCard(app["title"], app["description"], command, bg_image_path=image_path)
-            self.cards.append(card)
-            cat_widget.add_card(card)
+            self._add_card(cat_widget, app)
+        return cat_widget
+
+    def card_for_path(self, path):
+        return self.cards_by_path.get(path)
+
+    def _load_layout(self):
+        try:
+            with open(LAYOUT_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            categories = data.get("categories", [])
+            if not isinstance(categories, list):
+                return None
+            out = []
+            for entry in categories:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                apps = entry.get("apps", [])
+                if isinstance(name, str) and isinstance(apps, list):
+                    out.append((name, [p for p in apps if isinstance(p, str)]))
+            return out or None
+        except (OSError, ValueError):
+            return None
+
+    def _save_layout(self):
+        data = {"version": 1, "categories": []}
+        for cat in self.category_widgets:
+            paths = []
+            for i in range(cat.card_count()):
+                item = cat.cards_layout.itemAt(i)
+                card = item.widget() if item else None
+                if card is not None and card.app_path:
+                    paths.append(card.app_path)
+            data["categories"].append({"name": cat.category_name, "apps": paths})
+        tmp = LAYOUT_PATH + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp, LAYOUT_PATH)
+        except OSError as exc:
+            logging.warning(f"无法保存启动器布局: {exc}")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    def _make_placeholder(self):
+        ph = QFrame()
+        ph.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+        ph.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        ph.setStyleSheet(f"""
+            QFrame {{
+                background-color: rgba(255, 255, 255, 170);
+                border: 2px dashed #868e96;
+                border-radius: {CARD_RADIUS}px;
+            }}
+        """)
+        return ph
+
+    def _animate_placeholder(self):
+        if self._placeholder is None:
+            return
+        ph = self._placeholder
+        if self._placeholder_anim is not None:
+            self._placeholder_anim.stop()
+        ph.setFixedWidth(0)
+        anim = QVariantAnimation(self)
+        anim.setDuration(130)
+        anim.setStartValue(0)
+        anim.setEndValue(CARD_WIDTH)
+        anim.valueChanged.connect(lambda value: ph.setFixedWidth(int(value)))
+        anim.finished.connect(lambda: ph.setFixedWidth(CARD_WIDTH))
+        self._placeholder_anim = anim
+        anim.start()
+
+    def _remove_placeholder(self):
+        if self._placeholder_anim is not None:
+            self._placeholder_anim.stop()
+            self._placeholder_anim = None
+        if self._placeholder_cat is not None and self._placeholder is not None:
+            self._placeholder_cat.remove_placeholder(self._placeholder)
+            self._placeholder_cat = None
+
+    def begin_card_drag(self, card):
+        if self._drag_card is not None or card.category_widget is None:
+            return False
+        source = card.category_widget
+        idx = source.cards_layout.indexOf(card)
+        self._drag_card = card
+        self._drag_source_cat = source
+        self._drag_source_index = idx
+        self._drag_done = False
+        self._placeholder = self._make_placeholder()
+        self._placeholder_cat = None
+        card.hide()
+        source.remove_card(card)
+        self.info_label.setText(f"拖动 {card.title}…")
+        return True
+
+    def update_drag_target(self, category, event):
+        if self._drag_card is None or self._placeholder is None:
+            return
+        index = category._drop_index(event, getattr(category, "_drop_event_obj", None))
+        if self._placeholder_cat is not category:
+            if self._placeholder_cat is not None:
+                self._placeholder_cat.remove_placeholder(self._placeholder)
+            category.insert_placeholder(self._placeholder, index)
+            self._placeholder_cat = category
+            self._placeholder.show()
+            self._animate_placeholder()
+        else:
+            if category.placeholder_card_index(self._placeholder) != index:
+                category.remove_placeholder(self._placeholder)
+                category.insert_placeholder(self._placeholder, index)
+                self._placeholder.show()
+
+    def leave_drag_target(self, category):
+        if self._placeholder_cat is category:
+            self._remove_placeholder()
+
+    def _clear_card_drag(self):
+        if self._placeholder_anim is not None:
+            self._placeholder_anim.stop()
+            self._placeholder_anim = None
+        self._drag_card = None
+        self._drag_source_cat = None
+        self._drag_source_index = -1
+        self._placeholder = None
+        self._placeholder_cat = None
+        self._drag_done = True
+
+    def card_drag_finished(self):
+        return self._drag_done
+
+    def cancel_card_drag(self):
+        if self._drag_card is None:
+            return
+        card = self._drag_card
+        source = self._drag_source_cat
+        index = self._drag_source_index
+        self._remove_placeholder()
+        if source is not None:
+            source.insert_card(card, index)
+        card.show()
+        self._clear_card_drag()
+        self._restore_info()
+
+    def _finish_card_drag(self, target, index=None):
+        if self._drag_card is None or target is None:
+            self.cancel_card_drag()
+            return
+        card = self._drag_card
+        if self._placeholder is not None and self._placeholder_cat is target:
+            index = target.placeholder_card_index(self._placeholder)
+        self._remove_placeholder()
+        index = max(0, min(int(index or 0), target.card_count()))
+        target.insert_card(card, index)
+        card.show()
+        self._save_layout()
+        self.info_label.setText(f"已移动 {card.title} 到「{target.category_name}」")
+        self._clear_card_drag()
+        QTimer.singleShot(2200, self._restore_info)
+
+    def _on_card_dropped(self, card, index):
+        target = self.sender()
+        if isinstance(target, CategoryWidget):
+            self._finish_card_drag(target, index)
+
+    def _move_card(self, card, target, index):
+        # kept for programmatic moves/tests
+        source = card.category_widget
+        if source is None or target is None:
+            return
+        source_index = source.cards_layout.indexOf(card)
+        if source is target and 0 <= source_index < index:
+            index -= 1
+        source.remove_card(card)
+        target.insert_card(card, index)
+        card.category_widget = target
+        self._save_layout()
 
     def setup_apps(self):
+        app_map = {app["path"]: app for app in APPS}
+        custom = self._load_layout()
+        seen = set()
+        if custom:
+            for name, paths in custom:
+                cat = self._new_category(name)
+                for path in paths:
+                    app = app_map.get(path)
+                    if app is not None and path not in seen:
+                        self._add_card(cat, app)
+                        seen.add(path)
+
+        remaining = [app for app in APPS if app["path"] not in seen]
         categories = {}
-        for app in APPS:
+        for app in remaining:
             categories.setdefault(app["category"], []).append(app)
 
-        # 优先按指定顺序显示
-        for cat in CATEGORY_ORDER:
-            if cat in categories:
-                self._create_category(cat, categories[cat])
+        # 优先按指定顺序显示；自定义布局里的分类保持原有顺序
+        for cat_name in CATEGORY_ORDER:
+            if cat_name in categories:
+                cat = self._new_category(cat_name)
+                for app in categories[cat_name]:
+                    self._add_card(cat, app)
 
-        # 其余分类按名称排序
-        for cat in sorted(categories.keys()):
-            if cat not in CATEGORY_ORDER:
-                self._create_category(cat, categories[cat])
+        for cat_name in sorted(categories.keys()):
+            if cat_name in CATEGORY_ORDER:
+                continue
+            cat = self._new_category(cat_name)
+            for app in categories[cat_name]:
+                self._add_card(cat, app)
 
         self.categories_layout.addStretch()
 

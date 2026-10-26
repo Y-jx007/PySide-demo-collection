@@ -7,9 +7,9 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPolygonF
 
 # ---- Taichi 初始化（无 GPU 时自动回退 CPU）----
 try:
-    ti.init(arch=ti.gpu)
+    ti.init(arch=ti.gpu, offline_cache=True)
 except Exception:
-    ti.init(arch=ti.cpu)
+    ti.init(arch=ti.cpu, offline_cache=True)
 
 N = 1500
 WORLD_SIZE = 512

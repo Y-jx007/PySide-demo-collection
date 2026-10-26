@@ -4,7 +4,7 @@ from PySide6.QtGui import QSurfaceFormat, QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QGroupBox, QFileDialog, QMessageBox,
-    QLineEdit, QComboBox, QSizePolicy
+    QLineEdit, QComboBox, QSizePolicy, QScrollArea, QFrame
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from OpenGL.GL import *
@@ -34,6 +34,9 @@ class TextureGLWidget(QOpenGLWidget):
         glClearColor(0.0, 0.0, 0.0, 1.0)
         glEnable(GL_TEXTURE_2D)
         self.texture_id = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.texture_id)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 
     def paintGL(self):
         img = self.image_provider()
@@ -55,9 +58,6 @@ class TextureGLWidget(QOpenGLWidget):
             self.tex_size = (w, h)
         else:
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, img)
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 
         glColor4f(1, 1, 1, 1)
         glBegin(GL_QUADS)
@@ -95,19 +95,32 @@ class SimulationViewer(QWidget):
         self.gl_widget = TextureGLWidget(
             image_provider=lambda: self.sim.get_image(self.display_mode)
         )
-        self.gl_widget.setFixedSize(600, 600)
+        self.gl_widget.setMinimumSize(480, 480)
+        self.gl_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        main_layout = QHBoxLayout()
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
 
-        # 左侧面板宽度 320
         self.param_panel_layout = QVBoxLayout()
+        self.param_panel_layout.setContentsMargins(0, 0, 0, 0)
+        self.param_panel_layout.setSpacing(8)
         left_widget = QWidget()
         left_widget.setLayout(self.param_panel_layout)
-        left_widget.setFixedWidth(320)
-        main_layout.addWidget(left_widget)
 
-        main_layout.addWidget(self.gl_widget)
-        self.setLayout(main_layout)
+        self.param_scroll = QScrollArea()
+        self.param_scroll.setWidgetResizable(True)
+        self.param_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.param_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.param_scroll.setFrameShape(QFrame.NoFrame)
+        self.param_scroll.setFixedWidth(340)
+        self.param_scroll.setWidget(left_widget)
+        self.param_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+        main_layout.addWidget(self.param_scroll, 0)
+        main_layout.addWidget(self.gl_widget, 1)
 
         self.timer = QTimer()
         self.timer.timeout.connect(self._on_timer)
@@ -137,6 +150,9 @@ class SimulationViewer(QWidget):
             QMessageBox.information(self, "保存成功", f"已保存至:\n{path}")
 
     def _on_timer(self):
+        # 最小化/隐藏时不要继续烧 GPU；重新显示后自动恢复。
+        if not self.isVisible() or self.isMinimized():
+            return
         if self.is_playing:
             for _ in range(self.steps_per_frame):
                 self.sim.step()
@@ -161,16 +177,45 @@ def add_border(img, border_width=2, color=(0, 0, 0)):
 
 
 # ---------- 反应扩散专用渲染（黑白灰度 + 边框）----------
+_render_cache = {}
+
+
+def _render_buffers(shape):
+    """Reuse the large grayscale/RGB buffers instead of allocating every frame."""
+    key = tuple(shape)
+    buf = _render_cache.get(key)
+    if buf is None:
+        tmp = np.empty(shape, dtype=np.float32)
+        gray = np.empty(shape, dtype=np.uint8)
+        img = np.empty((shape[0], shape[1], 3), dtype=np.uint8)
+        buf = (tmp, gray, img)
+        _render_cache[key] = buf
+    return buf
+
+
+def _finish_gray(tmp, gray, img):
+    np.clip(tmp, 0.0, 1.0, out=tmp)
+    np.multiply(tmp, 255.0, out=tmp)
+    gray[...] = tmp
+    img[..., 0] = gray
+    img[..., 1] = gray
+    img[..., 2] = gray
+    return add_border(img, border_width=2, color=(0, 0, 0))
+
+
 def render_reaction_image(u_np, v_np):
-    """
-    黑白灰度：取 U、V 中较大者作为灰度值，高浓度 → 黑，低浓度 → 白
-    """
-    gray = 1.0 - np.maximum(u_np, v_np)
-    gray = np.clip(gray, 0, 1)
-    img_gray = (gray * 255).astype(np.uint8)
-    img = np.stack([img_gray, img_gray, img_gray], axis=-1)
-    img = add_border(img, border_width=2, color=(0, 0, 0))
-    return img
+    """黑白灰度：取 U、V 中较大者作为灰度值，高浓度 → 黑，低浓度 → 白。"""
+    tmp, gray, img = _render_buffers(u_np.shape)
+    np.maximum(u_np, v_np, out=tmp)
+    np.subtract(1.0, tmp, out=tmp)
+    return _finish_gray(tmp, gray, img)
+
+
+def render_gray_image(gray_np):
+    """Cahn-Hilliard 的单通道灰度图，同样复用缓冲区。"""
+    tmp, gray, img = _render_buffers(gray_np.shape)
+    np.copyto(tmp, gray_np, casting="unsafe")
+    return _finish_gray(tmp, gray, img)
 
 
 # ---------- UI 控件辅助函数 ----------

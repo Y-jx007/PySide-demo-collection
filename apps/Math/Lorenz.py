@@ -1,7 +1,11 @@
-from custom_import import *
+from common.qt_base import (OrbitCamera, QApplication, QColor, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMatrix4x4, QMessageBox, QOpenGLWidget, QPushButton, QSlider, QSpinBox, QSplitter, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, math, sys)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
+from common.opengl_base import (GL_COLOR_BUFFER_BIT, GL_DEPTH_TEST, GL_FLOAT, GL_LINE_STRIP, GL_MODELVIEW, GL_PROJECTION, GL_VERTEX_ARRAY, glClear, glClearColor, glColor3f, glDisable, glDisableClientState, glDrawArrays, glEnableClientState, glLoadIdentity, glLoadMatrixf, glMatrixMode, glVertexPointer, glViewport)
+from common.custom_base import (integrate_custom_python, make_safe_expression)
 
 # ---------- Taichi 初始化 ----------
-ti.init(arch=ti.cpu, debug=False)
+ti.init(arch=ti.cpu, debug=False, offline_cache=True)
 
 # ---------- 通用 RK4 步进器与泛型积分内核 ----------
 @ti.func

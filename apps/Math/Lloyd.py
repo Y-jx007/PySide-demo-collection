@@ -1,8 +1,16 @@
-﻿from custom_import import *          # 你的自定义导入
+from common.qt_base import (QApplication, QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPushButton, QSpinBox, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
+from common.numpy_base import (np)
+from common.numba_base import (njit)
+from common.opengl_base import (GL_ARRAY_BUFFER, GL_BLEND, GL_COLOR_BUFFER_BIT, GL_DEPTH_TEST, GL_DYNAMIC_DRAW, GL_ELEMENT_ARRAY_BUFFER, GL_FLOAT, GL_LINES, GL_LINE_SMOOTH, GL_MODELVIEW, GL_ONE_MINUS_SRC_ALPHA, GL_POINTS, GL_POINT_SMOOTH, GL_PROJECTION, GL_SRC_ALPHA, GL_TRIANGLES, GL_UNSIGNED_INT, GL_VERTEX_ARRAY, glBindBuffer, glBlendFunc, glBufferData, glBufferSubData, glClear, glClearColor, glColor4f, glDisable, glDrawArrays, glDrawElements, glEnable, glEnableClientState, glGenBuffers, glLineWidth, glLoadIdentity, glMatrixMode, glOrtho, glPointSize, glVertexPointer, glViewport)
+from itertools import chain
 from scipy.spatial import Voronoi
 
-ti.init(arch=ti.cpu, debug=False, default_fp=ti.f32)
-
+# Lloyd 松弛的热点不在 Taichi，而在每个 step 的 Python 后处理：
+#   scipy Voronoi -> 无限脊扩展 -> 逐 cell 建多边形 -> 质心 -> 移动。
+# 旧实现把 polygons 拷进 Taichi ndarray 再拷回来，并在 Python 里逐 cell
+# 做 numpy fancy-index；这里改为：
+#   * 一次向量化构建扁平多边形缓冲（只对少量边界 cell 走 Python 循环）；
+#   * 质心 / 移动 / 蒙特卡洛直接用 Numba 操作 NumPy 数组，零拷贝。
 def setup_gl_format():
     fmt = QSurfaceFormat()
     fmt.setVersion(4, 3)
@@ -10,35 +18,32 @@ def setup_gl_format():
     fmt.setSwapInterval(0)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-# ================== Taichi 核函数 ==================
-@ti.kernel
-def compute_centroids_shoelace(
-    polygons: ti.types.ndarray(),
-    region_offsets: ti.types.ndarray(),
-    region_sizes: ti.types.ndarray(),
-    centroids: ti.types.ndarray(),
-    n_regions: ti.i32
-):
-    ti.loop_config(parallelize=8)
-    for i in range(n_regions):
-        start = region_offsets[i]
-        nv = region_sizes[i]
+
+# ================== Numba 核函数 ==================
+@njit(nogil=True, fastmath=True, cache=True)
+def compute_cell_centroids(polygons, offsets, sizes, centroids):
+    """鞋带公式求多边形质心（多边形首尾已闭合）。"""
+    n = sizes.shape[0]
+    for i in range(n):
+        nv = sizes[i]
         if nv < 3:
             centroids[i, 0] = 0.0
             centroids[i, 1] = 0.0
             continue
+        start = offsets[i]
         area = 0.0
         cx = 0.0
         cy = 0.0
         for j in range(nv - 1):
-            k = (j + 1)
-            x1, y1 = polygons[start + j, 0], polygons[start + j, 1]
-            x2, y2 = polygons[start + k, 0], polygons[start + k, 1]
+            x1 = polygons[start + j, 0]
+            y1 = polygons[start + j, 1]
+            x2 = polygons[start + j + 1, 0]
+            y2 = polygons[start + j + 1, 1]
             cross = x1 * y2 - x2 * y1
             area += cross
             cx += (x1 + x2) * cross
             cy += (y1 + y2) * cross
-        if ti.abs(area) < 1e-12:
+        if abs(area) < 1e-12:
             avg_x = 0.0
             avg_y = 0.0
             for j in range(nv - 1):
@@ -52,22 +57,27 @@ def compute_centroids_shoelace(
             centroids[i, 1] = cy / (6.0 * area)
 
 
-@ti.kernel
-def compute_monte_carlo_centroids(
-    polygons: ti.types.ndarray(),
-    offsets: ti.types.ndarray(),
-    sizes: ti.types.ndarray(),
-    centroids: ti.types.ndarray(),
-    n_regions: ti.i32,
-    samples: ti.i32,
-    prob: ti.f32
-):
-    ti.loop_config(parallelize=8)
-    for i in range(n_regions):
+@njit(nogil=True, fastmath=True, cache=True)
+def move_points(points, centroids, mobility,
+                xmin, xmax, ymin, ymax):
+    n = points.shape[0]
+    for i in range(n):
+        points[i, 0] += (centroids[i, 0] - points[i, 0]) * mobility
+        points[i, 1] += (centroids[i, 1] - points[i, 1]) * mobility
+        points[i, 0] = max(xmin + 1e-6, min(xmax - 1e-6, points[i, 0]))
+        points[i, 1] = max(ymin + 1e-6, min(ymax - 1e-6, points[i, 1]))
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def compute_monte_carlo_centroids(polygons, offsets, sizes, centroids,
+                                  samples, probability):
+    """按概率用蒙特卡洛估计部分 cell 的质心（可选功能）。"""
+    n = sizes.shape[0]
+    for i in range(n):
         nv = sizes[i]
         if nv < 4:
             continue
-        if prob < 1.0 and ti.random() > prob:
+        if probability < 1.0 and np.random.random() > probability:
             continue
         start = offsets[i]
         min_x = polygons[start, 0]
@@ -77,17 +87,23 @@ def compute_monte_carlo_centroids(
         for j in range(start, start + nv):
             x = polygons[j, 0]
             y = polygons[j, 1]
-            if x < min_x: min_x = x
-            if x > max_x: max_x = x
-            if y < min_y: min_y = y
-            if y > max_y: max_y = y
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
         cx = 0.0
         cy = 0.0
         cnt = 0
+        dx = max_x - min_x
+        dy = max_y - min_y
         nv_real = nv - 1
         for _ in range(samples):
-            px = min_x + ti.random() * (max_x - min_x)
-            py = min_y + ti.random() * (max_y - min_y)
+            px = min_x + np.random.random() * dx
+            py = min_y + np.random.random() * dy
             inside = False
             j = start + nv_real - 1
             for k in range(start, start + nv_real):
@@ -108,52 +124,6 @@ def compute_monte_carlo_centroids(
             centroids[i, 1] = cy / cnt
 
 
-@ti.kernel
-def move_points(
-    points: ti.types.ndarray(),
-    centroids: ti.types.ndarray(),
-    mobility: ti.f32,
-    xmin: ti.f32, xmax: ti.f32,
-    ymin: ti.f32, ymax: ti.f32,
-    n_points: ti.i32
-):
-    ti.loop_config(parallelize=8)
-    for i in range(n_points):
-        points[i, 0] += (centroids[i, 0] - points[i, 0]) * mobility
-        points[i, 1] += (centroids[i, 1] - points[i, 1]) * mobility
-        points[i, 0] = ti.max(xmin + 1e-6, ti.min(xmax - 1e-6, points[i, 0]))
-        points[i, 1] = ti.max(ymin + 1e-6, ti.min(ymax - 1e-6, points[i, 1]))
-
-
-# 说明：compute_sides 已由 numpy 向量化版本 _compute_sides_numpy 替代，
-# 该 taichi kernel 保留仅供参考/备用，不再参与运行时。
-@ti.kernel
-def compute_sides(
-    polygons: ti.types.ndarray(),
-    offsets: ti.types.ndarray(),
-    sizes: ti.types.ndarray(),
-    xmin: ti.f32, xmax: ti.f32, ymin: ti.f32, ymax: ti.f32,
-    sides: ti.types.ndarray(),
-    n_regions: ti.i32
-):
-    ti.loop_config(parallelize=8)
-    for i in range(n_regions):
-        nv = sizes[i]
-        if nv < 4:
-            sides[i] = 0
-            continue
-        start = offsets[i]
-        is_outside = 0
-        for j in range(start, start + nv):
-            x = polygons[j, 0]
-            y = polygons[j, 1]
-            if x < xmin - 1e-9 or x > xmax + 1e-9 or y < ymin - 1e-9 or y > ymax + 1e-9:
-                is_outside = 1
-                break
-        ne = nv - 1
-        sides[i] = ne + 1 if is_outside else ne
-
-
 # ================== Widget (VBO + MultiDraw + TRIANGLE_FAN) ==================
 class VoronoiWidget(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -166,15 +136,16 @@ class VoronoiWidget(QOpenGLWidget):
 
         self.vbo_poly = None
         self.vbo_point = None
+        self.vbo_hex_idx = None
+        self.vbo_other_idx = None
+        self.vbo_line_idx = None
         self.num_points = 0
-
-        self.hex_firsts = np.array([], dtype=np.int32)
-        self.hex_counts = np.array([], dtype=np.int32)
-        self.other_firsts = np.array([], dtype=np.int32)
-        self.other_counts = np.array([], dtype=np.int32)
-
-        self.all_firsts = np.array([], dtype=np.int32)
-        self.all_counts = np.array([], dtype=np.int32)
+        self.poly_capacity = 0
+        self.point_capacity = 0
+        self.idx_capacity = {}
+        self.hex_tri_count = 0
+        self.other_tri_count = 0
+        self.line_count = 0
 
     def initializeGL(self):
         glClearColor(1.0, 1.0, 1.0, 1.0)
@@ -188,34 +159,108 @@ class VoronoiWidget(QOpenGLWidget):
     def resizeGL(self, w, h):
         pass
 
+    @staticmethod
+    def _fan_indices(firsts, counts):
+        """把每个闭合多边形展开成 TRIANGLES 的索引（0,i,i+1）。"""
+        if len(firsts) == 0:
+            return np.zeros(0, dtype=np.int32)
+        triangles = counts - 2
+        keep = triangles > 0
+        firsts = firsts[keep]
+        triangles = triangles[keep]
+        if len(triangles) == 0:
+            return np.zeros(0, dtype=np.int32)
+        total = int(triangles.sum())
+        tri_id = np.repeat(np.arange(len(triangles), dtype=np.int64), triangles)
+        starts = np.repeat(np.cumsum(triangles) - triangles, triangles)
+        local = np.arange(total, dtype=np.int64) - starts
+        base = firsts[tri_id].astype(np.int64)
+        out = np.empty(total * 3, dtype=np.int32)
+        out[0::3] = base
+        out[1::3] = base + local + 1
+        out[2::3] = base + local + 2
+        return out
+
+    @staticmethod
+    def _line_indices(firsts, counts):
+        """把闭合多边形的边展开成 GL_LINES 索引。"""
+        if len(firsts) == 0:
+            return np.zeros(0, dtype=np.int32)
+        edges = counts - 1
+        keep = edges > 0
+        firsts = firsts[keep]
+        edges = edges[keep]
+        if len(edges) == 0:
+            return np.zeros(0, dtype=np.int32)
+        total = int(edges.sum())
+        edge_id = np.repeat(np.arange(len(edges), dtype=np.int64), edges)
+        starts = np.repeat(np.cumsum(edges) - edges, edges)
+        local = np.arange(total, dtype=np.int64) - starts
+        base = firsts[edge_id].astype(np.int64)
+        out = np.empty(total * 2, dtype=np.int32)
+        out[0::2] = base + local
+        out[1::2] = base + local + 1
+        return out
+
+    def _upload_indices(self, vbo, data):
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo)
+        nbytes = int(data.nbytes)
+        if self.idx_capacity.get(vbo) != nbytes:
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, nbytes, data, GL_DYNAMIC_DRAW)
+            self.idx_capacity[vbo] = nbytes
+        else:
+            glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, nbytes, data)
+
     def set_data(self, points, poly_flat, poly_offsets, poly_counts, poly_sides):
         self.points = points
-        n_cells = len(poly_counts)
         self.num_points = len(points)
 
+        # 六边形 / 非六边形分组：只做一次向量化筛选
         hex_mask = (poly_sides == 6)
         other_mask = (poly_sides != 6) & (poly_sides > 0)
+        hex_firsts = poly_offsets[hex_mask].astype(np.int32)
+        hex_counts = poly_counts[hex_mask].astype(np.int32)
+        other_firsts = poly_offsets[other_mask].astype(np.int32)
+        other_counts = poly_counts[other_mask].astype(np.int32)
 
-        self.hex_firsts = poly_offsets[hex_mask].astype(np.int32)
-        self.hex_counts = poly_counts[hex_mask].astype(np.int32)
-        self.other_firsts = poly_offsets[other_mask].astype(np.int32)
-        self.other_counts = poly_counts[other_mask].astype(np.int32)
-
-        self.all_firsts = poly_offsets.astype(np.int32)
-        self.all_counts = poly_counts.astype(np.int32)
+        hex_idx = self._fan_indices(hex_firsts, hex_counts)
+        other_idx = self._fan_indices(other_firsts, other_counts)
+        line_idx = self._line_indices(
+            np.ascontiguousarray(poly_offsets, dtype=np.int32),
+            np.ascontiguousarray(poly_counts, dtype=np.int32))
+        self.hex_tri_count = len(hex_idx)
+        self.other_tri_count = len(other_idx)
+        self.line_count = len(line_idx)
 
         if self.vbo_poly is None:
             self.vbo_poly = glGenBuffers(1)
             self.vbo_point = glGenBuffers(1)
+            self.vbo_hex_idx = glGenBuffers(1)
+            self.vbo_other_idx = glGenBuffers(1)
+            self.vbo_line_idx = glGenBuffers(1)
 
+        poly_bytes = int(poly_flat.nbytes)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_poly)
-        glBufferData(GL_ARRAY_BUFFER, poly_flat.nbytes, poly_flat, GL_DYNAMIC_DRAW)
+        if poly_bytes != self.poly_capacity:
+            glBufferData(GL_ARRAY_BUFFER, poly_bytes, poly_flat, GL_DYNAMIC_DRAW)
+            self.poly_capacity = poly_bytes
+        else:
+            glBufferSubData(GL_ARRAY_BUFFER, 0, poly_bytes, poly_flat)
 
-        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_point)
         pts_np = np.asarray(points, dtype=np.float32)
-        glBufferData(GL_ARRAY_BUFFER, pts_np.nbytes, pts_np, GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_point)
+        if pts_np.nbytes != self.point_capacity:
+            glBufferData(GL_ARRAY_BUFFER, pts_np.nbytes, pts_np, GL_DYNAMIC_DRAW)
+            self.point_capacity = pts_np.nbytes
+        else:
+            glBufferSubData(GL_ARRAY_BUFFER, 0, pts_np.nbytes, pts_np)
+
+        self._upload_indices(self.vbo_hex_idx, hex_idx)
+        self._upload_indices(self.vbo_other_idx, other_idx)
+        self._upload_indices(self.vbo_line_idx, line_idx)
 
         glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
         self.update()
 
     def set_show_options(self, show_points, show_voronoi):
@@ -261,20 +306,26 @@ class VoronoiWidget(QOpenGLWidget):
             glBindBuffer(GL_ARRAY_BUFFER, self.vbo_poly)
             glVertexPointer(2, GL_FLOAT, 0, None)
 
-            # GL_POLYGON 在多数驱动上是软件回退，改成 GL_TRIANGLE_FAN 走硬件路径。
-            # 顶点数组首尾已闭合，最后一个三角形退化（面积 0），视觉无影响。
-            if len(self.hex_firsts) > 0:
+            # 旧实现用 GL_POLYGON + glMultiDrawArrays：几千次独立 draw call，
+            # 且 GL_POLYGON 在多数驱动上是软件回退。这里预先展开三角形/线段
+            # 索引，填充和描边各只需 1~2 次 draw call。
+            if self.hex_tri_count:
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.vbo_hex_idx)
                 glColor4f(1.0, 0.8745, 0.3490, 1.0)
-                glMultiDrawArrays(GL_POLYGON, self.hex_firsts, self.hex_counts, len(self.hex_firsts))
+                glDrawElements(GL_TRIANGLES, self.hex_tri_count,
+                               GL_UNSIGNED_INT, None)
 
-            if len(self.other_firsts) > 0:
+            if self.other_tri_count:
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.vbo_other_idx)
                 glColor4f(0.5647, 0.9333, 0.5647, 0.7059)
-                glMultiDrawArrays(GL_POLYGON, self.other_firsts, self.other_counts, len(self.other_firsts))
+                glDrawElements(GL_TRIANGLES, self.other_tri_count,
+                               GL_UNSIGNED_INT, None)
 
-            if len(self.all_firsts) > 0:
+            if self.line_count:
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.vbo_line_idx)
                 glColor4f(0.8039, 0.5216, 0.0, 1.0)
                 glLineWidth(1.5)
-                glMultiDrawArrays(GL_LINE_LOOP, self.all_firsts, self.all_counts, len(self.all_firsts))
+                glDrawElements(GL_LINES, self.line_count, GL_UNSIGNED_INT, None)
 
         if self.show_points:
             glBindBuffer(GL_ARRAY_BUFFER, self.vbo_point)
@@ -283,70 +334,12 @@ class VoronoiWidget(QOpenGLWidget):
             glPointSize(2.0)
             glDrawArrays(GL_POINTS, 0, self.num_points)
 
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
 
-# ================== 向量化 finite Voronoi（点→无限脊索引字典化） ==================
-def _finite_voronoi_vectorized(vor, radius, center):
-    pts = vor.points
-    verts = vor.vertices
-    n_pts = len(pts)
-
-    ridge_verts = np.asarray(vor.ridge_vertices)
-    ridge_pts = np.asarray(vor.ridge_points)
-
-    inf_mask = np.any(ridge_verts == -1, axis=1)
-    inf_ridge_verts = ridge_verts[inf_mask]
-    inf_ridge_pts = ridge_pts[inf_mask]
-
-    finite_v = np.where(inf_ridge_verts[:, 0] == -1,
-                        inf_ridge_verts[:, 1], inf_ridge_verts[:, 0])
-    p1_idx = inf_ridge_pts[:, 0]
-    p2_idx = inf_ridge_pts[:, 1]
-
-    t_vec = pts[p2_idx] - pts[p1_idx]
-    t_vec /= np.linalg.norm(t_vec, axis=1, keepdims=True)
-    n_vec = np.column_stack([-t_vec[:, 1], t_vec[:, 0]])
-    mid = (pts[p1_idx] + pts[p2_idx]) / 2.0
-    n_vec *= np.sign(np.sum((mid - center) * n_vec, axis=1))[:, np.newaxis]
-    far_pts = verts[finite_v] + n_vec * radius
-
-    new_verts = np.vstack([verts, far_pts])
-    n_orig_verts = len(verts)
-
-    # 一次性建 point -> 无限 ridge 索引表，避免每个点都做两次全量比较（O(n·n_inf) → O(n_inf)）
-    p_to_inf = {}
-    for ri in range(len(inf_ridge_pts)):
-        p_to_inf.setdefault(int(inf_ridge_pts[ri, 0]), []).append(ri)
-        p_to_inf.setdefault(int(inf_ridge_pts[ri, 1]), []).append(ri)
-
-    new_regions = []
-    point_region = vor.point_region
-    regions = vor.regions
-    for p in range(n_pts):
-        reg = regions[point_region[p]]
-        infs = p_to_inf.get(p)
-        if infs is None:                       # 内部点：走快路
-            new_regions.append(list(reg))
-            continue
-
-        clean_reg = [v for v in reg if v >= 0]
-        clean_reg.extend([n_orig_verts + ri for ri in infs])
-
-        if len(clean_reg) > 2:
-            vs = new_verts[clean_reg]
-            c = vs.mean(axis=0)
-            angles = np.arctan2(vs[:, 1] - c[1], vs[:, 0] - c[0])
-            order = np.argsort(angles)
-            clean_reg = [clean_reg[i] for i in order]
-
-        new_regions.append(clean_reg)
-
-    return new_regions, np.asarray(new_verts, dtype=np.float32)
-
-
 # ================== 主算法类 ==================
-class TaichiHoneycombCVT:
+class HoneycombCVT:
     def __init__(self, n_points=300, bbox=(0.0, 1.0, 0.0, 1.0),
                  mobility=2.0, seed=42,
                  monte_enabled=False, monte_samples=50, monte_probability=0.2):
@@ -361,26 +354,20 @@ class TaichiHoneycombCVT:
         self.points = self._init_points(n_points)
         self._prev_points = self.points.copy()
         self._recompute_tol = 1e-6 * max(self.xmax - self.xmin, self.ymax - self.ymin)
-        self._cached_regions = None
-        self._cached_vertices = None
-        self._last_regions = None
-        self._last_vertices = None
-        self._last_sides = None
 
-        # 从 64 降到 16，显著减少 polygons_ti.from_numpy 的 memcpy 量；
-        # 若个别 cell 边数超过 16 会自动扩容，无需担心溢出。
-        self.max_verts_per_region = 16
-        self.total_vertices = n_points * self.max_verts_per_region
-        self.points_ti = ti.ndarray(dtype=ti.f32, shape=(n_points, 2))
-        self.centroids_ti = ti.ndarray(dtype=ti.f32, shape=(n_points, 2))
-        self.polygons_ti = ti.ndarray(dtype=ti.f32, shape=(self.total_vertices, 2))
-        self.region_offsets_ti = ti.ndarray(dtype=ti.i32, shape=(n_points,))
-        self.region_sizes_ti = ti.ndarray(dtype=ti.i32, shape=(n_points,))
-        self.sides_ti = ti.ndarray(dtype=ti.i32, shape=(n_points,))
-        self.points_ti.from_numpy(self.points.astype(np.float32))
-        self._polygons_np = np.zeros((self.total_vertices, 2), dtype=np.float32)
+        # 供 UI 读取的扁平多边形数据
+        self._polygons_np = np.zeros((0, 2), dtype=np.float32)
         self._sizes_np = np.zeros(n_points, dtype=np.int32)
         self._offsets_np = np.zeros(n_points, dtype=np.int32)
+        self.centroids = np.zeros((n_points, 2), dtype=np.float32)
+
+        # 没有发生足够位移时复用上一帧的几何
+        self._cached_flat = None
+        self._cached_sizes = None
+        self._cached_offsets = None
+        self._prev_build_points = None
+        self._sides_valid = False
+        self._last_sides = None
 
     def _init_points(self, n_points):
         from scipy.stats import qmc
@@ -397,58 +384,148 @@ class TaichiHoneycombCVT:
         pts[:, 1] = np.clip(pts[:, 1], self.ymin + 1e-6, self.ymax - 1e-6)
         return pts
 
-    def _finite_voronoi(self, vor):
-        radius = np.ptp(vor.points, axis=0).max() * 2.0
-        center = vor.points.mean(axis=0)
-        return _finite_voronoi_vectorized(vor, radius, center)
+    def _build_cells(self, vor):
+        """把 Voronoi 图一次性展开成扁平多边形缓冲。
+        内部点完全向量化（gather + scatter）；只有带无限脊的边界点
+        （约 O(sqrt(N)) 个）需要扩展远点并按角度排序。
+        """
+        pts = vor.points
+        verts = np.asarray(vor.vertices, dtype=np.float32)
+        ridge_verts = vor.ridge_vertices
+        ridge_points = np.asarray(vor.ridge_points)
+        n_pts = len(pts)
 
-    def _prepare_polygons(self, regions, vertices):
-        # 原地填充，去掉每个 region 的 vstack / norm 开销；只在容量不足时扩容一次。
-        n = len(regions)
-        sizes = np.zeros(n, dtype=np.int32)
-        offsets = np.zeros(n, dtype=np.int32)
-        flat = self._polygons_np
-        pos = 0
-        for i, r in enumerate(regions):
-            nv = len(r)
-            if nv < 3:
-                continue
-            poly = vertices[r]
-            need_close = 1 if (poly[0, 0] != poly[-1, 0] or poly[0, 1] != poly[-1, 1]) else 0
-            nv_closed = nv + need_close
+        inf_flags = np.fromiter((-1 in rv for rv in ridge_verts),
+                                dtype=bool, count=len(ridge_verts))
+        if inf_flags.any():
+            inf_rv = np.asarray([rv for rv in ridge_verts
+                                 if rv[0] == -1 or rv[1] == -1], dtype=np.int32)
+            inf_rp = ridge_points[inf_flags]
+            finite_v = np.where(inf_rv[:, 0] == -1, inf_rv[:, 1], inf_rv[:, 0])
+            p1 = inf_rp[:, 0]
+            p2 = inf_rp[:, 1]
+            t_vec = pts[p2] - pts[p1]
+            t_vec /= np.linalg.norm(t_vec, axis=1, keepdims=True)
+            n_vec = np.column_stack([-t_vec[:, 1], t_vec[:, 0]])
+            mid = (pts[p1] + pts[p2]) / 2.0
+            center = pts.mean(axis=0)
+            n_vec *= np.sign(np.sum((mid - center) * n_vec, axis=1))[:, None]
+            radius = np.ptp(pts, axis=0).max() * 2.0
+            far_pts = verts[finite_v] + n_vec * radius
+            new_verts = np.vstack([verts, far_pts]).astype(np.float32)
+            n_orig = len(verts)
+            p_to_inf = {}
+            for ri in range(len(inf_rp)):
+                p_to_inf.setdefault(int(inf_rp[ri, 0]), []).append(ri)
+                p_to_inf.setdefault(int(inf_rp[ri, 1]), []).append(ri)
+        else:
+            new_verts = verts
+            n_orig = len(verts)
+            p_to_inf = {}
 
-            if pos + nv_closed > len(flat):
-                new_total = max(len(flat) * 2, pos + nv_closed)
-                new_flat = np.zeros((new_total, 2), dtype=np.float32)
-                new_flat[:pos] = flat[:pos]
-                self._polygons_np = new_flat
-                self.total_vertices = new_total
-                self.polygons_ti = ti.ndarray(dtype=ti.f32, shape=(new_total, 2))
-                flat = new_flat
+        regions = vor.regions
+        point_region = vor.point_region
+        boundary = np.fromiter(p_to_inf.keys(), dtype=np.int32, count=len(p_to_inf))
+        is_boundary = np.zeros(n_pts, dtype=bool)
+        is_boundary[boundary] = True
+        interior = np.nonzero(~is_boundary)[0]
 
-            offsets[i] = pos
-            sizes[i] = nv_closed
-            flat[pos:pos + nv] = poly
-            if need_close:
-                flat[pos + nv] = poly[0]
-            pos += nv_closed
+        sizes = np.zeros(n_pts, dtype=np.int32)
 
-        flat[pos:] = 0.0
-        self._sizes_np[:n] = sizes
-        self._sizes_np[n:] = 0
-        self._offsets_np[:n] = offsets
-        self._offsets_np[n:] = 0
-        return sizes, offsets
+        # ---- 内部 cell：向量化 gather / scatter ----
+        if len(interior):
+            pr = point_region[interior]
+            regs = [regions[int(j)] for j in pr]
+            length = np.fromiter(map(len, regs), dtype=np.int32, count=len(regs))
+            src_start = np.empty(len(regs) + 1, dtype=np.int64)
+            src_start[0] = 0
+            np.cumsum(length, out=src_start[1:])
+            flat_ids = np.fromiter(chain.from_iterable(regs), dtype=np.int32,
+                                   count=int(src_start[-1]))
+            first = flat_ids[src_start[:-1]]
+            last = flat_ids[src_start[1:] - 1]
+            need_close = ~np.all(new_verts[first] == new_verts[last], axis=1)
+            sizes[interior] = length + need_close
+        else:
+            first = last = np.zeros(0, dtype=np.int32)
+            need_close = np.zeros(0, dtype=bool)
+            length = np.zeros(0, dtype=np.int32)
+            src_start = np.zeros(1, dtype=np.int64)
+
+        # ---- 边界 cell：扩展远点 + 角度排序（数量少） ----
+        boundary_cells = []
+        for p in boundary:
+            reg = regions[int(point_region[p])]
+            clean = [v for v in reg if v >= 0]
+            clean.extend([n_orig + ri for ri in p_to_inf[int(p)]])
+            if len(clean) > 2:
+                sx = 0.0
+                sy = 0.0
+                for v in clean:
+                    sx += new_verts[v, 0]
+                    sy += new_verts[v, 1]
+                cx = sx / len(clean)
+                cy = sy / len(clean)
+                clean.sort(key=lambda v: math.atan2(
+                    new_verts[v, 1] - cy, new_verts[v, 0] - cx))
+            close = 1 if (new_verts[clean[0]] != new_verts[clean[-1]]).any() else 0
+            sizes[p] = len(clean) + close
+            boundary_cells.append((int(p), clean, close))
+
+        offsets = np.empty(n_pts + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(sizes, out=offsets[1:])
+        flat = np.empty((int(offsets[-1]), 2), dtype=np.float32)
+
+        if len(interior):
+            dst_start = offsets[interior]
+            dst_idx = np.repeat(dst_start, length) + (
+                np.arange(int(src_start[-1])) - np.repeat(src_start[:-1], length))
+            flat[dst_idx] = new_verts[flat_ids]
+            close_dst = dst_start + length
+            flat[close_dst[need_close]] = new_verts[first[need_close]]
+
+        if boundary_cells:
+            dst = []
+            src = []
+            for p, poly, close in boundary_cells:
+                start = int(offsets[p])
+                dst.extend(range(start, start + len(poly)))
+                src.extend(poly)
+                if close:
+                    dst.append(start + len(poly))
+                    src.append(poly[0])
+            flat[np.asarray(dst, dtype=np.int64)] = \
+                new_verts[np.asarray(src, dtype=np.int32)]
+
+        return flat, sizes, offsets[:-1].astype(np.int32)
+
+    def _rebuild(self):
+        vor = Voronoi(self.points)
+        flat, sizes, offsets = self._build_cells(vor)
+        self._polygons_np = flat
+        self._sizes_np = sizes
+        self._offsets_np = offsets
+        self._cached_flat = flat
+        self._cached_sizes = sizes
+        self._cached_offsets = offsets
+        self._prev_build_points = self.points.copy()
+        self._prev_points = self._prev_build_points
+        self._sides_valid = False
+
+    def _use_cached(self):
+        self._polygons_np = self._cached_flat
+        self._sizes_np = self._cached_sizes
+        self._offsets_np = self._cached_offsets
 
     def _compute_sides_numpy(self):
-        # 完全向量化，替代 compute_sides taichi kernel（省去一次 kernel launch + to_numpy）。
         n = self.n_points
         if n == 0:
             self._last_sides = np.zeros(0, dtype=np.int32)
             return
-        sizes = self._sizes_np[:n]
-        offsets = self._offsets_np[:n]
-        used_total = int((offsets + sizes).max())
+        sizes = self._sizes_np
+        offsets = self._offsets_np
+        used_total = int((offsets + sizes).max()) if n else 0
         if used_total == 0:
             self._last_sides = np.zeros(n, dtype=np.int32)
             return
@@ -456,108 +533,61 @@ class TaichiHoneycombCVT:
         poly = self._polygons_np
         x = poly[:used_total, 0]
         y = poly[:used_total, 1]
-        oob = (x < self.xmin - 1e-9) | (x > self.xmax + 1e-9) | \
-              (y < self.ymin - 1e-9) | (y > self.ymax + 1e-9)
-
+        oob = ((x < self.xmin - 1e-9) | (x > self.xmax + 1e-9) |
+               (y < self.ymin - 1e-9) | (y > self.ymax + 1e-9))
         cs = np.zeros(used_total + 1, dtype=np.int64)
-        cs[1:] = np.cumsum(oob)
+        np.cumsum(oob, out=cs[1:])
 
         valid = sizes > 0
         starts = offsets[valid]
         ends = offsets[valid] + sizes[valid]
         has_out = (cs[ends] - cs[starts]) > 0
-
         sides = np.zeros(n, dtype=np.int32)
         sides[valid] = (sizes[valid] - 1) + has_out.astype(np.int32)
         self._last_sides = sides
 
+    def _centroids_and_move(self):
+        compute_cell_centroids(self._polygons_np, self._offsets_np,
+                               self._sizes_np, self.centroids)
+        if self.monte_enabled and self.monte_samples > 0:
+            compute_monte_carlo_centroids(
+                self._polygons_np, self._offsets_np, self._sizes_np,
+                self.centroids, self.monte_samples, float(self.monte_probability))
+        move_points(self.points, self.centroids, float(self.mobility),
+                    float(self.xmin), float(self.xmax),
+                    float(self.ymin), float(self.ymax))
+
     def step(self, return_data=True):
         self.step_count += 1
-        need_recompute = (self._cached_regions is None)
+        need_recompute = self._cached_flat is None
         if not need_recompute:
             max_disp = np.max(np.abs(self.points - self._prev_points))
             if max_disp > self._recompute_tol:
                 need_recompute = True
         if need_recompute:
-            vor = Voronoi(self.points)
-            regions, vertices = self._finite_voronoi(vor)
-            self._cached_regions = regions
-            self._cached_vertices = vertices
-            self._prev_points = self.points.copy()
+            self._rebuild()
         else:
-            regions = self._cached_regions
-            vertices = self._cached_vertices
+            self._use_cached()
 
-        sizes, offsets = self._prepare_polygons(regions, vertices)
+        self._centroids_and_move()
+        if not self._sides_valid:
+            self._compute_sides_numpy()
+            self._sides_valid = True
 
-        self.polygons_ti.from_numpy(self._polygons_np)
-        self.region_sizes_ti.from_numpy(self._sizes_np)
-        self.region_offsets_ti.from_numpy(self._offsets_np)
-
-        compute_centroids_shoelace(
-            self.polygons_ti, self.region_offsets_ti, self.region_sizes_ti,
-            self.centroids_ti, self.n_points
-        )
-
-        if self.monte_enabled and self.monte_samples > 0:
-            compute_monte_carlo_centroids(
-                self.polygons_ti, self.region_offsets_ti, self.region_sizes_ti,
-                self.centroids_ti, self.n_points,
-                self.monte_samples, self.monte_probability
-            )
-
-        move_points(
-            self.points_ti, self.centroids_ti, float(self.mobility),
-            float(self.xmin), float(self.xmax), float(self.ymin), float(self.ymax),
-            self.n_points
-        )
-        self.points = self.points_ti.to_numpy()
-
-        self._compute_sides_numpy()
-        self._last_regions, self._last_vertices = regions, vertices
         if return_data:
-            return regions, vertices
+            return self._polygons_np, self._offsets_np, self._sizes_np
         return None
 
     def multi_step(self, n):
         if n <= 0:
             return
-        regions = vertices = None
         for _ in range(n):
             self.step_count += 1
-            vor = Voronoi(self.points)
-            regions, vertices = self._finite_voronoi(vor)
-
-            sizes, offsets = self._prepare_polygons(regions, vertices)
-            self.polygons_ti.from_numpy(self._polygons_np)
-            self.region_sizes_ti.from_numpy(self._sizes_np)
-            self.region_offsets_ti.from_numpy(self._offsets_np)
-
-            compute_centroids_shoelace(
-                self.polygons_ti, self.region_offsets_ti, self.region_sizes_ti,
-                self.centroids_ti, self.n_points
-            )
-
-            if self.monte_enabled and self.monte_samples > 0:
-                compute_monte_carlo_centroids(
-                    self.polygons_ti, self.region_offsets_ti, self.region_sizes_ti,
-                    self.centroids_ti, self.n_points,
-                    self.monte_samples, self.monte_probability
-                )
-
-            move_points(
-                self.points_ti, self.centroids_ti, float(self.mobility),
-                float(self.xmin), float(self.xmax), float(self.ymin), float(self.ymax),
-                self.n_points
-            )
-            self.points = self.points_ti.to_numpy()
-
-        # 中间步骤不维护缓存（本来也不会命中），只在最后更新一次，避免无谓的 copy。
-        self._cached_regions = regions
-        self._cached_vertices = vertices
+            self._rebuild()
+            self._centroids_and_move()
         self._prev_points = self.points.copy()
         self._compute_sides_numpy()
-        self._last_regions, self._last_vertices = regions, vertices
+        self._sides_valid = True
 
     def get_stats(self):
         sides = self._last_sides
@@ -571,13 +601,19 @@ class TaichiHoneycombCVT:
         return hex_count, total, hex_count / total, float(valid.mean())
 
 
+# 兼容旧的类名（外部若直接 import TaichiHoneycombCVT 仍然可用）
+TaichiHoneycombCVT = HoneycombCVT
+
+
 # ================== GUI ==================
 class VoronoiSimulation(QMainWindow):
     def __init__(self):
         super().__init__()
         self.sim = None
         self.timer = QTimer()
-        self.timer.timeout.connect(self.single_step)
+        self.timer.setSingleShot(True)
+        self.timer.setTimerType(Qt.PreciseTimer)
+        self.timer.timeout.connect(self._tick)
         self.is_running = False
         self.init_ui()
         QTimer.singleShot(1, self.reset_simulation)
@@ -631,7 +667,7 @@ class VoronoiSimulation(QMainWindow):
         self.steps_spin.setValue(1)
         self.freq_spin = QSpinBox()
         self.freq_spin.setRange(1, 500)
-        self.freq_spin.setValue(1)
+        self.freq_spin.setValue(16)     # 约 60 fps；旧默认 1 ms 会让 GUI 一直满载
         layout.addRow("每帧迭代:", self.steps_spin)
         layout.addRow("更新时间(ms):", self.freq_spin)
         group.setLayout(layout)
@@ -699,7 +735,7 @@ class VoronoiSimulation(QMainWindow):
         return group
 
     def init_simulation(self):
-        self.sim = TaichiHoneycombCVT(
+        self.sim = HoneycombCVT(
             n_points=self.points_spin.value(),
             mobility=self.mob_spin.value(),
             monte_enabled=self.monte_enable_check.isChecked(),
@@ -749,12 +785,31 @@ class VoronoiSimulation(QMainWindow):
 
     def toggle_simulation(self):
         if self.is_running:
+            self.is_running = False
             self.timer.stop()
             self.start_btn.setText("开始")
         else:
-            self.timer.start(self.freq_spin.value())
+            self.is_running = True
             self.start_btn.setText("暂停")
-        self.is_running = not self.is_running
+            self._tick()
+
+    def _tick(self):
+        """单次定时器：先跑一步，再按剩余预算安排下一步。
+
+        重复 QTimer 在 step 比 interval 慢时会被连续超时事件占满，绘制事件
+        被饿死；改成“跑完再排下一次”后，每一步之间都能插入 paint。
+        """
+        if not self.is_running:
+            return
+        start = time.perf_counter()
+        self.single_step()
+        if not self.is_running:
+            return
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        delay = int(self.freq_spin.value() - elapsed_ms)
+        if delay < 1:
+            delay = 1
+        self.timer.start(delay)
 
     def single_step(self):
         if self.sim:

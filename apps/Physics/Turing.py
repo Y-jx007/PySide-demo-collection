@@ -1,7 +1,14 @@
-﻿from custom_import import *
-from reaction_diffusion import *
+from common.qt_base import (QApplication, QComboBox, QHBoxLayout, QLabel, QMainWindow, QVBoxLayout, QWidget, sys)
+from common.numpy_base import (np)
+from common.taichi_base import (ti)
+from common.reaction_diffusion import (
+    SimulationBase, SimulationViewer, setup_gl_format,
+    render_reaction_image, render_gray_image,
+    create_equation_group, create_param_group,
+    create_init_group, create_control_group,
+)
 
-ti.init(arch=ti.gpu, default_fp=ti.f32)
+ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=False)
 
 # ---------- 通用五点拉普拉斯 ----------
 @ti.func
@@ -224,8 +231,7 @@ class CahnHilliardSimulation(SimulationBase):
 
     def get_image(self, mode=None):
         phi_np = self.phi.to_numpy()
-        gray = np.clip((phi_np + 1.0) * 0.5 * 255, 0, 255).astype(np.uint8)
-        return np.stack([gray, gray, gray], axis=-1)
+        return render_gray_image((phi_np + 1.0) * 0.5)
 
     def reset(self, pattern='random'):
         self.phi.fill(0.0)
@@ -398,6 +404,8 @@ class MainWindow(QMainWindow):
 
         self.top_selector = QWidget()
         top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(8)
         top_layout.addWidget(QLabel("模拟:"))
 
         self.sim_combo = QComboBox()
@@ -423,7 +431,8 @@ class MainWindow(QMainWindow):
         self.viewer.param_panel_layout.insertWidget(1, self.custom_container)
 
         self._rebuild_custom_panel()
-        self.setGeometry(100, 100, 960, 650)
+        self.setMinimumSize(900, 620)
+        self.setGeometry(100, 100, 1180, 780)
 
     def _on_sim_type_changed(self, text):
         mapping = {

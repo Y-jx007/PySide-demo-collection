@@ -1,7 +1,10 @@
-from custom_import import *
+from common.qt_base import (QApplication, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QOpenGLWidget, QPushButton, QScrollArea, QSizePolicy, QSlider, QTextEdit, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
+from common.numpy_base import (np)
+from common.taichi_base import (ti, tm)
+from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_LINEAR, GL_NEAREST, GL_QUADS, GL_RGBA, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_UNSIGNED_BYTE, glBegin, glBindTexture, glClear, glEnable, glEnd, glGenTextures, glTexCoord2f, glTexImage2D, glTexSubImage2D, glTexParameteri, glVertex2f, glViewport)
 from PySide6.QtWidgets import QDialog
 
-ti.init(arch=ti.gpu, default_fp=ti.f32, kernel_profiler=False, offline_cache=True)
+ti.init(arch=ti.gpu, default_fp=ti.f32, kernel_profiler=False, offline_cache=False)
 
 # ── 结构体定义 ─────────────────────────
 PotentialParams = ti.types.struct(
@@ -103,7 +106,7 @@ y_temp1 = ti.Vector.field(2, dtype=ti.f32, shape=resolution)
 y_temp2 = ti.Vector.field(2, dtype=ti.f32, shape=resolution)
 y_temp3 = ti.Vector.field(2, dtype=ti.f32, shape=resolution)
 potential_temp = ti.field(dtype=ti.f32, shape=resolution)
-output = ti.Vector.field(4, dtype=ti.f32, shape=resolution)
+texture_output = ti.Vector.field(4, dtype=ti.u8, shape=(resolution[1], resolution[0]))
 hue_lut = ti.Vector.field(3, dtype=ti.f32, shape=lut_size)
 
 # ── 参数初始化 ──────────────────────────
@@ -237,7 +240,9 @@ def init_hue_lut():
 
 @ti.kernel
 def visualize():
-    for i, j in output:
+    # Write the final RGBA texture directly in image row order.  This avoids
+    # a 9 MB float32 copy plus clip/transpose on the CPU every frame.
+    for i, j in psi:
         v = psi[i, j]
         mag = ti.sqrt(v[0]**2 + v[1]**2)
         phase = ti.atan2(v[1], v[0])
@@ -246,7 +251,12 @@ def visualize():
         rgb = hue_lut[idx]
         pot = potential_temp[i, j]
         color = 1.5 * mag * rgb + 0.25 * ti.abs(pot)
-        output[i, j] = ti.Vector([color[0], color[1], color[2], 1.0])
+        texture_output[j, i] = ti.Vector([
+            ti.cast(ti.min(1.0, ti.max(0.0, color[0])) * 255.0, ti.u8),
+            ti.cast(ti.min(1.0, ti.max(0.0, color[1])) * 255.0, ti.u8),
+            ti.cast(ti.min(1.0, ti.max(0.0, color[2])) * 255.0, ti.u8),
+            ti.u8(255),
+        ])
 
 @ti.kernel
 def initialize():
@@ -284,9 +294,12 @@ class TaichiCanvas(QOpenGLWidget):
         self.setMinimumSize(480, 240)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.texture_id = None
+        self._texture_allocated = False
+        self._texture_dirty = True
         init_hue_lut()
 
     def initializeGL(self):
+        self._texture_allocated = False
         glEnable(GL_TEXTURE_2D)
         self.texture_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, self.texture_id)
@@ -300,17 +313,23 @@ class TaichiCanvas(QOpenGLWidget):
         for _ in range(steps):
             update_psi()
         visualize()
+        self._texture_dirty = True
         self.update()
 
     def paintGL(self):
         if self.texture_id is None:
             return
-        data = output.to_numpy()
-        data = np.ascontiguousarray(data)
-        data = np.clip(data, 0.0, 1.0) * 255
-        data = data.astype(np.uint8)
-        data = np.transpose(data, (1, 0, 2))
-        data = np.ascontiguousarray(data)
+        if self._texture_dirty:
+            data = np.ascontiguousarray(texture_output.to_numpy())
+            glBindTexture(GL_TEXTURE_2D, self.texture_id)
+            if not self._texture_allocated:
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, resolution[0], resolution[1],
+                             0, GL_RGBA, GL_UNSIGNED_BYTE, data)
+                self._texture_allocated = True
+            else:
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, resolution[0], resolution[1],
+                                GL_RGBA, GL_UNSIGNED_BYTE, data)
+            self._texture_dirty = False
 
         # 视口铺满整个画布（设备像素），由 UV 裁剪保证不拉伸
         dpr = self.devicePixelRatioF()
@@ -321,8 +340,6 @@ class TaichiCanvas(QOpenGLWidget):
 
         glClear(GL_COLOR_BUFFER_BIT)
         glBindTexture(GL_TEXTURE_2D, self.texture_id)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, resolution[0], resolution[1],
-                     0, GL_RGBA, GL_UNSIGNED_BYTE, data)
 
         glBegin(GL_QUADS)
         glTexCoord2f(u0, v1); glVertex2f(-1, -1)
@@ -672,7 +689,7 @@ class MainWindow(QMainWindow):
             self._last_stat = now
             self.lbl_time.setText(f"模拟时间 {self._sim_time:.1f}")
             self.lbl_fps.setText(f"帧率 {fps:.1f}")
-            self.lbl_norm.setText(f"归一化 {compute_norm():.3e}")
+            self.lbl_norm.setText(f"积分 |ψ|² {compute_norm():.3e}")
 
     def closeEvent(self, event):
         self.timer.stop()
@@ -685,7 +702,8 @@ def compute_norm() -> ti.f32:
     for i, j in psi:
         v = psi[i, j]
         s += v[0] * v[0] + v[1] * v[1]
-    return s
+    # Grid spacing is 1/resolution[1] in both directions.
+    return s / (resolution[1] * resolution[1])
 
 
 def main():

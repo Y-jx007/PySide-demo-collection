@@ -1,4 +1,5 @@
-from custom_import import *
+from common.qt_base import (ColorButton, QApplication, QCheckBox, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPushButton, QSlider, QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, math, sys)
+from common.numpy_base import (np)
 from PySide6.QtGui import QImage
 
 SQ3 = math.sqrt(3.0)
