@@ -28,7 +28,7 @@ class OrderParameterWidget(QWidget):
             self.eng_history.pop(0)
         self.update()
 
-    def _draw_curve(self, painter, rect, values, color, dashed=False, width=2):
+    def _draw_curve(self, painter, rect, values, color, y_offset=0):
         if len(values) < 2:
             return
         span = self.Y_MAX - self.Y_MIN
@@ -37,15 +37,12 @@ class OrderParameterWidget(QWidget):
         # Expand the clip a little: a curve at exactly +1/-1 sits on the
         # nominal boundary and would otherwise lose its upper/lower half.
         painter.setClipRect(rect.adjusted(-1, -4, 1, 4))
-        pen = QPen(color, width)
-        if dashed:
-            pen.setStyle(Qt.DashLine)
-        painter.setPen(pen)
+        painter.setPen(QPen(color, 2))
         points = []
         for i, value in enumerate(values):
             x = rect.left() + i * step
             value = max(self.Y_MIN, min(self.Y_MAX, value))
-            y = rect.bottom() - (value - self.Y_MIN) / span * rect.height()
+            y = rect.bottom() - (value - self.Y_MIN) / span * rect.height() + y_offset
             points.append((x, y))
         for (x1, y1), (x2, y2) in zip(points, points[1:]):
             painter.drawLine(int(x1), int(y1), int(x2), int(y2))
@@ -63,16 +60,13 @@ class OrderParameterWidget(QWidget):
         painter.setPen(QPen(QColor(205, 205, 205), 1))
         painter.drawRect(rect)
 
-        # 图例（用线型而不是色块，和两条曲线保持一致）
+        # 图例
         legend_y = rect.top() + 16
-        painter.setPen(QPen(QColor(25, 105, 190), 3))
-        painter.drawLine(rect.left() + 12, legend_y - 4, rect.left() + 30, legend_y - 4)
+        painter.fillRect(rect.left() + 12, legend_y - 8, 9, 9, QColor(25, 105, 190))
         painter.setPen(QColor(55, 55, 55))
-        painter.drawText(rect.left() + 36, legend_y, "M")
-        painter.setPen(QPen(QColor(195, 55, 45), 1, Qt.DashLine))
-        painter.drawLine(rect.left() + 70, legend_y - 4, rect.left() + 88, legend_y - 4)
-        painter.setPen(QColor(55, 55, 55))
-        painter.drawText(rect.left() + 94, legend_y, "E/N")
+        painter.drawText(rect.left() + 26, legend_y, "M")
+        painter.fillRect(rect.left() + 66, legend_y - 8, 9, 9, QColor(195, 55, 45))
+        painter.drawText(rect.left() + 80, legend_y, "E/N")
 
         mag_now = self.mag_history[-1] if self.mag_history else float("nan")
         eng_now = self.eng_history[-1] if self.eng_history else float("nan")
@@ -105,8 +99,10 @@ class OrderParameterWidget(QWidget):
             painter.setPen(QColor(120, 120, 120))
             painter.drawText(inner, Qt.AlignCenter, "等待采样...")
         else:
-            self._draw_curve(painter, plot, self.mag_history, QColor(25, 105, 190), width=3)
-            self._draw_curve(painter, plot, self.eng_history, QColor(195, 55, 45), dashed=True, width=1)
+            # Same 2 px solid style.  A one-pixel vertical separation keeps
+            # coincident curves from completely covering each other.
+            self._draw_curve(painter, plot, self.mag_history, QColor(25, 105, 190), y_offset=-1)
+            self._draw_curve(painter, plot, self.eng_history, QColor(195, 55, 45), y_offset=1)
 
         painter.setPen(QColor(120, 120, 120))
         x_label_y = rect.bottom() - 16
