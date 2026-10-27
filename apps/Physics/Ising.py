@@ -73,28 +73,31 @@ class OrderParameterWidget(QWidget):
         inner = rect.adjusted(46, 40, -12, -30)
         if not inner.isValid():
             return
+        # Inset the data area so a curve at exactly +1/-1 is not clipped by
+        # the top/bottom border or the zero-width clip edge.
+        plot = inner.adjusted(1, 2, -1, -2)
 
-        # 固定纵轴 -1 ~ 2
+        # 固定纵轴 -1 ~ 1
         span = self.Y_MAX - self.Y_MIN
         for value in (1, 0, -1):
-            y = int(inner.bottom() - (value - self.Y_MIN) / span * inner.height())
+            y = int(plot.bottom() - (value - self.Y_MIN) / span * plot.height())
             painter.setPen(QPen(QColor(225, 225, 225), 1))
-            painter.drawLine(inner.left(), y, inner.right(), y)
+            painter.drawLine(plot.left(), y, plot.right(), y)
             painter.setPen(QColor(95, 95, 95))
             painter.drawText(QRect(rect.left() + 2, y - 7, 38, 14),
                              Qt.AlignRight | Qt.AlignVCenter, f"{value:d}")
 
         # 零线略深
-        y0 = int(inner.bottom() - (0.0 - self.Y_MIN) / span * inner.height())
+        y0 = int(plot.bottom() - (0.0 - self.Y_MIN) / span * plot.height())
         painter.setPen(QPen(QColor(165, 165, 165), 1, Qt.DashLine))
-        painter.drawLine(inner.left(), y0, inner.right(), y0)
+        painter.drawLine(plot.left(), y0, plot.right(), y0)
 
         if len(self.mag_history) < 2:
             painter.setPen(QColor(120, 120, 120))
             painter.drawText(inner, Qt.AlignCenter, "等待采样...")
         else:
-            self._draw_curve(painter, inner, self.mag_history, QColor(25, 105, 190))
-            self._draw_curve(painter, inner, self.eng_history, QColor(195, 55, 45))
+            self._draw_curve(painter, plot, self.mag_history, QColor(25, 105, 190))
+            self._draw_curve(painter, plot, self.eng_history, QColor(195, 55, 45))
 
         painter.setPen(QColor(120, 120, 120))
         x_label_y = rect.bottom() - 16
@@ -105,7 +108,7 @@ class OrderParameterWidget(QWidget):
 
 
 class CriticalTemperatureSlider(QSlider):
-    """温度滑块，在临界温度处画一条红色标记。"""
+    """温度滑块，在临界温度处画一个朴素的刻度。"""
 
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
@@ -115,27 +118,69 @@ class CriticalTemperatureSlider(QSlider):
         self.critical_value = float(value)
         self.update()
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
+    def critical_x(self):
         if self.critical_value is None or self.maximum() <= self.minimum():
-            return
+            return None
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
         groove = self.style().subControlRect(
             QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
         if groove.width() <= 0:
-            return
+            return None
         frac = ((self.critical_value - self.minimum())
                 / (self.maximum() - self.minimum()))
         if not 0.0 <= frac <= 1.0:
+            return None
+        handle = self.style().subControlRect(
+            QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+        pos = QStyle.sliderPositionFromValue(
+            self.minimum(), self.maximum(), int(round(self.critical_value)),
+            span, opt.upsideDown)
+        return groove.left() + handle.width() / 2 + pos
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        x = self.critical_x()
+        if x is None:
             return
-        x = int(groove.left() + frac * groove.width())
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(QColor(150, 70, 70), 1))
-        # A quiet tick above the groove, visible even when the handle is at T_c.
-        tick_top = max(0, groove.top() - 7)
-        painter.drawLine(x, tick_top, x, max(tick_top + 2, groove.top() + 6))
+        tick_top = max(0, 4)
+        painter.drawLine(int(x), tick_top, int(x), tick_top + 7)
+
+
+class CriticalTemperatureScale(QWidget):
+    """与滑块同宽的刻度条，把 T_c 标签放在真实临界位置。"""
+
+    def __init__(self, slider, parent=None):
+        super().__init__(parent)
+        self.slider = slider
+        self.setFixedHeight(22)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QColor(90, 90, 90))
+        painter.drawText(0, 11, "0.01")
+        painter.drawText(self.width() - 34, 11, "10.0")
+
+        x = self.slider.critical_x()
+        if x is None or self.slider.width() <= 0:
+            return
+        x = int(x * self.width() / self.slider.width())
+        painter.setPen(QPen(QColor(150, 70, 70), 1))
+        painter.drawLine(x, 0, x, 5)
+        text = "T_c = 2.269"
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance(text)
+        tx = min(max(0, x - tw // 2), max(0, self.width() - tw))
+        painter.setPen(QColor(90, 90, 90))
+        painter.drawText(tx, 21, text)
 
 
 # ── 伊辛模型 (Taichi 数据导向) ─────────────────
@@ -245,7 +290,7 @@ class IsingModel:
             eng_sum += -s * nb / 4.0
         N = grid * grid
         self._mag_out[None] = mag_sum / N
-        self._eng_out[None] = eng_sum / N + 1.0
+        self._eng_out[None] = eng_sum / N
 
     def calculate_observables(self):
         self._calc_observables()
@@ -450,15 +495,8 @@ class MainWindow(QMainWindow):
         self.temp_slider.valueChanged.connect(self._on_temp_slider)
         temp_vbox.addWidget(self.temp_slider)
 
-        scale_row = QHBoxLayout()
-        scale_row.addWidget(QLabel("0.01"))
-        scale_row.addStretch(1)
-        tc_hint = QLabel("T_c = 2.269")
-        tc_hint.setStyleSheet("color: #555555;")
-        scale_row.addWidget(tc_hint)
-        scale_row.addStretch(1)
-        scale_row.addWidget(QLabel("10.0"))
-        temp_vbox.addLayout(scale_row)
+        self.temp_scale = CriticalTemperatureScale(self.temp_slider)
+        temp_vbox.addWidget(self.temp_scale)
 
         self.temp_label = QLabel("当前 T = 2.2690  |  T/T_c = 1.00")
         temp_vbox.addWidget(self.temp_label)
