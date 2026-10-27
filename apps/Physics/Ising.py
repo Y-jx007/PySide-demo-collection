@@ -10,7 +10,7 @@ class OrderParameterWidget(QWidget):
     """在同一坐标系中显示磁化强度和能量演化曲线。"""
 
     Y_MIN = -1.0
-    Y_MAX = 2.0
+    Y_MAX = 1.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,7 +50,7 @@ class OrderParameterWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor(245, 245, 245))
         painter.setPen(QColor(45, 45, 45))
-        painter.drawText(10, 17, "序参量曲线（最近 300 个采样点，纵轴固定 -1 ~ 2）")
+        painter.drawText(10, 17, "序参量曲线（最近 300 个采样点，纵轴固定 -1 ~ 1）")
 
         rect = self.rect().adjusted(8, 26, -8, -8)
         painter.fillRect(rect, QColor(252, 252, 252))
@@ -76,7 +76,7 @@ class OrderParameterWidget(QWidget):
 
         # 固定纵轴 -1 ~ 2
         span = self.Y_MAX - self.Y_MIN
-        for value in (2, 1, 0, -1):
+        for value in (1, 0, -1):
             y = int(inner.bottom() - (value - self.Y_MIN) / span * inner.height())
             painter.setPen(QPen(QColor(225, 225, 225), 1))
             painter.drawLine(inner.left(), y, inner.right(), y)
@@ -276,7 +276,7 @@ class IsingModelGLWidget(QOpenGLWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_model)
         self.timer.start(16)
-        self.setFixedSize(560, 560)
+        self.setFixedSize(680, 680)
 
         self.last_mask = 0
         self.texture_id = None
@@ -400,7 +400,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("二维伊辛模型 (Taichi + OpenGL)")
-        self.setGeometry(50, 50, 1010, 720)
+        self.setGeometry(50, 50, 1120, 720)
 
         central = QWidget()
         self.setCentralWidget(central)
