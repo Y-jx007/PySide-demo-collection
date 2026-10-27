@@ -1,4 +1,4 @@
-from common.qt_base import (QApplication, QCheckBox, QColor, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPainter, QPen, QPushButton, QSlider, QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, sys)
+from common.qt_base import (QApplication, QCheckBox, QColor, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPainter, QPen, QPushButton, QRect, QSlider, QSpinBox, QStyle, QStyleOptionSlider, QTimer, QVBoxLayout, QWidget, Qt, sys)
 from common.numpy_base import (np)
 from common.taichi_base import (ti)
 from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_FLOAT, GL_LUMINANCE, GL_NEAREST, GL_QUADS, GL_RGB, GL_TEXTURE_2D, GL_UNSIGNED_BYTE, glTexSubImage2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, glBegin, glBindTexture, glClear, glEnable, glEnd, glGenTextures, glLoadIdentity, glTexCoord2f, glTexImage2D, glTexParameteri, glVertex2f, glViewport)
@@ -7,60 +7,148 @@ ti.init(arch=ti.gpu, offline_cache=True)
 
 # ── 序参量曲线组件 ──────────────────────────
 class OrderParameterWidget(QWidget):
-    """显示磁化强度和能量演化曲线"""
+    """双面板显示磁化强度和能量演化曲线。"""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(200)
-        self.setMaximumHeight(250)
+        self.setMinimumHeight(280)
+        self.setMaximumHeight(360)
         self.mag_history = []
         self.eng_history = []
         self.max_len = 300
 
     def add_data(self, magnetization, energy):
-        self.mag_history.append(magnetization)
-        self.eng_history.append(energy)
+        self.mag_history.append(float(magnetization))
+        self.eng_history.append(float(energy))
         if len(self.mag_history) > self.max_len:
             self.mag_history.pop(0)
             self.eng_history.pop(0)
         self.update()
 
+    def _draw_panel(self, painter, rect, data, color, title, current_text):
+        painter.fillRect(rect, QColor(252, 252, 252))
+        painter.setPen(QPen(QColor(205, 205, 205), 1))
+        painter.drawRect(rect)
+
+        # 面板标题与当前值
+        painter.setPen(color)
+        painter.fillRect(rect.left() + 8, rect.top() + 9, 9, 9, color)
+        painter.drawText(rect.left() + 22, rect.top() + 18, title)
+        painter.setPen(QColor(55, 55, 55))
+        painter.drawText(rect.adjusted(0, 0, -8, 0), Qt.AlignRight | Qt.AlignTop,
+                         current_text)
+
+        inner = rect.adjusted(44, 25, -12, -26)
+        if len(data) < 2:
+            painter.setPen(QColor(120, 120, 120))
+            painter.drawText(inner, Qt.AlignCenter, "等待采样...")
+            return
+
+        values = np.asarray(data, dtype=float)
+        lo = float(np.min(values))
+        hi = float(np.max(values))
+        span = hi - lo
+        if span < 1.0e-12:
+            span = max(abs(hi) * 0.1, 0.1)
+            lo -= span / 2.0
+            hi += span / 2.0
+        else:
+            pad = span * 0.12
+            lo -= pad
+            hi += pad
+        span = hi - lo
+
+        # 横向网格与左侧刻度
+        painter.setFont(self.font())
+        for k in range(4):
+            y = int(inner.top() + (inner.height() * k / 3.0))
+            painter.setPen(QPen(QColor(225, 225, 225), 1))
+            painter.drawLine(inner.left(), y, inner.right(), y)
+            value = hi - span * k / 3.0
+            painter.setPen(QColor(95, 95, 95))
+            painter.drawText(QRect(rect.left() + 2, y - 7, 36, 14),
+                             Qt.AlignRight | Qt.AlignVCenter, f"{value:.3f}")
+
+        # 零线
+        if lo < 0.0 < hi:
+            y = int(inner.bottom() - (0.0 - lo) / span * inner.height())
+            painter.setPen(QPen(QColor(160, 160, 160), 1, Qt.DashLine))
+            painter.drawLine(inner.left(), y, inner.right(), y)
+
+        # 曲线
+        painter.setPen(QPen(color, 2))
+        step = inner.width() / max(1, len(values) - 1)
+        points = []
+        for i, value in enumerate(values):
+            x = inner.left() + i * step
+            y = inner.bottom() - (value - lo) / span * inner.height()
+            points.append((x, y))
+        for (x1, y1), (x2, y2) in zip(points, points[1:]):
+            painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+
+        painter.setPen(QColor(120, 120, 120))
+        x_label_y = rect.bottom() - 15
+        painter.drawText(QRect(inner.left(), x_label_y, inner.width(), 14),
+                         Qt.AlignLeft | Qt.AlignTop, "最早")
+        painter.drawText(QRect(inner.left(), x_label_y, inner.width(), 14),
+                         Qt.AlignRight | Qt.AlignTop, "最新")
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor(240, 240, 240))
+        painter.fillRect(self.rect(), QColor(245, 245, 245))
+        painter.setPen(QColor(45, 45, 45))
+        painter.drawText(10, 17, "序参量曲线（最近 300 个采样点）")
 
-        if len(self.mag_history) < 2:
+        outer = self.rect().adjusted(8, 25, -8, -8)
+        gap = 8
+        panel_h = (outer.height() - gap) // 2
+        top = QRect(outer.left(), outer.top(), outer.width(), panel_h)
+        bottom = QRect(outer.left(), top.bottom() + gap, outer.width(),
+                       outer.height() - panel_h - gap)
+
+        mag_now = self.mag_history[-1] if self.mag_history else float("nan")
+        eng_now = self.eng_history[-1] if self.eng_history else float("nan")
+        self._draw_panel(painter, top, self.mag_history, QColor(25, 105, 190),
+                         "磁化强度 M", f"M = {mag_now:.4f}")
+        self._draw_panel(painter, bottom, self.eng_history, QColor(195, 55, 45),
+                         "能量 E/N", f"E/N = {eng_now:.4f}")
+
+
+class CriticalTemperatureSlider(QSlider):
+    """温度滑块，在临界温度处画一条红色标记。"""
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.critical_value = None
+
+    def set_critical_value(self, value):
+        self.critical_value = float(value)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.critical_value is None or self.maximum() <= self.minimum():
             return
-
-        margin = 30
-        plot_rect = self.rect().adjusted(margin, margin, -margin, -margin)
-
-        # 坐标轴
-        painter.setPen(QPen(Qt.black, 1))
-        painter.drawLine(plot_rect.left(), plot_rect.center().y(),
-                         plot_rect.right(), plot_rect.center().y())
-        painter.drawLine(plot_rect.left(), plot_rect.top(),
-                         plot_rect.left(), plot_rect.bottom())
-
-        # 通用曲线绘制方法
-        def draw_curve(data, color, y_scale):
-            painter.setPen(QPen(color, 2))
-            step = plot_rect.width() / (len(data) - 1)
-            for i in range(len(data) - 1):
-                x1 = plot_rect.left() + i * step
-                y1 = plot_rect.center().y() - data[i] * y_scale
-                x2 = plot_rect.left() + (i + 1) * step
-                y2 = plot_rect.center().y() - data[i + 1] * y_scale
-                painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-        y_scale = plot_rect.height() / 4
-        draw_curve(self.mag_history, QColor(0, 100, 200), y_scale)  # 磁化 (蓝)
-        draw_curve(self.eng_history, QColor(200, 0, 0), y_scale)    # 能量 (红)
-
-        # 当前值
-        painter.setPen(Qt.black)
-        painter.drawText(60, 25, f"M: {self.mag_history[-1]:.4f}")
-        painter.drawText(180, 25, f"E: {self.eng_history[-1]:.4f}")
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        if groove.width() <= 0:
+            return
+        frac = ((self.critical_value - self.minimum())
+                / (self.maximum() - self.minimum()))
+        if not 0.0 <= frac <= 1.0:
+            return
+        x = int(groove.left() + frac * groove.width())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(198, 40, 40), 2))
+        # Full-height line stays visible even when the handle sits at T_c.
+        painter.drawLine(x, 0, x, self.height())
+        painter.setBrush(QColor(198, 40, 40))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(x - 3, 0, 6, 6)
 
 
 # ── 伊辛模型 (Taichi 数据导向) ─────────────────
@@ -325,7 +413,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("二维伊辛模型 (Taichi + OpenGL)")
-        self.setGeometry(50, 50, 800, 540)
+        self.setGeometry(50, 50, 940, 700)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -356,24 +444,41 @@ class MainWindow(QMainWindow):
         temp_grp = QGroupBox("温度控制")
         temp_vbox = QVBoxLayout(temp_grp)
         self.temp_spin = QDoubleSpinBox()
-        self.temp_spin.setRange(0.0001, 1000.0)
-        self.temp_spin.setSingleStep(0.0001)
+        self.temp_spin.setRange(0.01, 10.0)
+        self.temp_spin.setSingleStep(0.01)
         self.temp_spin.setDecimals(4)
         self.temp_spin.setValue(2.269)
         self.temp_spin.setKeyboardTracking(False)
         self.temp_spin.valueChanged.connect(self._on_temp_spin)
         temp_vbox.addWidget(self.temp_spin)
 
-        self.temp_slider = QSlider(Qt.Horizontal)
-        self.temp_slider.setMinimum(1)
+        self.temp_slider = CriticalTemperatureSlider(Qt.Horizontal)
+        self.temp_slider.setMinimum(100)
         self.temp_slider.setMaximum(100000)
+        self.temp_slider.setSingleStep(10)
+        self.temp_slider.setPageStep(1000)
         self.temp_slider.setValue(int(2.269 * 10000))
+        self.temp_slider.set_critical_value(2.269 * 10000)
+        self.temp_slider.setToolTip("红色竖线标出二维伊辛模型的临界温度 T_c = 2.269")
         self.temp_slider.valueChanged.connect(self._on_temp_slider)
         temp_vbox.addWidget(self.temp_slider)
 
-        self.temp_label = QLabel("当前: 2.2690")
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("0.01"))
+        scale_row.addStretch(1)
+        tc_hint = QLabel("临界温度 T_c = 2.269")
+        tc_hint.setStyleSheet("color: #c62828; font-weight: 600;")
+        scale_row.addWidget(tc_hint)
+        scale_row.addStretch(1)
+        scale_row.addWidget(QLabel("10.0"))
+        temp_vbox.addLayout(scale_row)
+
+        self.temp_label = QLabel("当前 T = 2.2690  |  T/T_c = 1.00")
         temp_vbox.addWidget(self.temp_label)
-        left_layout.addWidget(temp_grp, 1, 0)
+        self.phase_label = QLabel("相区: 临界区")
+        self.phase_label.setStyleSheet("color: #b26a00; font-weight: 600;")
+        temp_vbox.addWidget(self.phase_label)
+        left_layout.addWidget(temp_grp, 1, 0, 1, 2)
 
         # 算法设置
         algo_grp = QGroupBox("算法设置")
@@ -404,7 +509,7 @@ class MainWindow(QMainWindow):
         self.updates_spin.setRange(1, 20000000)
         self.updates_spin.valueChanged.connect(lambda v: self.gl_widget.set_updates_per_step(v))
         perf_vbox.addWidget(self.updates_spin)
-        left_layout.addWidget(perf_grp, 1, 1)
+        left_layout.addWidget(perf_grp, 2, 0)
 
         # 状态控制
         ctrl_grp = QGroupBox("状态控制")
@@ -450,7 +555,16 @@ class MainWindow(QMainWindow):
     def _set_temperature(self, T):
         self.current_temp = T
         self.gl_widget.set_temperature(T)
-        self.temp_label.setText(f"当前: {T:.4f}")
+        ratio = T / 2.269
+        self.temp_label.setText(f"当前 T = {T:.4f}  |  T/T_c = {ratio:.2f}")
+        if ratio < 0.9:
+            phase, color = "低温有序相", "#1565c0"
+        elif ratio <= 1.1:
+            phase, color = "临界区", "#b26a00"
+        else:
+            phase, color = "高温无序相", "#c62828"
+        self.phase_label.setText(f"相区: {phase}")
+        self.phase_label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
     def _update_perf_label(self):
         if self.wolff_chk.isChecked():

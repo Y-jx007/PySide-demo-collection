@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QSlider, QCheckBox, QRadioButton,
     QSplitter, QTabWidget, QPlainTextEdit, QTextEdit, QProgressBar,
     QFileDialog, QColorDialog, QInputDialog, QDialog, QButtonGroup,
-    QListWidget, QListWidgetItem, QStackedWidget, QSizePolicy
+    QListWidget, QListWidgetItem, QStackedWidget, QSizePolicy, QStyle, QStyleOptionSlider
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
