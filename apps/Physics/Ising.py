@@ -7,7 +7,10 @@ ti.init(arch=ti.gpu, offline_cache=True)
 
 # ── 序参量曲线组件 ──────────────────────────
 class OrderParameterWidget(QWidget):
-    """双面板显示磁化强度和能量演化曲线。"""
+    """在同一坐标系中显示磁化强度和能量演化曲线。"""
+
+    Y_MIN = -1.0
+    Y_MAX = 2.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,94 +28,80 @@ class OrderParameterWidget(QWidget):
             self.eng_history.pop(0)
         self.update()
 
-    def _draw_panel(self, painter, rect, data, color, title, current_text):
-        painter.fillRect(rect, QColor(252, 252, 252))
-        painter.setPen(QPen(QColor(205, 205, 205), 1))
-        painter.drawRect(rect)
-
-        # 面板标题与当前值
-        painter.setPen(color)
-        painter.fillRect(rect.left() + 8, rect.top() + 9, 9, 9, color)
-        painter.drawText(rect.left() + 22, rect.top() + 18, title)
-        painter.setPen(QColor(55, 55, 55))
-        painter.drawText(rect.adjusted(0, 0, -8, 0), Qt.AlignRight | Qt.AlignTop,
-                         current_text)
-
-        inner = rect.adjusted(44, 25, -12, -26)
-        if len(data) < 2:
-            painter.setPen(QColor(120, 120, 120))
-            painter.drawText(inner, Qt.AlignCenter, "等待采样...")
+    def _draw_curve(self, painter, rect, values, color):
+        if len(values) < 2:
             return
-
-        values = np.asarray(data, dtype=float)
-        lo = float(np.min(values))
-        hi = float(np.max(values))
-        span = hi - lo
-        if span < 1.0e-12:
-            span = max(abs(hi) * 0.1, 0.1)
-            lo -= span / 2.0
-            hi += span / 2.0
-        else:
-            pad = span * 0.12
-            lo -= pad
-            hi += pad
-        span = hi - lo
-
-        # 横向网格与左侧刻度
-        painter.setFont(self.font())
-        for k in range(4):
-            y = int(inner.top() + (inner.height() * k / 3.0))
-            painter.setPen(QPen(QColor(225, 225, 225), 1))
-            painter.drawLine(inner.left(), y, inner.right(), y)
-            value = hi - span * k / 3.0
-            painter.setPen(QColor(95, 95, 95))
-            painter.drawText(QRect(rect.left() + 2, y - 7, 36, 14),
-                             Qt.AlignRight | Qt.AlignVCenter, f"{value:.3f}")
-
-        # 零线
-        if lo < 0.0 < hi:
-            y = int(inner.bottom() - (0.0 - lo) / span * inner.height())
-            painter.setPen(QPen(QColor(160, 160, 160), 1, Qt.DashLine))
-            painter.drawLine(inner.left(), y, inner.right(), y)
-
-        # 曲线
+        span = self.Y_MAX - self.Y_MIN
+        step = rect.width() / max(1, len(values) - 1)
+        painter.save()
+        painter.setClipRect(rect)
         painter.setPen(QPen(color, 2))
-        step = inner.width() / max(1, len(values) - 1)
         points = []
         for i, value in enumerate(values):
-            x = inner.left() + i * step
-            y = inner.bottom() - (value - lo) / span * inner.height()
+            x = rect.left() + i * step
+            y = rect.bottom() - (value - self.Y_MIN) / span * rect.height()
             points.append((x, y))
         for (x1, y1), (x2, y2) in zip(points, points[1:]):
             painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-        painter.setPen(QColor(120, 120, 120))
-        x_label_y = rect.bottom() - 15
-        painter.drawText(QRect(inner.left(), x_label_y, inner.width(), 14),
-                         Qt.AlignLeft | Qt.AlignTop, "最早")
-        painter.drawText(QRect(inner.left(), x_label_y, inner.width(), 14),
-                         Qt.AlignRight | Qt.AlignTop, "最新")
+        painter.restore()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor(245, 245, 245))
         painter.setPen(QColor(45, 45, 45))
-        painter.drawText(10, 17, "序参量曲线（最近 300 个采样点）")
+        painter.drawText(10, 17, "序参量曲线（最近 300 个采样点，纵轴固定 -1 ~ 2）")
 
-        outer = self.rect().adjusted(8, 25, -8, -8)
-        gap = 8
-        panel_h = (outer.height() - gap) // 2
-        top = QRect(outer.left(), outer.top(), outer.width(), panel_h)
-        bottom = QRect(outer.left(), top.bottom() + gap, outer.width(),
-                       outer.height() - panel_h - gap)
+        rect = self.rect().adjusted(8, 26, -8, -8)
+        painter.fillRect(rect, QColor(252, 252, 252))
+        painter.setPen(QPen(QColor(205, 205, 205), 1))
+        painter.drawRect(rect)
+
+        # 图例
+        legend_y = rect.top() + 16
+        painter.fillRect(rect.left() + 12, legend_y - 8, 9, 9, QColor(25, 105, 190))
+        painter.setPen(QColor(55, 55, 55))
+        painter.drawText(rect.left() + 26, legend_y, "M")
+        painter.fillRect(rect.left() + 66, legend_y - 8, 9, 9, QColor(195, 55, 45))
+        painter.drawText(rect.left() + 80, legend_y, "E/N")
 
         mag_now = self.mag_history[-1] if self.mag_history else float("nan")
         eng_now = self.eng_history[-1] if self.eng_history else float("nan")
-        self._draw_panel(painter, top, self.mag_history, QColor(25, 105, 190),
-                         "磁化强度 M", f"M = {mag_now:.4f}")
-        self._draw_panel(painter, bottom, self.eng_history, QColor(195, 55, 45),
-                         "能量 E/N", f"E/N = {eng_now:.4f}")
+        painter.drawText(rect.adjusted(0, 0, -10, 0), Qt.AlignRight | Qt.AlignTop,
+                         f"M = {mag_now:.4f}    E/N = {eng_now:.4f}")
+
+        inner = rect.adjusted(46, 40, -12, -30)
+        if not inner.isValid():
+            return
+
+        # 固定纵轴 -1 ~ 2
+        span = self.Y_MAX - self.Y_MIN
+        for value in (2, 1, 0, -1):
+            y = int(inner.bottom() - (value - self.Y_MIN) / span * inner.height())
+            painter.setPen(QPen(QColor(225, 225, 225), 1))
+            painter.drawLine(inner.left(), y, inner.right(), y)
+            painter.setPen(QColor(95, 95, 95))
+            painter.drawText(QRect(rect.left() + 2, y - 7, 38, 14),
+                             Qt.AlignRight | Qt.AlignVCenter, f"{value:d}")
+
+        # 零线略深
+        y0 = int(inner.bottom() - (0.0 - self.Y_MIN) / span * inner.height())
+        painter.setPen(QPen(QColor(165, 165, 165), 1, Qt.DashLine))
+        painter.drawLine(inner.left(), y0, inner.right(), y0)
+
+        if len(self.mag_history) < 2:
+            painter.setPen(QColor(120, 120, 120))
+            painter.drawText(inner, Qt.AlignCenter, "等待采样...")
+        else:
+            self._draw_curve(painter, inner, self.mag_history, QColor(25, 105, 190))
+            self._draw_curve(painter, inner, self.eng_history, QColor(195, 55, 45))
+
+        painter.setPen(QColor(120, 120, 120))
+        x_label_y = rect.bottom() - 16
+        painter.drawText(QRect(inner.left(), x_label_y, inner.width(), 14),
+                         Qt.AlignLeft | Qt.AlignTop, "最早")
+        painter.drawText(QRect(inner.left(), x_label_y, inner.width(), 14),
+                         Qt.AlignRight | Qt.AlignTop, "最新")
 
 
 class CriticalTemperatureSlider(QSlider):
@@ -143,12 +132,10 @@ class CriticalTemperatureSlider(QSlider):
         x = int(groove.left() + frac * groove.width())
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(198, 40, 40), 2))
-        # Full-height line stays visible even when the handle sits at T_c.
-        painter.drawLine(x, 0, x, self.height())
-        painter.setBrush(QColor(198, 40, 40))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(x - 3, 0, 6, 6)
+        painter.setPen(QPen(QColor(150, 70, 70), 1))
+        # A quiet tick above the groove, visible even when the handle is at T_c.
+        tick_top = max(0, groove.top() - 7)
+        painter.drawLine(x, tick_top, x, max(tick_top + 2, groove.top() + 6))
 
 
 # ── 伊辛模型 (Taichi 数据导向) ─────────────────
@@ -289,7 +276,7 @@ class IsingModelGLWidget(QOpenGLWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_model)
         self.timer.start(16)
-        self.setMinimumSize(540, 540)
+        self.setFixedSize(560, 560)
 
         self.last_mask = 0
         self.texture_id = None
@@ -413,7 +400,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("二维伊辛模型 (Taichi + OpenGL)")
-        self.setGeometry(50, 50, 940, 700)
+        self.setGeometry(50, 50, 1010, 720)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -466,8 +453,8 @@ class MainWindow(QMainWindow):
         scale_row = QHBoxLayout()
         scale_row.addWidget(QLabel("0.01"))
         scale_row.addStretch(1)
-        tc_hint = QLabel("临界温度 T_c = 2.269")
-        tc_hint.setStyleSheet("color: #c62828; font-weight: 600;")
+        tc_hint = QLabel("T_c = 2.269")
+        tc_hint.setStyleSheet("color: #555555;")
         scale_row.addWidget(tc_hint)
         scale_row.addStretch(1)
         scale_row.addWidget(QLabel("10.0"))
@@ -475,9 +462,6 @@ class MainWindow(QMainWindow):
 
         self.temp_label = QLabel("当前 T = 2.2690  |  T/T_c = 1.00")
         temp_vbox.addWidget(self.temp_label)
-        self.phase_label = QLabel("相区: 临界区")
-        self.phase_label.setStyleSheet("color: #b26a00; font-weight: 600;")
-        temp_vbox.addWidget(self.phase_label)
         left_layout.addWidget(temp_grp, 1, 0, 1, 2)
 
         # 算法设置
@@ -543,7 +527,7 @@ class MainWindow(QMainWindow):
         self.gl_widget = IsingModelGLWidget()
         self.gl_widget.set_updates_callback(self._on_widget_updates_changed)
         self.gl_widget.set_data_callback(self.order_widget.add_data)
-        right_layout.addWidget(self.gl_widget)
+        right_layout.addWidget(self.gl_widget, 0, Qt.AlignTop | Qt.AlignHCenter)
         main_layout.addWidget(left)
         main_layout.addWidget(right, 1)
 
@@ -557,14 +541,6 @@ class MainWindow(QMainWindow):
         self.gl_widget.set_temperature(T)
         ratio = T / 2.269
         self.temp_label.setText(f"当前 T = {T:.4f}  |  T/T_c = {ratio:.2f}")
-        if ratio < 0.9:
-            phase, color = "低温有序相", "#1565c0"
-        elif ratio <= 1.1:
-            phase, color = "临界区", "#b26a00"
-        else:
-            phase, color = "高温无序相", "#c62828"
-        self.phase_label.setText(f"相区: {phase}")
-        self.phase_label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
     def _update_perf_label(self):
         if self.wolff_chk.isChecked():
