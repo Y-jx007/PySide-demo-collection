@@ -29,7 +29,7 @@ def main():
             frames.append(rasterize(d, coh))
         all_frames.append(np.stack(frames))
         print("seed", seed, "done", all_frames[-1][-1].mean())
-    out = Path("apps/Physics/czm_fields.npz")
+    out = Path(__file__).resolve().parents[1] / "assets" / "data" / "czm_fields.npz"
     np.savez_compressed(out, frames=np.stack(all_frames),
                         levels=levels, seeds=np.array(seeds, np.int32),
                         n=np.int32(10), eps_max=np.float32(eps_max))

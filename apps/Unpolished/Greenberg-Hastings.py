@@ -2,18 +2,17 @@
 """Greenberg-Hastings excitable-media cellular automaton."""
 from __future__ import annotations
 
-import sys
-
 import numpy as np
 
+from common.field_canvas import ArrayCanvas
 from common.qt_base import (
-    QApplication, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-    QImage, QLabel, QMainWindow, QMouseEvent, QPainter, QPushButton, QRect,
-    QScrollArea, QSizePolicy, QSlider, QTimer, QVBoxLayout, QWidget,
-    Qt, Signal,
+    LabeledSlider, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+    QLabel, QMainWindow, QMouseEvent, QPushButton,
+    QScrollArea, QSizePolicy, QTimer, QVBoxLayout, QWidget,
+    Qt, Signal, run_app,
 )
 
-from greenberg_hastings_model import GreenbergHastings
+from support.cellular_automata.greenberg_hastings_model import GreenbergHastings
 
 
 SIZE_CHOICES = (256, 384, 512, 768, 1024)
@@ -39,51 +38,26 @@ def build_lut(refractory):
     return lut
 
 
-class GHCanvas(QWidget):
+class GHCanvas(ArrayCanvas):
     stimulated = Signal(int, int)
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(480, 480)
+        # 四周留 14px（原来是 min(w,h)-28）
+        super().__init__(minimum=(480, 480), padding=14, background=Qt.black, parent=parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._image = None
         self._grid = 0
-        self._rect = None
 
     def set_frame(self, rgb, grid_size):
         self._grid = int(grid_size)
-        self._image = QImage(
-            rgb.data, self._grid, self._grid, 3 * self._grid,
-            QImage.Format_RGB888,
-        ).copy()
-        self.update()
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), Qt.black)
-        if self._image is None:
-            painter.end()
-            return
-        side = min(self.width(), self.height()) - 28
-        if side < 20:
-            painter.end()
-            return
-        left = (self.width() - side) // 2
-        top = (self.height() - side) // 2
-        self._rect = (left, top, side, side)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.drawImage(QRect(*self._rect), self._image)
-        painter.end()
+        self.set_array(rgb)
 
     def _map_event(self, event: QMouseEvent):
-        if self._rect is None or self._grid <= 0:
+        if self._grid <= 0:
             return None
-        left, top, side, _ = self._rect
-        x = (event.position().x() - left) / max(1, side)
-        y = (event.position().y() - top) / max(1, side)
-        if x < 0 or x >= 1 or y < 0 or y >= 1:
+        uv = self.map_pos(event.position().toPoint())
+        if uv is None:
             return None
-        return int(y * self._grid), int(x * self._grid)
+        return int(uv[1] * self._grid), int(uv[0] * self._grid)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -167,25 +141,13 @@ class GHWindow(QMainWindow):
         self.size_combo.currentIndexChanged.connect(self._rebuild)
         form.addRow("网格", self.size_combo)
 
-        self.refractory_slider = QSlider(Qt.Horizontal)
-        self.refractory_slider.setRange(2, 12)
-        self.refractory_slider.setValue(6)
-        self.refractory_label = QLabel("6")
+        self.refractory_slider = LabeledSlider("", 2, 12, 6)
         self.refractory_slider.valueChanged.connect(self._refractory_changed)
-        refractory_row = QHBoxLayout()
-        refractory_row.addWidget(self.refractory_slider, 1)
-        refractory_row.addWidget(self.refractory_label)
-        form.addRow("不应期", refractory_row)
+        form.addRow("不应期", self.refractory_slider)
 
-        self.threshold_slider = QSlider(Qt.Horizontal)
-        self.threshold_slider.setRange(1, 4)
-        self.threshold_slider.setValue(1)
-        self.threshold_label = QLabel("1")
+        self.threshold_slider = LabeledSlider("", 1, 4, 1)
         self.threshold_slider.valueChanged.connect(self._threshold_changed)
-        threshold_row = QHBoxLayout()
-        threshold_row.addWidget(self.threshold_slider, 1)
-        threshold_row.addWidget(self.threshold_label)
-        form.addRow("激发阈值", threshold_row)
+        form.addRow("激发阈值", self.threshold_slider)
 
         self.neighbour_combo = QComboBox()
         self.neighbour_combo.addItem("Moore 8", 8)
@@ -205,16 +167,9 @@ class GHWindow(QMainWindow):
         self.preset_combo.currentIndexChanged.connect(self._reset)
         layout.addWidget(self.preset_combo)
 
-        density_row = QHBoxLayout()
-        density_row.addWidget(QLabel("随机密度"))
-        self.density_slider = QSlider(Qt.Horizontal)
-        self.density_slider.setRange(1, 50)
-        self.density_slider.setValue(20)
-        self.density_label = QLabel("2.0%")
-        self.density_slider.valueChanged.connect(self._density_changed)
-        density_row.addWidget(self.density_slider, 1)
-        density_row.addWidget(self.density_label)
-        layout.addLayout(density_row)
+        self.density_slider = LabeledSlider("随机密度", 1, 50, 20,
+                                               formatter=lambda v: f"{v / 10.0:.1f}%")
+        layout.addWidget(self.density_slider)
 
         self.reset_btn = QPushButton("重置")
         self.reset_btn.clicked.connect(self._reset)
@@ -235,16 +190,9 @@ class GHWindow(QMainWindow):
         row.addWidget(self.step_btn)
         layout.addLayout(row)
 
-        speed_row = QHBoxLayout()
-        speed_row.addWidget(QLabel("每帧步数"))
-        self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(1, 4)
-        self.speed_slider.setValue(1)
+        self.speed_slider = LabeledSlider("每帧步数", 1, 4, 1)
         self.speed_slider.valueChanged.connect(self._speed_changed)
-        self.speed_label = QLabel("1")
-        speed_row.addWidget(self.speed_slider, 1)
-        speed_row.addWidget(self.speed_label)
-        layout.addLayout(speed_row)
+        layout.addWidget(self.speed_slider)
 
         self.clear_btn = QPushButton("清空")
         self.clear_btn.clicked.connect(self._clear)
@@ -269,20 +217,14 @@ class GHWindow(QMainWindow):
         return group
 
     # ------------------------------------------------------------- controls
-    def _refractory_changed(self, value):
-        self.refractory_label.setText(str(value))
+    def _refractory_changed(self, _value):
         self._rebuild()
 
-    def _threshold_changed(self, value):
-        self.threshold_label.setText(str(value))
+    def _threshold_changed(self, _value):
         self._rebuild()
-
-    def _density_changed(self, value):
-        self.density_label.setText(f"{value / 10.0:.1f}%")
 
     def _speed_changed(self, value):
         self._steps_per_frame = int(value)
-        self.speed_label.setText(str(value))
 
     def _rebuild(self):
         self.sim = GreenbergHastings(
@@ -361,10 +303,7 @@ class GHWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
-    window = GHWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(GHWindow))
 
 
 if __name__ == "__main__":

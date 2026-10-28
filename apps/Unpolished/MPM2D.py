@@ -1,9 +1,8 @@
-from common.qt_base import (QApplication, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPen, QPushButton, QRectF, QSlider, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
-from common.numpy_base import (np)
+from common.field_canvas import ArrayCanvas
+from common.qt_base import (QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                            QPushButton, QSlider, QTimer, QVBoxLayout, QWidget, Qt, LabeledSlider, math, run_app,
+                            time)
 from common.taichi_base import (ti)
-from PySide6.QtCore import QPointF, QRectF
-
-import numpy as np
 
 real = ti.f32
 dim = 2
@@ -376,40 +375,23 @@ MATERIAL_IDS = {
 }
 
 
-class MPMCanvas(QWidget):
+class MPMCanvas(ArrayCanvas):
     def __init__(self, app):
-        super().__init__()
+        super().__init__(minimum=(520, 520), background=QColor(10, 12, 18),
+                         border=QColor(90, 100, 120, 120))
         self.app = app
-        self.setMinimumSize(520, 520)
         self.dragging = False
 
     def _to_world(self, pos):
-        w, h = self.width(), self.height()
-        side = min(w, h)
-        ox = (w - side) / 2.0
-        oy = (h - side) / 2.0
-        return (pos.x() - ox) / side, 1.0 - (pos.y() - oy) / side
+        uv = self.map_normalized(pos)
+        if uv is None:
+            return 0.0, 0.0
+        return uv[0], 1.0 - uv[1]
 
     def paintEvent(self, event):
-        p = QPainter(self)
-        w, h = self.width(), self.height()
-        p.fillRect(self.rect(), QColor(10, 12, 18))
-        img = self.app.frame
-        if img is None:
-            p.end()
-            return
-        from PySide6.QtGui import QImage
-        hr, wr = img.shape[:2]
-        qimg = QImage(np.ascontiguousarray(img).data, wr, hr, wr * 3,
-                      QImage.Format_RGB888)
-        side = min(w, h)
-        ox = (w - side) / 2.0
-        oy = (h - side) / 2.0
-        p.drawImage(QRectF(ox, oy, side, side), qimg)
-        p.setPen(QPen(QColor(90, 100, 120, 120), 1))
-        p.setBrush(Qt.NoBrush)
-        p.drawRect(QRectF(ox, oy, side, side))
-        p.end()
+        # 仿真每步更新 app.frame；set_array 对同一个数组对象会跳过重复转换
+        self.set_array(self.app.frame)
+        super().paintEvent(event)
 
     def mousePressEvent(self, e):
         self.dragging = True
@@ -571,11 +553,9 @@ class MPMApp(QMainWindow):
         v2.setSpacing(6)
         v2.setContentsMargins(8, 8, 8, 8)
         self.brush = 45
-        sl = QSlider(Qt.Horizontal)
-        sl.setRange(5, 100)
-        sl.setValue(45)
-        sl.valueChanged.connect(lambda v: setattr(self, "brush", v))
-        v2.addWidget(sl)
+        brush_slider = LabeledSlider("画笔", 5, 100, 45)
+        brush_slider.valueChanged.connect(lambda v: setattr(self, "brush", v))
+        v2.addWidget(brush_slider)
         row = QHBoxLayout()
         row.setSpacing(6)
         b_reset = QPushButton("重置场景")
@@ -641,7 +621,4 @@ class MPMApp(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MPMApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MPMApp))

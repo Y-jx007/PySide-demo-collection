@@ -1,0 +1,116 @@
+[
+ {
+  "alpha": 0.1,
+  "file": "a00_0.10.png",
+  "extent": 0.21,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.15,
+  "file": "a01_0.15.png",
+  "extent": 0.28,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.2,
+  "file": "a02_0.20.png",
+  "extent": 0.36,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.25,
+  "file": "a03_0.25.png",
+  "extent": 0.43,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.3,
+  "file": "a04_0.30.png",
+  "extent": 0.5,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.35,
+  "file": "a05_0.35.png",
+  "extent": 0.57,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.4,
+  "file": "a06_0.40.png",
+  "extent": 0.64,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.45,
+  "file": "a07_0.45.png",
+  "extent": 0.72,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.5,
+  "file": "a08_0.50.png",
+  "extent": 0.79,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.55,
+  "file": "a09_0.55.png",
+  "extent": 0.86,
+  "steps": 5000
+ },
+ {
+  "alpha": 0.6,
+  "file": "a10_0.60.png",
+  "extent": 0.86,
+  "steps": 4650
+ },
+ {
+  "alpha": 0.65,
+  "file": "a11_0.65.png",
+  "extent": 0.87,
+  "steps": 4400
+ },
+ {
+  "alpha": 0.7,
+  "file": "a12_0.70.png",
+  "extent": 0.86,
+  "steps": 4100
+ },
+ {
+  "alpha": 0.75,
+  "file": "a13_0.75.png",
+  "extent": 0.87,
+  "steps": 3850
+ },
+ {
+  "alpha": 0.8,
+  "file": "a14_0.80.png",
+  "extent": 0.86,
+  "steps": 3550
+ },
+ {
+  "alpha": 0.85,
+  "file": "a15_0.85.png",
+  "extent": 0.86,
+  "steps": 3400
+ },
+ {
+  "alpha": 0.9,
+  "file": "a16_0.90.png",
+  "extent": 0.86,
+  "steps": 3150
+ },
+ {
+  "alpha": 0.95,
+  "file": "a17_0.95.png",
+  "extent": 0.86,
+  "steps": 3000
+ },
+ {
+  "alpha": 1.0,
+  "file": "a18_1.00.png",
+  "extent": 0.87,
+  "steps": 2900
+ }
+]

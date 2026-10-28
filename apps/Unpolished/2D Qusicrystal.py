@@ -1,16 +1,10 @@
-from common.qt_base import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QImage, QLabel, QMainWindow, QMessageBox, QOpenGLWidget, QPushButton, QSlider, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, sys)
+from common.qt_base import (QComboBox, QFileDialog, QHBoxLayout, QImage, QLabel, QMainWindow, QMessageBox,
+                            QOpenGLWidget, QPushButton, QSlider, QTimer, QVBoxLayout, QWidget, Qt, run_app)
 from common.numpy_base import (np)
 from common.taichi_base import (ti)
 from common.opengl_base import (GL_COLOR_BUFFER_BIT, GL_LINEAR, GL_MODELVIEW, GL_PROJECTION, GL_QUADS, GL_RGB, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_UNSIGNED_BYTE, glBegin, glBindTexture, glClear, glClearColor, glColor4f, glEnable, glEnd, glGenTextures, glLoadIdentity, glMatrixMode, glOrtho, glTexCoord2f, glTexImage2D, glTexParameteri, glTexSubImage2D, glVertex2f, glViewport)
 
 ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
-
-def setup_gl_format():
-    fmt = QSurfaceFormat()
-    fmt.setVersion(2, 1)
-    fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
-    fmt.setSwapInterval(0)
-    QSurfaceFormat.setDefaultFormat(fmt)
 
 # ================== 平面波叠加（独立波矢大小 + 大视野缩放） ==================
 @ti.data_oriented
@@ -265,8 +259,5 @@ class MainWindow(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
-    setup_gl_format()
-    app = QApplication(sys.argv)
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
+    # 2.1 + 兼容模式 + 关闭垂直同步（与原来的 setup_gl_format 一致）
+    raise SystemExit(run_app(MainWindow, gl=True, gl_options={"swap_interval": 0}))

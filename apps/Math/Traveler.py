@@ -1,25 +1,9 @@
-import sys
 import numpy as np
-import random
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                               QHBoxLayout, QPushButton, QLabel, QSpinBox, 
-                               QDoubleSpinBox, QProgressBar, QTextEdit, QGroupBox,
-                               QCheckBox)
-from PySide6.QtCore import QTimer, Qt, QThread, Signal
-from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
-# 尝试导入numba进行加速
-try:
-    from numba import jit, prange
-    NUMBA_AVAILABLE = True
-except ImportError:
-    NUMBA_AVAILABLE = False
-    # 定义一个空的装饰器，如果numba不可用则不会加速
-    def jit(*args, **kwargs):
-        def decorator(func):
-            return func
-        return decorator
-    prange = range
+from common.qt_base import (QCheckBox, QColor, QHBoxLayout, QLabel, QMainWindow, QPainter, QPen, QProgressBar,
+                            QPushButton, QTextEdit, QVBoxLayout, QWidget, Qt, Signal, StoppableThread,
+                            double_spinbox, form_group, group_box, run_app, spinbox)
+from common.numba_base import NUMBA_AVAILABLE, jit, prange
 
 # ------------------- 距离计算 (优化版本) -------------------
 
@@ -422,7 +406,7 @@ class TSPCanvas(QWidget):
 
 # ------------------- Worker -------------------
 
-class TSPWorker(QThread):
+class TSPWorker(StoppableThread):
     update_signal = Signal(object, object, float, int)
     finished_signal = Signal()
     
@@ -438,7 +422,6 @@ class TSPWorker(QThread):
         self.two_opt_intensity = two_opt_intensity
         self.ga = None
         self.population = None
-        self.is_running = True
         
     def run(self):
         self.ga = TSPGeneticAlgorithmOptimized(
@@ -451,7 +434,7 @@ class TSPWorker(QThread):
             self.two_opt_intensity
         )
         self.population = self.ga.create_population()
-        while self.is_running and self.ga.current_generation < self.ga.generations:
+        while not self.stopping and self.ga.current_generation < self.ga.generations:
             self.population, done = self.ga.run_generation_optimized(self.population)
             # 使用用户设置的刷新间隔
             if self.ga.current_generation % self.refresh_interval == 0 or done:
@@ -471,9 +454,6 @@ class TSPWorker(QThread):
             self.ga.current_generation
         )
         self.finished_signal.emit()
-        
-    def stop(self):
-        self.is_running = False
 
 # ------------------- 主窗口 -------------------
 
@@ -490,151 +470,78 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout()
-        central_widget.setLayout(main_layout)
-        
-        control_panel = QGroupBox("控制面板")
-        control_layout = QVBoxLayout()
-        control_panel.setLayout(control_layout)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setSpacing(6)
+
+        # 不再套一层「控制面板」大框：直接把各组摆在左侧
+        control_panel = QWidget()
         control_panel.setFixedWidth(300)
-        
-        # 算法参数组
-        param_group = QGroupBox("算法参数")
-        param_layout = QVBoxLayout()
-        param_group.setLayout(param_layout)
-        
-        city_layout = QHBoxLayout()
-        city_layout.addWidget(QLabel("城市数量(4-1000):"))
-        self.city_spin = QSpinBox()
-        self.city_spin.setRange(4, 1000)
-        self.city_spin.setValue(200)
-        city_layout.addWidget(self.city_spin)
-        param_layout.addLayout(city_layout)
-        
-        pop_layout = QHBoxLayout()
-        pop_layout.addWidget(QLabel("种群大小(10-500):"))
-        self.pop_spin = QSpinBox()
-        self.pop_spin.setRange(10, 500)
-        self.pop_spin.setValue(100)
-        pop_layout.addWidget(self.pop_spin)
-        param_layout.addLayout(pop_layout)
-        
-        mut_layout = QHBoxLayout()
-        mut_layout.addWidget(QLabel("变异率(0.001-0.2):"))
-        self.mut_spin = QDoubleSpinBox()
-        self.mut_spin.setDecimals(3)
-        self.mut_spin.setRange(0.001, 0.2)
-        self.mut_spin.setValue(0.03)
-        self.mut_spin.setSingleStep(0.005)
-        mut_layout.addWidget(self.mut_spin)
-        param_layout.addLayout(mut_layout)
-        
-        gen_layout = QHBoxLayout()
-        gen_layout.addWidget(QLabel("迭代次数(100-10000):"))
-        self.gen_spin = QSpinBox()
-        self.gen_spin.setRange(100, 10000)
-        self.gen_spin.setValue(1500)
-        gen_layout.addWidget(self.gen_spin)
-        param_layout.addLayout(gen_layout)
-        
-        elite_layout = QHBoxLayout()
-        elite_layout.addWidget(QLabel("精英保留(0-20):"))
-        self.elite_spin = QSpinBox()
-        self.elite_spin.setRange(0,20)
-        self.elite_spin.setValue(5)
-        elite_layout.addWidget(self.elite_spin)
-        param_layout.addLayout(elite_layout)
-        
+        control_layout = QVBoxLayout(control_panel)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(6)
+
+        # 算法参数
+        param_group, param_form = form_group("算法参数")
+        self.city_spin = spinbox(4, 1000, 200)
+        self.pop_spin = spinbox(10, 500, 100)
+        self.mut_spin = double_spinbox(0.001, 0.2, 0.03, 0.005)
+        self.gen_spin = spinbox(100, 10000, 1500)
+        self.elite_spin = spinbox(0, 20, 5)
+        self.intensity_spin = spinbox(1, 10, 7)
         self.use_2opt_check = QCheckBox("使用2-opt局部优化")
         self.use_2opt_check.setChecked(True)
-        param_layout.addWidget(self.use_2opt_check)
-        
-        intensity_layout = QHBoxLayout()
-        intensity_layout.addWidget(QLabel("2-opt强度(1-10):"))
-        self.intensity_spin = QSpinBox()
-        self.intensity_spin.setRange(1, 10)  # 修改为1-10
-        self.intensity_spin.setValue(7)
-        intensity_layout.addWidget(self.intensity_spin)
-        param_layout.addLayout(intensity_layout)
-        
+        param_form.addRow("城市数量(4-1000):", self.city_spin)
+        param_form.addRow("种群大小(10-500):", self.pop_spin)
+        param_form.addRow("变异率(0.001-0.2):", self.mut_spin)
+        param_form.addRow("迭代次数(100-10000):", self.gen_spin)
+        param_form.addRow("精英保留(0-20):", self.elite_spin)
+        param_form.addRow(self.use_2opt_check)
+        param_form.addRow("2-opt强度(1-10):", self.intensity_spin)
         control_layout.addWidget(param_group)
-        
-        # 可视化设置组
-        visual_group = QGroupBox("可视化设置")
-        visual_layout = QVBoxLayout()
-        visual_group.setLayout(visual_layout)
-        
+
+        # 可视化设置
+        visual_group, visual_form = form_group("可视化设置")
         self.show_numbers_check = QCheckBox("显示城市数字")
         self.show_numbers_check.setChecked(True)
         self.show_numbers_check.toggled.connect(self.update_visual_settings)
-        visual_layout.addWidget(self.show_numbers_check)
-        
-        refresh_layout = QHBoxLayout()
-        refresh_layout.addWidget(QLabel("刷新间隔(代):"))
-        self.refresh_spin = QSpinBox()
-        self.refresh_spin.setRange(1, 100)
-        self.refresh_spin.setValue(5)
-        self.refresh_spin.valueChanged.connect(self.update_refresh_interval)
-        refresh_layout.addWidget(self.refresh_spin)
-        visual_layout.addLayout(refresh_layout)
-        
-        point_layout = QHBoxLayout()
-        point_layout.addWidget(QLabel("基础点大小:"))
-        self.point_size_spin = QSpinBox()
-        self.point_size_spin.setRange(3, 20)
-        self.point_size_spin.setValue(8)
-        self.point_size_spin.valueChanged.connect(self.update_visual_settings)
-        point_layout.addWidget(self.point_size_spin)
-        visual_layout.addLayout(point_layout)
-        
-        line_layout = QHBoxLayout()
-        line_layout.addWidget(QLabel("基础线粗细:"))
-        self.line_width_spin = QSpinBox()
-        self.line_width_spin.setRange(1, 5)
-        self.line_width_spin.setValue(2)
-        self.line_width_spin.valueChanged.connect(self.update_visual_settings)
-        line_layout.addWidget(self.line_width_spin)
-        visual_layout.addLayout(line_layout)
-        
+        self.refresh_spin = spinbox(1, 100, 5, callback=self.update_refresh_interval)
+        self.point_size_spin = spinbox(3, 20, 8, callback=self.update_visual_settings)
+        self.line_width_spin = spinbox(1, 5, 2, callback=self.update_visual_settings)
+        visual_form.addRow(self.show_numbers_check)
+        visual_form.addRow("刷新间隔(代):", self.refresh_spin)
+        visual_form.addRow("基础点大小:", self.point_size_spin)
+        visual_form.addRow("基础线粗细:", self.line_width_spin)
         control_layout.addWidget(visual_group)
-        
+
         # 功能按钮
         self.generate_btn = QPushButton("生成随机城市")
         self.generate_btn.clicked.connect(self.generate_cities)
-        control_layout.addWidget(self.generate_btn)
-        
         self.start_btn = QPushButton("开始求解")
         self.start_btn.clicked.connect(self.start_algorithm)
-        control_layout.addWidget(self.start_btn)
-        
         self.stop_btn = QPushButton("停止求解")
         self.stop_btn.clicked.connect(self.stop_algorithm)
         self.stop_btn.setEnabled(False)
-        control_layout.addWidget(self.stop_btn)
-        
+        for button in (self.generate_btn, self.start_btn, self.stop_btn):
+            control_layout.addWidget(button)
+
         # 进度条
-        self.progress_bar = QProgressBar()
         control_layout.addWidget(QLabel("进度:"))
+        self.progress_bar = QProgressBar()
         control_layout.addWidget(self.progress_bar)
-        
+
         # 日志
-        log_group = QGroupBox("运行日志")
-        log_layout = QVBoxLayout()
-        log_group.setLayout(log_layout)
+        log_group = group_box("运行日志")
         self.log_text = QTextEdit()
         self.log_text.setMaximumHeight(300)
-        log_layout.addWidget(self.log_text)
+        log_group.layout().addWidget(self.log_text)
         control_layout.addWidget(log_group)
-        
+
         control_layout.addStretch()
-        
+
         # 可视化区域
-        vis_layout = QVBoxLayout()
         self.tsp_canvas = TSPCanvas()
-        vis_layout.addWidget(self.tsp_canvas)
-        
         main_layout.addWidget(control_panel)
-        main_layout.addLayout(vis_layout)
+        main_layout.addWidget(self.tsp_canvas, 1)
         
         self.generate_cities()
         
@@ -704,10 +611,7 @@ class MainWindow(QMainWindow):
         
     def stop_algorithm(self):
         if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            if not self.worker.wait(3000):
-                self.worker.terminate()
-                self.worker.wait(1000)
+            self.worker.stop_and_wait(3000)
 
     def closeEvent(self, event):
         self.stop_algorithm()
@@ -725,7 +629,4 @@ class MainWindow(QMainWindow):
         self.log_text.append(f"算法完成! 最短距离: {best_distance:.2f}")
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow))

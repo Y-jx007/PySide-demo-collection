@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 import math
-import sys
 from collections import deque
 
 import numpy as np
-from PySide6.QtCore import QLineF
-from PySide6.QtGui import QPainterPath, QPolygonF, QPixmap
+from PySide6.QtGui import QPainterPath, QPixmap
 
+from common.imaging import ndarray_to_qimage
 from common.qt_base import (
-    QApplication, QColor, QFont, QComboBox, QFormLayout, QFrame, QGroupBox,
-    QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPen, QPointF,
-    QCheckBox, QPushButton, QScrollArea, QSizePolicy, QSlider, QTimer, QVBoxLayout,
-    QWidget, Qt, QRect,
+    QColor, QFont, QComboBox, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QMainWindow, QPainter, QPen, QPointF,
+    QCheckBox, QPushButton, QScrollArea, QSizePolicy, QTimer, QVBoxLayout,
+    QWidget, Qt, QRect, LabeledSlider, run_app,
 )
 
-from lienard_wiechert import Trajectory
-from lw_taichi import N as LW_N, V as LW_V, evaluate_np, vector_field_np, trace_component_np, colorize_np
+from support.physics.lienard_wiechert import Trajectory
+from support.physics.lw_taichi import N as LW_N, evaluate_np, vector_field_np, trace_component_np, colorize_np
 
 FIELD_N = LW_N
 EXTENT_FACTOR = 5.0
@@ -91,8 +90,7 @@ class FieldCanvas(QWidget):
 
     def set_frame(self, rgb, pos, extent, radius, vectors=None,
                   b_vectors=None, vector_mode=False):
-        h, w, _ = rgb.shape
-        self._image = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        self._image = ndarray_to_qimage(rgb)
         self._extent = float(extent)
         self._pos = (float(pos[0]), float(pos[1]))
         self._radius = float(radius)
@@ -509,34 +507,17 @@ class LWWindow(QMainWindow):
         group = QGroupBox("运动")
         form = QFormLayout(group)
         form.setSpacing(6)
-        self.beta_slider = QSlider(Qt.Horizontal)
-        self.beta_slider.setRange(5, 95)
-        self.beta_slider.setValue(65)
-        self.beta_label = QLabel("0.65")
-        self.beta_slider.valueChanged.connect(self._params_changed)
-        row = QHBoxLayout(); row.addWidget(self.beta_slider, 1); row.addWidget(self.beta_label)
-        form.addRow("基础 β = v/c", row)
-        self.mod_slider = QSlider(Qt.Horizontal)
-        self.mod_slider.setRange(0, 40)
-        self.mod_slider.setValue(20)
-        self.mod_label = QLabel("0.20")
-        self.mod_slider.valueChanged.connect(self._params_changed)
-        row = QHBoxLayout(); row.addWidget(self.mod_slider, 1); row.addWidget(self.mod_label)
-        form.addRow("速度调制", row)
-        self.drive_slider = QSlider(Qt.Horizontal)
-        self.drive_slider.setRange(1, 300)
-        self.drive_slider.setValue(70)
-        self.drive_label = QLabel("0.70")
-        self.drive_slider.valueChanged.connect(self._params_changed)
-        row = QHBoxLayout(); row.addWidget(self.drive_slider, 1); row.addWidget(self.drive_label)
-        form.addRow("调制频率", row)
-        self.radius_slider = QSlider(Qt.Horizontal)
-        self.radius_slider.setRange(20, 200)
-        self.radius_slider.setValue(72)
-        self.radius_label = QLabel("0.72")
-        self.radius_slider.valueChanged.connect(self._params_changed)
-        row = QHBoxLayout(); row.addWidget(self.radius_slider, 1); row.addWidget(self.radius_label)
-        form.addRow("轨道半径", row)
+        # 滑块 + 数值标签统一用 LabeledSlider（百分数显示）
+        self.beta_slider = LabeledSlider("", 5, 95, 65, formatter=lambda v: f"{v / 100:.2f}")
+        self.mod_slider = LabeledSlider("", 0, 40, 20, formatter=lambda v: f"{v / 100:.2f}")
+        self.drive_slider = LabeledSlider("", 1, 300, 70, formatter=lambda v: f"{v / 100:.2f}")
+        self.radius_slider = LabeledSlider("", 20, 200, 72, formatter=lambda v: f"{v / 100:.2f}")
+        for widget, caption in ((self.beta_slider, "基础 β = v/c"),
+                                (self.mod_slider, "速度调制"),
+                                (self.drive_slider, "调制频率"),
+                                (self.radius_slider, "轨道半径")):
+            widget.valueChanged.connect(self._params_changed)
+            form.addRow(caption, widget)
         return group
 
     def _build_display_group(self):
@@ -618,10 +599,6 @@ class LWWindow(QMainWindow):
             self.mod_slider.blockSignals(True)
             self.mod_slider.setValue(int(round(mod * 100)))
             self.mod_slider.blockSignals(False)
-        self.beta_label.setText(f"{beta:.2f}")
-        self.mod_label.setText(f"{mod:.2f}")
-        self.drive_label.setText(f"{drive:.2f}")
-        self.radius_label.setText(f"{radius:.2f}")
         self.motion = Trajectory(beta0=beta, modulation=mod, drive=drive, radius=radius)
         self._reset()
 
@@ -716,10 +693,7 @@ class LWWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
-    window = LWWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(LWWindow))
 
 
 if __name__ == "__main__":

@@ -1,15 +1,18 @@
-from common.qt_base import (QApplication, QCheckBox, QColor, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QMessageBox, QPainter, QPen, QPointF, QPushButton, QRectF, QScrollArea, QSlider, QTimer, QVBoxLayout, QWidget, Qt, logging, sys, time)
-from common.numpy_base import (np)
+from common.field_canvas import ArrayCanvas
+from common.numpy_base import (ndarray_to_qimage, np)
+from common.paths import DATA_DIR
+from common.widgets import LabeledSlider
+from common.qt_base import (QCheckBox, QColor, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
+                            QMainWindow, QMessageBox, QPen, QPointF, QPushButton, QScrollArea, QTimer, QVBoxLayout,
+                            QWidget, Qt, logging, run_app, time)
 from common.taichi_base import (ti)
-from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QImage, QPainterPath
 
 import base64
 import zlib
 
 from scipy.ndimage import zoom, gaussian_filter
 
-from circulation_data import (
+from support.physics.circulation_data import (
     RealWind, elevation_at, load_elevation, terrain_adjust,
 )
 
@@ -22,8 +25,7 @@ _LAND_B64 = (
 
 def load_land_fine():
     """720×360 的 Natural Earth 海岸线（第 0 行是北）。"""
-    import os as _os
-    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "worldmask.npz")
+    path = DATA_DIR / "worldmask.npz"
     try:
         d = np.load(path)["land"]
         if d.shape == (360, 720):
@@ -251,37 +253,29 @@ _LINE_RGB = (228.0, 156.0, 132.0)
 _STREAK_O = (24.0, 110.0, 128.0)
 
 
-class MapCanvas(QWidget):
+class MapCanvas(ArrayCanvas):
     def __init__(self, app):
-        super().__init__()
+        # 等距柱状投影是 2:1；左右各留 8px
+        super().__init__(aspect=2.0, minimum=(640, 380), padding=8,
+                         background=QColor(232, 231, 225))
         self.app = app
-        self.setMinimumSize(640, 380)
 
     def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        p.fillRect(self.rect(), QColor(232, 231, 225))
-        app = self.app
-        if app.frame is None:
-            p.end()
-            return
-        w, h = self.width(), self.height()
-        scale = min((w - 16) / 2.0, (h - 16) / 1.0)
-        mw, mh = scale * 2.0, scale
-        x0 = (w - mw) / 2.0
-        y0 = (h - mh) / 2.0
-        p.drawImage(QRectF(x0, y0, mw, mh), app.frame)
+        # _compose() 每次都会生成新的 QImage，set_array 直接比对对象即可
+        if self.app.frame is not None:
+            self.set_array(self.app.frame)
+        super().paintEvent(event)
 
-        # 特殊纬线标注
-        f = p.font()
+    def paint_overlay(self, painter, rect):
+        """特殊纬线标注。"""
+        f = painter.font()
         f.setPointSize(8)
-        p.setFont(f)
+        painter.setFont(f)
         for lat, text in ((66.5, "北极圈"), (23.5, "北回归线"), (0.0, "赤道"),
                           (-23.5, "南回归线"), (-66.5, "南极圈")):
-            yy = y0 + (90.0 - lat) / 180.0 * mh
-            p.setPen(QPen(QColor(196, 132, 112, 170), 1))
-            p.drawText(QPointF(x0 + 4, yy - 2), text)
-        p.end()
+            yy = rect.y() + (90.0 - lat) / 180.0 * rect.height()
+            painter.setPen(QPen(QColor(196, 132, 112, 170), 1))
+            painter.drawText(QPointF(rect.x() + 4, yy - 2), text)
 
 
 # ==================== 主窗口 ====================
@@ -624,8 +618,7 @@ class CirculationApp(QMainWindow):
                 ch *= inv[:, :, 0]
                 ch += v * a[:, :, 0]
         self._compose_u8[:] = np.clip(out, 0, 255)
-        self.frame = QImage(self._compose_u8.data, self.BW, self.BH,
-                            self.BW * 3, QImage.Format_RGB888).copy()
+        self.frame = ndarray_to_qimage(self._compose_u8)
 
     # ---------- 循环 ----------
     def tick(self):
@@ -725,18 +718,10 @@ class CirculationApp(QMainWindow):
         self.lbl_month = QLabel("1 月 1 日")
         self.lbl_month.setStyleSheet("color: #45454a; font-size: 12px;")
         f1.addRow("日期", self.lbl_month)
-        row_season = QHBoxLayout()
-        row_season.setSpacing(6)
-        self.season_slider = QSlider(Qt.Horizontal)
-        self.season_slider.setRange(1, 12)
-        self.season_slider.setValue(1)
+        self.season_slider = LabeledSlider("", 1, 12, 1, formatter=lambda v: f"{v} 月", value_width=40)
+        self.season_lbl = self.season_slider.value_label   # 兼容其它路径直接改文字
         self.season_slider.valueChanged.connect(self._on_season)
-        row_season.addWidget(self.season_slider, 1)
-        self.season_lbl = QLabel("1 月")
-        self.season_lbl.setFixedWidth(40)
-        self.season_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        row_season.addWidget(self.season_lbl)
-        f1.addRow("月份", row_season)
+        f1.addRow("月份", self.season_slider)
         self.chk_auto = QCheckBox("自动推演")
         self.chk_auto.setChecked(True)
         self.chk_auto.toggled.connect(self._on_auto)
@@ -766,35 +751,23 @@ class CirculationApp(QMainWindow):
         row_layer.addWidget(self.real_layer_combo, 1)
         fr.addLayout(row_layer)
 
-        row_year = QHBoxLayout()
-        row_year.setSpacing(6)
-        row_year.addWidget(QLabel("年份"))
-        self.year_slider = QSlider(Qt.Horizontal)
-        self.year_slider.setRange(0, max(0, len(self.real.year_values) - 1) if self.real else 0)
-        self.year_slider.setValue(self.real_year_idx)
+        self.year_slider = LabeledSlider(
+            "年份", 0, max(0, len(self.real.year_values) - 1) if self.real else 0,
+            self.real_year_idx, value_width=64,
+            formatter=lambda i: f"{int(self.real.year_values[i])} 年" if self.real else "—")
+        self.year_lbl = self.year_slider.value_label
         self.year_slider.setEnabled(False)
         self.year_slider.valueChanged.connect(self._on_real_year)
-        row_year.addWidget(self.year_slider, 1)
-        self.year_lbl = QLabel(f"{int(self.real.year_values[self.real_year_idx])} 年" if self.real else "—")
-        self.year_lbl.setFixedWidth(64)
-        self.year_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        row_year.addWidget(self.year_lbl)
-        fr.addLayout(row_year)
+        fr.addWidget(self.year_slider)
 
-        row_month = QHBoxLayout()
-        row_month.setSpacing(6)
-        row_month.addWidget(QLabel("月份"))
-        self.month_slider = QSlider(Qt.Horizontal)
-        self.month_slider.setRange(0, max(0, len(self.real.month_values) - 1) if self.real else 0)
-        self.month_slider.setValue(self.real_month_idx)
+        self.month_slider = LabeledSlider(
+            "月份", 0, max(0, len(self.real.month_values) - 1) if self.real else 0,
+            self.real_month_idx, value_width=52,
+            formatter=lambda i: f"{int(self.real.month_values[i])} 月" if self.real else "—")
+        self.month_lbl = self.month_slider.value_label
         self.month_slider.setEnabled(False)
         self.month_slider.valueChanged.connect(self._on_real_month)
-        row_month.addWidget(self.month_slider, 1)
-        self.month_lbl = QLabel(f"{int(self.real.month_values[self.real_month_idx])} 月" if self.real else "—")
-        self.month_lbl.setFixedWidth(52)
-        self.month_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        row_month.addWidget(self.month_lbl)
-        fr.addLayout(row_month)
+        fr.addWidget(self.month_slider)
 
         self.chk_real_auto = QCheckBox("自动播放月份")
         self.chk_real_auto.setEnabled(False)
@@ -818,18 +791,10 @@ class CirculationApp(QMainWindow):
         self.chk_terrain.setChecked(True)
         self.chk_terrain.toggled.connect(lambda c: self._toggle("show_terrain", c))
         ft.addRow(self.chk_terrain)
-        self.terrain_slider = QSlider(Qt.Horizontal)
-        self.terrain_slider.setRange(0, 200)
-        self.terrain_slider.setValue(100)
+        self.terrain_slider = LabeledSlider("", 0, 200, 100, formatter=lambda v: f"{v}%", value_width=46)
+        self.terrain_lbl = self.terrain_slider.value_label
         self.terrain_slider.valueChanged.connect(self._on_terrain)
-        self.terrain_lbl = QLabel("100%")
-        self.terrain_lbl.setFixedWidth(46)
-        self.terrain_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        row_t = QHBoxLayout()
-        row_t.setSpacing(6)
-        row_t.addWidget(self.terrain_slider, 1)
-        row_t.addWidget(self.terrain_lbl)
-        ft.addRow("影响（合成）", row_t)
+        ft.addRow("影响（合成）", self.terrain_slider)
         note = QLabel("高地减速、绕流；真实风场已含地形")
         note.setStyleSheet("color: #8a8a90;")
         nf = note.font()
@@ -845,18 +810,10 @@ class CirculationApp(QMainWindow):
         f_land = QFormLayout(g_land)
         f_land.setSpacing(6)
         f_land.setContentsMargins(8, 8, 8, 8)
-        self.land_slider = QSlider(Qt.Horizontal)
-        self.land_slider.setRange(0, 300)
-        self.land_slider.setValue(150)
-        self.land_lbl = QLabel("150%")
-        self.land_lbl.setFixedWidth(46)
-        self.land_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.land_slider = LabeledSlider("", 0, 300, 150, formatter=lambda v: f"{v}%", value_width=46)
+        self.land_lbl = self.land_slider.value_label
         self.land_slider.valueChanged.connect(self._on_land)
-        row_l = QHBoxLayout()
-        row_l.setSpacing(6)
-        row_l.addWidget(self.land_slider, 1)
-        row_l.addWidget(self.land_lbl)
-        f_land.addRow("强度", row_l)
+        f_land.addRow("强度", self.land_slider)
         pv.addWidget(g_land)
         self.land_group = g_land
 
@@ -865,18 +822,10 @@ class CirculationApp(QMainWindow):
         f_speed = QFormLayout(g_speed)
         f_speed.setSpacing(6)
         f_speed.setContentsMargins(8, 8, 8, 8)
-        self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(0, 1000)
-        self.speed_slider.setValue(500)
-        self.speed_lbl = QLabel("500%")
-        self.speed_lbl.setFixedWidth(46)
-        self.speed_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.speed_slider = LabeledSlider("", 0, 1000, 500, formatter=lambda v: f"{v}%", value_width=46)
+        self.speed_lbl = self.speed_slider.value_label
         self.speed_slider.valueChanged.connect(self._on_speed)
-        row_s = QHBoxLayout()
-        row_s.setSpacing(6)
-        row_s.addWidget(self.speed_slider, 1)
-        row_s.addWidget(self.speed_lbl)
-        f_speed.addRow("倍率", row_s)
+        f_speed.addRow("倍率", self.speed_slider)
         pv.addWidget(g_speed)
 
         # ---- 显示 ----
@@ -906,7 +855,8 @@ class CirculationApp(QMainWindow):
         panel_scroll.setFixedWidth(304)
         panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         panel_scroll.setFrameShape(QFrame.NoFrame)
-        panel_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # 不给 QScrollArea 设样式表，滚动条才会保持系统默认外观
+        panel_scroll.viewport().setAutoFillBackground(False)
         panel_scroll.setWidget(panel)
         root.addWidget(panel_scroll)
 
@@ -1112,7 +1062,4 @@ class CirculationApp(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = CirculationApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(CirculationApp))

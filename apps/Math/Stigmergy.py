@@ -1,4 +1,6 @@
-from common.qt_base import (QApplication, QCheckBox, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPushButton, QSlider, QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
+from common.qt_base import (FPSCounter, LabeledSlider, QCheckBox, QColor, QComboBox, QFormLayout,
+                            QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPushButton,
+                            QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, math, run_app)
 from common.numpy_base import (np)
 from common.taichi_base import (ti)
 
@@ -392,9 +394,7 @@ class StigmergyApp(QMainWindow):
         self.running = False
         self.timer = QTimer()
         self.timer.timeout.connect(self.on_tick)
-        self._frame = 0
-        self._fps = 0.0
-        self._last_time = time.perf_counter()
+        self.fps_counter = FPSCounter()
         self.init_ui()
         self.canvas.update_display()
 
@@ -444,27 +444,10 @@ class StigmergyApp(QMainWindow):
         return group
 
     def _add_slider(self, form, label, lo, hi, value, fmt, callback):
-        """一行滑条 + 数值标签，和项目里其它应用一致。"""
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(4)
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(int(lo), int(hi))
-        slider.setValue(int(value))
-        value_label = QLabel(fmt(int(value)))
-        value_label.setFixedWidth(52)
-        value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        def _on_change(v):
-            value_label.setText(fmt(v))
-            callback(v)
-
-        slider.valueChanged.connect(_on_change)
-        h.addWidget(slider, 1)
-        h.addWidget(value_label)
-        form.addRow(label, row)
-        callback(int(value))
+        """一行滑条 + 数值标签，具体外观交给公共的 LabeledSlider。"""
+        slider = LabeledSlider(label, lo, hi, value, formatter=fmt, value_width=52)
+        slider.bind(callback)          # 连接回调，并立刻同步一次初始值
+        form.addRow(slider)
         return slider
 
     def _create_param_group(self):
@@ -594,13 +577,9 @@ class StigmergyApp(QMainWindow):
         for _ in range(self.steps_spin.value()):
             self.sim.update()
         self.canvas.update_display()
-        self._frame += 1
-        now = time.perf_counter()
-        if now - self._last_time > 0.5:
-            self._fps = self._frame / (now - self._last_time)
-            self._frame = 0
-            self._last_time = now
-            self.lbl_fps.setText(f"{self._fps:.1f}")
+        fps = self.fps_counter.tick()
+        if fps is not None:
+            self.lbl_fps.setText(f"{fps:.1f}")
             self.lbl_mass.setText(f"{self.sim.total_mass():.3e}")
 
     def single_step(self):
@@ -626,7 +605,4 @@ class StigmergyApp(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = StigmergyApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(StigmergyApp))

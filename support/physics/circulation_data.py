@@ -1,25 +1,23 @@
 """Static data helpers for the Circulation app.
 
-Bundled files (all in this directory):
+Bundled files live in assets/data/:
 
-* `worldmask.npz`  720x360 boolean land mask (Natural Earth coastlines).
-* `worldelev.npz`  ETOPO1 1-degree global relief, metres, latitude ascending.
-* `wind_real.npz`  NCEP/NCAR Reanalysis 1, monthly mean 10 m wind aggregated
+* worldmask.npz  720x360 boolean land mask (Natural Earth coastlines).
+* worldelev.npz  ETOPO1 1-degree global relief, metres, latitude ascending.
+* wind_real.npz  NCEP/NCAR Reanalysis 1, monthly mean 10 m wind aggregated
   to annual means for 2015-2024 on a 2.5-degree grid.
 
-The data files are small enough to ship with the app.  See README.md and
-THIRD_PARTY_NOTICES.md for sources and attribution.
+See README.md and THIRD_PARTY_NOTICES.md for sources and attribution.
 """
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ELEV_FILE = os.path.join(HERE, "worldelev.npz")
-WIND_FILE = os.path.join(HERE, "wind_real.npz")
+from common.paths import DATA_DIR
+
+ELEV_FILE = str(DATA_DIR / "worldelev.npz")
+WIND_FILE = str(DATA_DIR / "wind_real.npz")
 
 
 def load_elevation():

@@ -1,4 +1,6 @@
-from common.qt_base import (ColorButton, QApplication, QColor, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QMessageBox, QPainter, QPixmap, QPushButton, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget, Qt, Signal, sys, time)
+from common.qt_base import (ColorButton, QColor, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QImage,
+                            QLabel, QMainWindow, QMessageBox, QPainter, QPixmap, QPushButton, QSpinBox, QTextEdit,
+                            QThread, QVBoxLayout, QWidget, Qt, Signal, run_app, time)
 from common.numpy_base import (np)
 from common.numba_base import (jit)
 
@@ -438,7 +440,4 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow))

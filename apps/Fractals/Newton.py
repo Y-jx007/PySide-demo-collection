@@ -1,12 +1,13 @@
 from common.taichi_base import (ti)
 from common.custom_base import (BaseFractalWidget)
-from common.qt_base import (QApplication, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, Qt, sys)
+from common.qt_base import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QSpinBox,
+                            QVBoxLayout, Qt, run_app)
 
-from fractal_common import (
+from support.fractals.fractal_common import (
     DualCanvasFractalWindow,
     compile_complex_function,
 )
-from fractal_kernels import NEWTON_FUNCTION_NAMES, newton_preset_f, render_newton
+from support.fractals.fractal_kernels import NEWTON_FUNCTION_NAMES, newton_preset_f, render_newton
 
 ti.init(arch=ti.gpu, offline_cache=True)
 
@@ -189,7 +190,4 @@ class NewtonNovaApp(DualCanvasFractalWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = NewtonNovaApp()
-    win.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(NewtonNovaApp))

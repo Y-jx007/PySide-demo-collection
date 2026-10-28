@@ -1,19 +1,18 @@
-from common.qt_base import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTextEdit, QVBoxLayout, QWidget, Qt, sys)
+from common.qt_base import (QApplication, QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel,
+                            QLineEdit, QMainWindow, QPushButton, QScrollArea, QSizePolicy, QTextEdit,
+                            QVBoxLayout, QWidget, Qt, double_spinbox, run_app, spinbox)
 from common.numpy_base import (np)
 from common.mp_base import (mp)
 from common.custom_base import (vectorize_func)
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from cplot_parallel import evaluate_grid, weierstrass_p, shutdown as shutdown_cplot_pool
-from cplot_fast_contour import install_fast_contours
+from common.mpl_canvas import MplCanvas, unregister_figure_manager
+from support.math.cplot_parallel import evaluate_grid, weierstrass_p, shutdown as shutdown_cplot_pool
+from support.math.cplot_fast_contour import install_fast_contours
 install_fast_contours()
 mp.dps = 15  # 设置mpmath的精度
 
-class CodeTextEdit(QTextEdit):
-    """自定义代码编辑器，提供更好的代码编辑体验"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # 不再设置自定义样式和字体，使用系统默认
+# Weierstrass ℘ 的预设代码放在模块级，避免类里散落魔法字符串
+WEIERSTRASS_CODE = "weierstrass_p(z)"
+
 
 class CPlotController(QMainWindow):
     def __init__(self):
@@ -36,7 +35,7 @@ class CPlotController(QMainWindow):
         self._cached_function_str = ""
         self._plot_cache_key = None
         self._plot_cache_fz = None
-    wp = "weierstrass_p(z)"
+
     def init_functions(self):
 
         # vectorize_func imported from custom_function
@@ -60,7 +59,7 @@ class CPlotController(QMainWindow):
             {"name": "自定义", "code": "", "description": "自定义函数"},
             {"name": "sin(z³)/z", "code": "sin(z**3) / z", "description": "正弦函数与立方"},
             {"name": "Γ(z) - Gamma函数", "code": "gamma(z)", "description": "Gamma函数"},
-            {"name": "Weierstrass ℘函数", "code": self.wp, "description": "Weierstrass ℘函数"},
+            {"name": "Weierstrass ℘函数", "code": WEIERSTRASS_CODE, "description": "Weierstrass ℘函数"},
             {"name": "Riemann ζ函数", "code": "zeta(z)", "description": "Riemann ζ函数"},
             {"name": "Dedekind η函数 (y>=0)", "code": "eta(z)", "description": "Dedekind η函数"},
             {"name": "雅可比椭圆函数 sn(z)", "code": "sn(z, 0.5)", "description": "雅可比椭圆正弦函数"},
@@ -109,22 +108,12 @@ class CPlotController(QMainWindow):
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(8, 4, 8, 4)
         panel_layout.setSpacing(2)
-        self.figure = Figure(figsize=(6.4, 4.8), dpi=100, constrained_layout=False)
-        self.figure.patch.set_facecolor("white")
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        self.canvas.setFixedSize(640, 480)
-        # Register this embedded canvas with pyplot.  Without a manager,
-        # plt.sca()/plt.gca() silently create a second canvas for the figure
-        # and the toolbar then talks to the wrong canvas (zoom/pan stop working).
-        from matplotlib._pylab_helpers import Gcf
-        from matplotlib.backend_bases import FigureManagerBase
-        self._figure_manager = FigureManagerBase(self.canvas, 0)
-        # FigureManagerBase does not create this connection itself, while
-        # Gcf.destroy_all() expects it at interpreter shutdown.
-        self._figure_manager._cidgcf = self.canvas.mpl_connect(
-            "close_event", lambda event: None)
-        Gcf.set_active(self._figure_manager)
-        self.toolbar = NavigationToolbar2QT(self.canvas, panel)
+        # register=True 会把画布登记进 pyplot 的 Gcf：
+        # 没有它，plt.sca()/plt.gca() 会另建一块画布，工具栏的缩放/平移也会失灵。
+        self.canvas = MplCanvas(6.4, 4.8, 100, facecolor="white", fixed_size=True,
+                                register=True, toolbar=True, toolbar_parent=panel)
+        self.figure = self.canvas.figure
+        self.toolbar = self.canvas.toolbar
         panel.setFixedWidth(660)
         panel_layout.addWidget(self.toolbar)
         panel_layout.addWidget(self.canvas, 0, Qt.AlignHCenter)
@@ -180,7 +169,7 @@ class CPlotController(QMainWindow):
 
     def setup_function_input(self, layout):
         """设置函数输入框"""
-        self.function_input = CodeTextEdit()
+        self.function_input = QTextEdit()
         self.function_input.setPlaceholderText(
             """输入复数函数，使用 z 作为变量。例如: sin(z**3) / z\n
             支持多行代码定义复杂函数，需命名为f(z):
@@ -231,39 +220,21 @@ class CPlotController(QMainWindow):
         layout.addLayout(ranges_row1)
 
     def create_range_group(self, title, prefix):
-        """创建范围设置组"""
+        """创建范围设置组：从 / 到 / 点数，都是无按钮的紧凑输入框。"""
         group = QGroupBox(title)
         layout = QHBoxLayout(group)
         layout.setSpacing(4)
 
-        layout.addWidget(QLabel("从"))
-        min_spinbox = QDoubleSpinBox()
-        min_spinbox.setRange(-100, 100)
-        min_spinbox.setSingleStep(0.1)
-        min_spinbox.setMinimumWidth(50)  # 缩短宽度
-        # 去掉上下按钮
-        min_spinbox.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        min_spinbox = double_spinbox(-100, 100, 0.0, 0.1, width=50, buttons=False)
+        max_spinbox = double_spinbox(-100, 100, 0.0, 0.1, width=50, buttons=False)
+        points_spinbox = spinbox(10, 2000, 400, 10, width=50, buttons=False)
         setattr(self, f"{prefix}_min_spinbox", min_spinbox)
-        layout.addWidget(min_spinbox)
-
-        layout.addWidget(QLabel("到"))
-        max_spinbox = QDoubleSpinBox()
-        max_spinbox.setRange(-100, 100)
-        max_spinbox.setSingleStep(0.1)
-        max_spinbox.setMinimumWidth(50)  # 缩短宽度
-        max_spinbox.setButtonSymbols(QDoubleSpinBox.NoButtons)
         setattr(self, f"{prefix}_max_spinbox", max_spinbox)
-        layout.addWidget(max_spinbox)
-
-        layout.addWidget(QLabel("点数"))
-        points_spinbox = QSpinBox()
-        points_spinbox.setRange(10, 2000)
-        points_spinbox.setSingleStep(10)
-        points_spinbox.setMinimumWidth(50)  # 缩短宽度
-        points_spinbox.setButtonSymbols(QSpinBox.NoButtons)
         setattr(self, f"{prefix}_points_spinbox", points_spinbox)
-        layout.addWidget(points_spinbox)
 
+        for label, widget in (("从", min_spinbox), ("到", max_spinbox), ("点数", points_spinbox)):
+            layout.addWidget(QLabel(label))
+            layout.addWidget(widget)
         return group
 
     def setup_other_parameters(self, layout):
@@ -271,11 +242,7 @@ class CPlotController(QMainWindow):
         params_row = QHBoxLayout()
         params_row.addWidget(QLabel("饱和度:"))
 
-        self.saturation_spinbox = QDoubleSpinBox()
-        self.saturation_spinbox.setRange(0.1, 5.0)
-        self.saturation_spinbox.setSingleStep(0.1)
-        self.saturation_spinbox.setMinimumWidth(50)  # 缩短宽度
-        self.saturation_spinbox.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self.saturation_spinbox = double_spinbox(0.1, 5.0, 1.28, 0.1, width=50, buttons=False)
         params_row.addWidget(self.saturation_spinbox)
 
         params_row.addWidget(QLabel("绝对值缩放:"))
@@ -547,20 +514,10 @@ class CPlotController(QMainWindow):
             traceback.print_exc()
     def closeEvent(self, event):
         shutdown_cplot_pool()
-        try:
-            from matplotlib._pylab_helpers import Gcf
-            if getattr(self, "_figure_manager", None) is not None:
-                Gcf.destroy(self._figure_manager)
-                self._figure_manager = None
-        except Exception:
-            pass
+        unregister_figure_manager(self.canvas.manager)
+        self.canvas.manager = None
         super().closeEvent(event)
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-
-    window = CPlotController()
-    window.show()
-
-    sys.exit(app.exec())
+    raise SystemExit(run_app(CPlotController))

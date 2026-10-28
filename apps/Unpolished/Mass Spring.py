@@ -1,4 +1,11 @@
+import os
+
 import taichi_forge as ti
+
+from common.paths import ensure_runtime
+
+# Taichi 的 GUI 会把 imgui.ini 写在当前目录；切到 runtime/ 免得弄脏项目根
+os.chdir(ensure_runtime())
 
 # arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)

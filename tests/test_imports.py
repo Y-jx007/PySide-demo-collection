@@ -53,6 +53,15 @@ class TestAppImports(unittest.TestCase):
         from common import dynamic_fractal
         self.assertTrue(hasattr(dynamic_fractal, 'BaseFractalWidget'))
 
+    def test_common_components_import(self):
+        """widgets / imaging / app / workers 应独立可导入"""
+        from common import app, imaging, widgets, workers
+
+        self.assertTrue(callable(app.run_app))
+        self.assertTrue(callable(widgets.LabeledSlider))
+        self.assertTrue(callable(imaging.ImageLabel))
+        self.assertTrue(callable(workers.StoppableThread))
+
     def test_no_circular_imports(self):
         """验证多个模块按顺序导入不会产生循环导入错误"""
         modules = ['common.utils', 'common.custom_function', 'common.reaction_diffusion',

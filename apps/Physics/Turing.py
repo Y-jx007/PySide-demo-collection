@@ -1,14 +1,178 @@
-from common.qt_base import (QApplication, QComboBox, QHBoxLayout, QLabel, QMainWindow, QVBoxLayout, QWidget, sys)
-from common.numpy_base import (np)
+from common.qt_base import (QComboBox, QHBoxLayout, QLabel, QMainWindow, QVBoxLayout, QWidget, run_app)
 from common.taichi_base import (ti)
 from common.reaction_diffusion import (
-    SimulationBase, SimulationViewer, setup_gl_format,
+    SimulationBase, SimulationViewer,
     render_reaction_image, render_gray_image,
     create_equation_group, create_param_group,
     create_init_group, create_control_group,
 )
 
 ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=False)
+
+# ---------- f–k 地图（200×200 参数，可缩放，点击选点） ----------
+from pathlib import Path
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen
+from PySide6.QtWidgets import QGroupBox
+
+from common.paths import PRESETS_DIR
+
+_PRESET_DIR = PRESETS_DIR / "turing"
+
+F_MIN, F_MAX = 0.010, 0.060
+K_MIN, K_MAX = 0.040, 0.070
+MAP_N = 200          # 地图是 200x200 个格子
+
+
+class FkMapView(QWidget):
+    """可缩放/平移的 f–k 参数地图，单击取点。"""
+
+    picked = Signal(float, float)
+
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        QImageReader.setAllocationLimit(1024)
+        self._img = QImage(str(image_path)).convertToFormat(QImage.Format_Grayscale8)
+        self._ok = not self._img.isNull()
+        self.setFixedSize(288, 288)
+        self.setCursor(Qt.CrossCursor)
+        self.setMouseTracking(True)
+        self._min_scale = self.width() / max(self._img.width(), 1)
+        self._max_scale = max(self._min_scale, 1.2)
+        self._scale = self._min_scale
+        self._center = QPointF(self._img.width() / 2.0, self._img.height() / 2.0)
+        self._f, self._k = 0.040, 0.060
+        self._press = None
+        self._moved = False
+
+    # --- 坐标换算 ---
+    def _src_rect(self):
+        w = self.width() / self._scale
+        h = self.height() / self._scale
+        cx = min(max(self._center.x(), w / 2), max(self._img.width() - w / 2, w / 2))
+        cy = min(max(self._center.y(), h / 2), max(self._img.height() - h / 2, h / 2))
+        return QRectF(cx - w / 2, cy - h / 2, w, h)
+
+    def _to_image(self, pos):
+        r = self._src_rect()
+        return (r.left() + pos.x() / self._scale, r.top() + pos.y() / self._scale)
+
+    def set_params(self, f, k):
+        self._f, self._k = f, k
+        self.update()
+
+    def reset_view(self):
+        self._scale = self._min_scale
+        self._center = QPointF(self._img.width() / 2.0, self._img.height() / 2.0)
+        self.update()
+
+    # --- 绘制 ---
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(12, 12, 16))
+        if not self._ok:
+            return
+        p.setRenderHint(QPainter.SmoothPixmapTransform, self._scale < 1.0)
+        p.drawImage(QRectF(self.rect()), self._img, self._src_rect())
+
+        # 当前参数点
+        w, h = self._src_rect().width(), self._src_rect().height()
+        x = (self._k - K_MIN) / (K_MAX - K_MIN) * self._img.width()
+        y = (F_MAX - self._f) / (F_MAX - F_MIN) * self._img.height()
+        r = self._src_rect()
+        sx = (x - r.left()) * self.width() / w
+        sy = (y - r.top()) * self.height() / h
+        if 0 <= sx <= self.width() and 0 <= sy <= self.height():
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(QPen(QColor(255, 70, 70), 2))
+            p.drawEllipse(QPointF(sx, sy), 5, 5)
+
+    # --- 交互 ---
+    def wheelEvent(self, event):
+        if not self._ok:
+            return
+        factor = 1.22 ** (event.angleDelta().y() / 120.0)
+        new_scale = min(max(self._scale * factor, self._min_scale), self._max_scale)
+        if new_scale == self._scale:
+            return
+        pos = event.position()
+        ix, iy = self._to_image(pos)
+        self._scale = new_scale
+        self._center = QPointF(
+            ix - (pos.x() - self.width() / 2) / self._scale,
+            iy - (pos.y() - self.height() / 2) / self._scale,
+        )
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press = event.position()
+            self._moved = False
+
+    def mouseMoveEvent(self, event):
+        if self._press is None:
+            return
+        delta = event.position() - self._press
+        if abs(delta.x()) + abs(delta.y()) > 2:
+            self._moved = True
+        if self._moved:
+            self._center = QPointF(
+                self._center.x() - delta.x() / self._scale,
+                self._center.y() - delta.y() / self._scale,
+            )
+            self._press = event.position()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton or self._press is None:
+            return
+        was_drag = self._moved
+        self._press = None
+        if was_drag or not self._ok:
+            return
+        ix, iy = self._to_image(event.position())
+        col = int(ix / self._img.width() * MAP_N)
+        row = int(iy / self._img.height() * MAP_N)
+        col = min(max(col, 0), MAP_N - 1)
+        row = min(max(row, 0), MAP_N - 1)
+        f = F_MAX - (row + 0.5) / MAP_N * (F_MAX - F_MIN)
+        k = K_MIN + (col + 0.5) / MAP_N * (K_MAX - K_MIN)
+        self.picked.emit(f, k)
+
+    def mouseDoubleClickEvent(self, event):
+        self.reset_view()
+
+
+def create_fk_map(sim, viewer, sliders, get_pattern=None):
+    image = _PRESET_DIR / "fk_map.png"
+    if not image.exists():
+        return QWidget()
+
+    group = QGroupBox("f–k 地图")
+    layout = QVBoxLayout()
+    layout.setContentsMargins(4, 4, 4, 4)
+    widget = FkMapView(image)
+
+    def current_pattern():
+        return get_pattern() if get_pattern else 'random'
+
+    def on_pick(f, k):
+        sim.f = f
+        sim.k = k
+        sliders['f'].setValue(int(round(f * 10000)))
+        sliders['k'].setValue(int(round(k * 10000)))
+        sim.reset(current_pattern())
+        viewer.gl_widget.update()
+        widget.set_params(f, k)
+
+    widget.picked.connect(on_pick)
+    widget.set_params(sim.f, sim.k)
+    layout.addWidget(widget, 0, Qt.AlignHCenter)
+    hint = QLabel("滚轮缩放 · 拖动平移 · 双击复位　|　横轴 k　纵轴 f")
+    hint.setStyleSheet("color: #8a8a94;")
+    layout.addWidget(hint, 0, Qt.AlignHCenter)
+    group.setLayout(layout)
+    return group
 
 # ---------- 通用五点拉普拉斯 ----------
 @ti.func
@@ -294,7 +458,7 @@ def build_panel(sim, viewer, sim_type):
             "斑点": (0.04, 0.065), "蜂巢": (0.03, 0.055),
             "云雾": (0.016, 0.045)
         }
-        def make_preset_callback(sliders):
+        def make_preset_callback(sliders, get_pattern=None):
             def apply_preset(idx):
                 name = presets[idx]
                 if name in preset_vals:
@@ -302,6 +466,7 @@ def build_panel(sim, viewer, sim_type):
                     sim.f, sim.k = fv, kv
                     sliders['f'].setValue(int(fv * 10000))
                     sliders['k'].setValue(int(kv * 10000))
+                    sim.reset(get_pattern() if get_pattern else 'random')
                     viewer.gl_widget.update()
             return apply_preset
 
@@ -324,7 +489,7 @@ def build_panel(sim, viewer, sim_type):
             "靶波":  {"ε":0.05, "f":1.6, "q":0.002, "Du":1.0, "Dv":0.6, "init":"center"},
             "混沌":  {"ε":0.02, "f":2.8, "q":0.005, "Du":1.2, "Dv":0.5, "init":"random"},
         }
-        def make_preset_callback(sliders):
+        def make_preset_callback(sliders, get_pattern=None):
             def apply_preset(idx):
                 p = preset_vals[presets[idx]]
                 sim.epsilon = p["ε"]
@@ -358,7 +523,7 @@ def build_panel(sim, viewer, sim_type):
             "粗大相畴": {"gamma": 0.3, "M": 1.0, "dt": 0.02},
             "快速分离": {"gamma": 1.0, "M": 3.0, "dt": 0.005},
         }
-        def make_preset_callback(sliders):
+        def make_preset_callback(sliders, get_pattern=None):
             def apply_preset(idx):
                 name = presets[idx]
                 p = preset_vals[name]
@@ -371,16 +536,24 @@ def build_panel(sim, viewer, sim_type):
                 viewer.gl_widget.update()
             return apply_preset
 
-    layout.addWidget(create_equation_group("方程", eq_html))
-    param_group, sliders = create_param_group(sim, param_defs)
+    layout.addWidget(create_equation_group("方程", eq_html, compact=True))
+    param_group, sliders = create_param_group(sim, param_defs, compact=True)
     layout.addWidget(param_group)
 
-    preset_callback = make_preset_callback(sliders)
-    init_group, _, _ = create_init_group(sim, viewer,
+    pattern_state = {'name': '随机'}
+    def get_pattern():
+        return reset_mapping.get(pattern_state['name'], 'random')
+
+    preset_callback = make_preset_callback(sliders, get_pattern)
+    init_group, pattern_combo, _ = create_init_group(sim, viewer,
                                          list(reset_mapping.keys()),
                                          presets,
                                          lambda idx: preset_callback(idx),
                                          reset_mapping)
+    pattern_state['name'] = pattern_combo.currentText()
+    pattern_combo.currentTextChanged.connect(lambda t: pattern_state.__setitem__('name', t))
+    if sim_type == 'turing':
+        layout.addWidget(create_fk_map(sim, viewer, sliders, get_pattern))
     layout.addWidget(init_group)
     layout.addWidget(create_control_group(viewer))
     layout.addStretch()
@@ -401,16 +574,17 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.viewer)
 
         self.viewer.set_display_modes(['混合'])
+        self.viewer.param_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
 
         self.top_selector = QWidget()
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(8)
+        top_layout.setSpacing(5)
         top_layout.addWidget(QLabel("模拟:"))
 
         self.sim_combo = QComboBox()
         self.sim_combo.addItems(["Gray‑Scott", "Oregonator", "Cahn‑Hilliard"])
-        self.sim_combo.setMinimumWidth(120)
+        self._fit_combo(self.sim_combo)
         self.sim_combo.currentTextChanged.connect(self._on_sim_type_changed)
         top_layout.addWidget(self.sim_combo)
 
@@ -418,8 +592,10 @@ class MainWindow(QMainWindow):
         self.size_combo = QComboBox()
         self.size_combo.addItems(["128x128", "256x256", "512x512", "1024x1024"])
         self.size_combo.setCurrentText("512x512")
+        self._fit_combo(self.size_combo)
         self.size_combo.currentTextChanged.connect(self._on_size_changed)
         top_layout.addWidget(self.size_combo)
+        top_layout.addStretch(1)
 
         self.top_selector.setLayout(top_layout)
 
@@ -433,6 +609,13 @@ class MainWindow(QMainWindow):
         self._rebuild_custom_panel()
         self.setMinimumSize(900, 620)
         self.setGeometry(100, 100, 1180, 780)
+
+    @staticmethod
+    def _fit_combo(combo):
+        """按最长选项文字 + 箭头留白定宽，避免不同字体/DPI 下截断。"""
+        fm = combo.fontMetrics()
+        widest = max((fm.horizontalAdvance(combo.itemText(i)) for i in range(combo.count())), default=0)
+        combo.setFixedWidth(widest + 42)
 
     def _on_sim_type_changed(self, text):
         mapping = {
@@ -495,8 +678,4 @@ class MainWindow(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
-    setup_gl_format()
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow, gl=True))

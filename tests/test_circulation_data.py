@@ -6,9 +6,9 @@ import unittest
 import numpy as np
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(ROOT, "apps", "Physics"))
+sys.path.insert(0, ROOT)
 
-from circulation_data import (  # noqa: E402
+from support.physics.circulation_data import (  # noqa: E402
     RealWind, elevation_at, load_elevation, terrain_adjust,
 )
 

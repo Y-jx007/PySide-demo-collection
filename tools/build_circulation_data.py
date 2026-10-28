@@ -10,7 +10,7 @@ Downloads (small subsets, no credentials):
 * NCEP/NCAR Reanalysis 1 monthly mean 10 m wind, 2015-2024 (120 months), via
   the NOAA PSL NetCDF Subset Service.
 
-The outputs are apps/Physics/worldelev.npz and apps/Physics/wind_real.npz.
+The outputs are assets/data/worldelev.npz and assets/data/wind_real.npz.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.io import netcdf_file
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "apps" / "Physics"
+OUT = ROOT / "assets" / "data"
 UA = {"User-Agent": "PySide-demo-collection/0.2"}
 
 ETOPO_URL = (

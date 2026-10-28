@@ -1,10 +1,10 @@
-from common.qt_base import (QApplication, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QOpenGLWidget, QPainter, QPen, QPoint, QPushButton, QRect, QScrollArea, QSettings, QSlider, QSplitter, QTabWidget, QTimer, QVBoxLayout, QWidget, Qt, Signal, os, re, sys)
+from common.mpl_canvas import MplCanvas
 from common.numpy_base import (np)
+from common.qt_base import (QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QInputDialog, QLabel,
+                            QLineEdit, QMainWindow, QMessageBox, QOpenGLWidget, QPainter, QPen, QPoint, QPushButton,
+                            QRect, QScrollArea, QSettings, QSlider, QSplitter, QTabWidget, QTimer, QVBoxLayout,
+                            QWidget, Qt, Signal, os, re, run_app)
 from common.taichi_base import (ti)
-import re
-from PySide6.QtCore import QSettings
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib import cm
 
 # ================== 常量 ==================
@@ -12,7 +12,9 @@ MAX_KERNEL_RADIUS = 50
 KERNEL_WINDOW = 2 * MAX_KERNEL_RADIUS + 1
 MAX_KERNEL_ELEMENTS = KERNEL_WINDOW * KERNEL_WINDOW
 
-PRESET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../Lenia presets.npz")
+from common.paths import DATA_DIR
+
+PRESET_FILE = str(DATA_DIR / "lenia_presets.npz")
 
 # ================== 参数元数据 ==================
 PARAM_META = {
@@ -416,14 +418,13 @@ class LeniaCanvas(QOpenGLWidget):
 
 
 # ================== 核预览 ==================
-class KernelPreview(FigureCanvas):
+class KernelPreview(MplCanvas):
     def __init__(self, parent=None):
-        self.fig, self.ax = plt.subplots(figsize=(2.2, 2.2), dpi=80)
-        super().__init__(self.fig)
-        self.setParent(parent)
+        super().__init__(2.25, 2.25, 80, facecolor=None, fixed_size=True, parent=parent)
+        self.fig = self.figure
+        self.ax = self.figure.add_subplot(111)
         self.ax.axis('off')
         self.fig.subplots_adjust(0, 0, 1, 1)
-        self.setFixedSize(180, 180)
 
     def update_preview(self, arr):
         self.ax.clear()
@@ -1350,7 +1351,4 @@ class PresetGallery(QWidget):
         np.savez_compressed(PRESET_FILE, **save_dict)
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = LeniaApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(LeniaApp, gl=True))

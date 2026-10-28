@@ -6,8 +6,11 @@ import unittest
 import numpy as np
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(ROOT, "apps"))
-sys.path.insert(0, os.path.join(ROOT, "apps", "Physics"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _app_paths import add_app_path  # noqa: E402
+
+add_app_path("Erosion", "Physics")
 
 from Erosion import ErosionSim  # noqa: E402
 

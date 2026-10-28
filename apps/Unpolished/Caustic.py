@@ -3,16 +3,19 @@ nephroid_geometric.py — 反射焦散 = 肾形线
 （修复光追密度图不显示的 bug + 视觉强化）
 """
 
-import sys, math
+import math
 import numpy as np
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QSlider, QPushButton, QSizePolicy
 )
 from PySide6.QtGui import (
-    QPainter, QColor, QPen, QBrush, QFont, QImage, QPainterPath
+    QPainter, QColor, QPen, QFont, QPainterPath
 )
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
+
+from common.app import run_app
+from common.imaging import ndarray_to_qimage
 
 
 # ==================== 配色 ====================
@@ -151,12 +154,7 @@ class MainView(QWidget):
         rgb = colorize(render)
         arr = np.ascontiguousarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8))
 
-        # ★ 关键修复：用 tobytes() 而非 memoryview
-        data = arr.tobytes()
-        qimg = QImage(data, iw, ih, 3*iw, QImage.Format_RGB888)
-        if qimg.isNull():
-            return None
-        return qimg.copy()
+        return ndarray_to_qimage(arr)
 
     def _glow(self, d, factor=8, iters=2):
         h, w = d.shape
@@ -413,16 +411,14 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(30)
         self.playing = False
 
-    def _slider_css(self):
-        return """
-            QSlider::groove:horizontal { height: 4px; background: #dcdcd5; border-radius: 2px; }
-            QSlider::sub-page:horizontal { background: #7a94b8; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #5a7aa8; width: 14px; margin: -5px 0; border-radius: 7px; }
-        """
-
     def _header(self):
         w = QWidget()
-        w.setStyleSheet(f"background: {PANEL.name()}; border-bottom: 1px solid {BORDER.name()};")
+        # 用 ID 选择器限定范围：无选择器的 QSS 会漏给子控件，每个标签/滑块
+        # 都会多出一条 1px 下边框（截图里那些零碎的短横线）
+        w.setObjectName("causticHeader")
+        w.setStyleSheet(
+            f"#causticHeader {{ background: {PANEL.name()};"
+            f" border-bottom: 1px solid {BORDER.name()}; }}")
         w.setFixedHeight(58)
         hl = QHBoxLayout(w); hl.setContentsMargins(24, 10, 24, 10); hl.setSpacing(10)
 
@@ -434,7 +430,6 @@ class MainWindow(QMainWindow):
         self.sld.setRange(1812, 3588)
         self.sld.setValue(2400)
         self.sld.setFixedWidth(260)
-        self.sld.setStyleSheet(self._slider_css())
         self.sld.valueChanged.connect(self._on_theta)
         hl.addWidget(self.sld)
 
@@ -455,7 +450,6 @@ class MainWindow(QMainWindow):
         self.r_sld = QSlider(Qt.Horizontal)
         self.r_sld.setRange(60, 150); self.r_sld.setValue(100)
         self.r_sld.setFixedWidth(100)
-        self.r_sld.setStyleSheet(self._slider_css())
         self.r_sld.valueChanged.connect(self._on_radius)
         hl.addWidget(self.r_sld)
 
@@ -501,6 +495,4 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = MainWindow(); win.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow))

@@ -111,22 +111,6 @@ QCheckBox::indicator:checked {
     border: 1px solid #6c757d;
 }
 
-/* 滑块 */
-QSlider::groove:horizontal {
-    border: 1px solid #ced4da;
-    height: 3px;
-    background: #e9ecef;
-    border-radius: 2px;
-}
-QSlider::handle:horizontal {
-    background: #6c757d;
-    border: 1px solid #495057;
-    width: 14px;
-    height: 14px;
-    border-radius: 7px;
-    margin: -5px 0;
-}
-
 /* 选项卡（傅里叶工具） */
 QTabWidget::pane {
     border: 1px solid #dee2e6;

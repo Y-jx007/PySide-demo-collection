@@ -16,12 +16,12 @@ env/
 .vscode/
 .idea/
 
-# Runtime output
+# Runtime output（日志、启动器布局、imgui.ini 都放 runtime/）
+runtime/
 logs/
 output/
 imgui.ini
 *.log
 
 # Lenia preset backups
-apps/preset_backups/
-launcher_layout.json
+assets/data/preset_backups/

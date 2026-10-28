@@ -1,6 +1,6 @@
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QSurfaceFormat, QImage
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QGroupBox, QFileDialog, QMessageBox,
@@ -13,11 +13,10 @@ from abc import ABC, abstractmethod
 
 # ---------- OpenGL 设置 ----------
 def setup_gl_format():
-    fmt = QSurfaceFormat()
-    fmt.setVersion(2, 1)
-    fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
-    fmt.setSwapInterval(0)
-    QSurfaceFormat.setDefaultFormat(fmt)
+    """兼容旧导入路径；实现已统一到 common.app。"""
+    from common.app import setup_gl_format as _setup
+
+    _setup(swap_interval=0)
 
 
 # ---------- OpenGL 纹理显示组件 ----------
@@ -115,10 +114,10 @@ class SimulationViewer(QWidget):
         self.param_scroll.setFrameShape(QFrame.NoFrame)
         self.param_scroll.setFixedWidth(340)
         self.param_scroll.setWidget(left_widget)
-        self.param_scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollArea > QWidget > QWidget { background: transparent; }"
-        )
+        # 不要给 QScrollArea 设样式表：Qt 会给它换上 QStyleSheetStyle，
+        # 竖直滚动条就不再按 Windows 原生外观绘制。透明背景用 palette 做。
+        self.param_scroll.viewport().setAutoFillBackground(False)
+        left_widget.setAutoFillBackground(False)
         main_layout.addWidget(self.param_scroll, 0)
         main_layout.addWidget(self.gl_widget, 1)
 
@@ -219,17 +218,28 @@ def render_gray_image(gray_np):
 
 
 # ---------- UI 控件辅助函数 ----------
-def make_slider_row(label, vmin, vmax, vdef, scale, sim, attr):
+def make_slider_row(label, vmin, vmax, vdef, scale, sim, attr, compact=False):
     """滑块 + 右侧可编辑框"""
     row = QHBoxLayout()
-    row.addWidget(QLabel(label))
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(4 if compact else 6)
+    lab = QLabel(label)
+    if compact:
+        lab.setFixedWidth(46)
+        lab.setStyleSheet("font-size: 11px;")
+    row.addWidget(lab)
     slider = QSlider(Qt.Horizontal)
     slider.setRange(int(vmin * scale), int(vmax * scale))
     slider.setValue(int(vdef * scale))
     slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    if compact:
+        slider.setFixedHeight(16)
     edit = QLineEdit(f"{vdef:.4f}")
-    edit.setFixedWidth(55)
+    edit.setFixedWidth(46 if compact else 55)
     edit.setAlignment(Qt.AlignCenter)
+    if compact:
+        edit.setFixedHeight(18)
+        edit.setStyleSheet("font-size: 11px;")
     row.addWidget(slider)
     row.addWidget(edit)
 
@@ -260,29 +270,36 @@ def make_slider_row(label, vmin, vmax, vdef, scale, sim, attr):
     edit.editingFinished.connect(sync_from_edit)
     w = QWidget()
     w.setLayout(row)
+    if compact:
+        w.setFixedHeight(22)
     return w, slider, edit
 
 
-def create_equation_group(title, html):
+def create_equation_group(title, html, compact=False):
     """方程分组框"""
     group = QGroupBox(title)
     lb = QLabel(html)
     lb.setWordWrap(True)
     lb.setTextFormat(Qt.RichText)
     layout = QVBoxLayout()
+    if compact:
+        layout.setContentsMargins(4, 2, 4, 2)
+        lb.setStyleSheet("font-size: 11px;")
     layout.addWidget(lb)
     group.setLayout(layout)
     return group
 
 
-def create_param_group(sim, param_defs):
+def create_param_group(sim, param_defs, compact=False):
     """参数分组框，param_defs: [(label, vmin, vmax, vdef, scale, attr), ...]"""
     group = QGroupBox("模拟参数")
     layout = QVBoxLayout()
-    layout.setSpacing(1)
+    layout.setSpacing(0 if compact else 1)
+    if compact:
+        layout.setContentsMargins(4, 2, 4, 2)
     sliders = {}
     for label, vmin, vmax, vdef, scale, attr in param_defs:
-        w, sld, edt = make_slider_row(label, vmin, vmax, vdef, scale, sim, attr)
+        w, sld, edt = make_slider_row(label, vmin, vmax, vdef, scale, sim, attr, compact=compact)
         layout.addWidget(w)
         sliders[attr] = sld
     group.setLayout(layout)

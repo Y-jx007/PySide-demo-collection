@@ -1,12 +1,15 @@
-import sys
 import math
 import numpy as np
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QSlider, QLabel, QProgressBar, QTabWidget
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QProgressBar, QTabWidget
 )
-from PySide6.QtCore import Qt, QTimer, QRectF, QThread, Signal
+from PySide6.QtCore import Qt, QTimer, QRectF, Signal
 from PySide6.QtGui import QPainter, QPen, QColor
+
+from common.app import run_app
+from common.widgets import LabeledSlider
+from common.workers import StoppableThread
 
 # ==================== 太阳-木星 CRTBP 模型 (旋转坐标系) ====================
 mu = 0.000953875   # 木星真实质量比
@@ -38,7 +41,7 @@ def standard_map(q, p, K):
     return q_new, p_new
 
 # ==================== Poincaré 截面计算线程 (修复版) ====================
-class PoincareThread(QThread):
+class PoincareThread(StoppableThread):
     new_points = Signal(list)
     progress = Signal(int)
 
@@ -49,15 +52,11 @@ class PoincareThread(QThread):
         self.num_orbits = num_orbits
         self.dt = dt
         self.max_steps = max_steps
-        self._is_running = True
-
-    def stop(self):
-        self._is_running = False
 
     def run(self):
         xs = np.linspace(self.x_range[0], self.x_range[1], self.num_orbits)
         for i, x0 in enumerate(xs):
-            if not self._is_running:
+            if self.stopping:
                 break
             # 雅可比积分计算 vy0
             r1 = abs(x0 + mu)
@@ -94,7 +93,7 @@ class PoincareThread(QThread):
         self.progress.emit(100)
 
 # ==================== 标准映射线程 ====================
-class StandardMapThread(QThread):
+class StandardMapThread(StoppableThread):
     new_points = Signal(list)
     progress = Signal(int)
 
@@ -103,16 +102,12 @@ class StandardMapThread(QThread):
         self.K = K
         self.num_orbits = num_orbits
         self.steps = steps
-        self._is_running = True
-
-    def stop(self):
-        self._is_running = False
 
     def run(self):
         q0 = np.linspace(0, 1, self.num_orbits, endpoint=False)
         p0 = np.zeros_like(q0)
         for i in range(self.num_orbits):
-            if not self._is_running:
+            if self.stopping:
                 break
             q, p = q0[i], p0[i]
             traj = [(q, p)]
@@ -231,35 +226,17 @@ class MainWindow(QMainWindow):
         ctrl_layout = QVBoxLayout(ctrl)
 
         c_row = QHBoxLayout()
-        c_row.addWidget(QLabel("雅可比常数 C:"))
-        self.c_slider = QSlider(Qt.Horizontal)
-        self.c_slider.setRange(250, 305)   # 2.50 ~ 3.05
-        self.c_slider.setValue(300)
+        self.c_slider = LabeledSlider("雅可比常数 C:", 250, 305, 300,   # 2.50 ~ 3.05
+                                      formatter=lambda v: f"{v / 100:.2f}")
         c_row.addWidget(self.c_slider)
-        self.c_label = QLabel("3.00")
-        c_row.addWidget(self.c_label)
-        self.c_slider.valueChanged.connect(self.on_c_changed)
         ctrl_layout.addLayout(c_row)
 
         param_row = QHBoxLayout()
-        param_row.addWidget(QLabel("轨道数:"))
-        self.orbits_slider = QSlider(Qt.Horizontal)
-        self.orbits_slider.setRange(10, 80)
-        self.orbits_slider.setValue(30)
+        self.orbits_slider = LabeledSlider("轨道数:", 10, 80, 30)
+        self.steps_slider = LabeledSlider("最大步数:", 1000, 10000, 4000)
+        self.steps_slider.slider.setSingleStep(500)
         param_row.addWidget(self.orbits_slider)
-        self.orbits_label = QLabel("30")
-        self.orbits_slider.valueChanged.connect(lambda v: self.orbits_label.setText(str(v)))
-        param_row.addWidget(self.orbits_label)
-
-        param_row.addWidget(QLabel("最大步数:"))
-        self.steps_slider = QSlider(Qt.Horizontal)
-        self.steps_slider.setRange(1000, 10000)
-        self.steps_slider.setValue(4000)
-        self.steps_slider.setSingleStep(500)
         param_row.addWidget(self.steps_slider)
-        self.steps_label = QLabel("4000")
-        self.steps_slider.valueChanged.connect(lambda v: self.steps_label.setText(str(v)))
-        param_row.addWidget(self.steps_label)
         ctrl_layout.addLayout(param_row)
 
         btn_row = QHBoxLayout()
@@ -293,34 +270,16 @@ class MainWindow(QMainWindow):
         ctrl_layout = QVBoxLayout(ctrl)
 
         k_row = QHBoxLayout()
-        k_row.addWidget(QLabel("扰动强度 K:"))
-        self.k_slider = QSlider(Qt.Horizontal)
-        self.k_slider.setRange(0, 200)   # 0.00 ~ 2.00
-        self.k_slider.setValue(50)
+        self.k_slider = LabeledSlider("扰动强度 K:", 0, 200, 50,   # 0.00 ~ 2.00
+                                      formatter=lambda v: f"{v / 100:.2f}")
         k_row.addWidget(self.k_slider)
-        self.k_label = QLabel("0.50")
-        k_row.addWidget(self.k_label)
-        self.k_slider.valueChanged.connect(self.on_k_changed)
         ctrl_layout.addLayout(k_row)
 
         param_row = QHBoxLayout()
-        param_row.addWidget(QLabel("轨道数:"))
-        self.norb_spin = QSlider(Qt.Horizontal)
-        self.norb_spin.setRange(10, 60)
-        self.norb_spin.setValue(30)
+        self.norb_spin = LabeledSlider("轨道数:", 10, 60, 30)
+        self.step_spin = LabeledSlider("步数:", 100, 2000, 500)
         param_row.addWidget(self.norb_spin)
-        self.norb_label = QLabel("30")
-        self.norb_spin.valueChanged.connect(lambda v: self.norb_label.setText(str(v)))
-        param_row.addWidget(self.norb_label)
-
-        param_row.addWidget(QLabel("步数:"))
-        self.step_spin = QSlider(Qt.Horizontal)
-        self.step_spin.setRange(100, 2000)
-        self.step_spin.setValue(500)
         param_row.addWidget(self.step_spin)
-        self.step_label = QLabel("500")
-        self.step_spin.valueChanged.connect(lambda v: self.step_label.setText(str(v)))
-        param_row.addWidget(self.step_label)
         ctrl_layout.addLayout(param_row)
 
         btn_row = QHBoxLayout()
@@ -348,9 +307,6 @@ class MainWindow(QMainWindow):
         self.orbits_slider.setValue(20)      # 20条轨道，快速出图
         self.steps_slider.setValue(2000)
         self.start_crtbp()
-
-    def on_c_changed(self, val):
-        self.c_label.setText(f"{val/100.0:.2f}")
 
     def start_crtbp(self):
         if self.thread_crtbp and self.thread_crtbp.isRunning():
@@ -382,9 +338,6 @@ class MainWindow(QMainWindow):
         self.progress_crtbp.setValue(100)
 
     # --- 标准映射 ---
-    def on_k_changed(self, val):
-        self.k_label.setText(f"{val/100.0:.2f}")
-
     def start_stdmap(self):
         if self.thread_std and self.thread_std.isRunning():
             return
@@ -408,15 +361,9 @@ class MainWindow(QMainWindow):
             self.stdmap_finished()
 
     def closeEvent(self, event):
-        threads = (self.thread_crtbp, self.thread_std)
-        for thread in threads:
-            if thread and thread.isRunning():
-                thread.stop()
-        for thread in threads:
-            if thread and thread.isRunning():
-                if not thread.wait(2000):
-                    thread.terminate()
-                    thread.wait(1000)
+        for thread in (self.thread_crtbp, self.thread_std):
+            if thread is not None:
+                thread.stop_and_wait(2000)
         super().closeEvent(event)
 
     def stdmap_finished(self):
@@ -425,7 +372,4 @@ class MainWindow(QMainWindow):
         self.progress_std.setValue(100)
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow))

@@ -1,4 +1,6 @@
-from common.qt_base import (QApplication, QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPushButton, QSpinBox, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
+from common.qt_base import (QCheckBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPushButton, QTimer,
+                            QVBoxLayout, QWidget, Qt, double_spinbox, form_group, group_box, hbox, math,
+                            run_app, spinbox, time)
 from common.numpy_base import (np)
 from common.numba_base import (njit)
 from common.opengl_base import (GL_ARRAY_BUFFER, GL_BLEND, GL_COLOR_BUFFER_BIT, GL_DEPTH_TEST, GL_DYNAMIC_DRAW, GL_ELEMENT_ARRAY_BUFFER, GL_FLOAT, GL_LINES, GL_LINE_SMOOTH, GL_MODELVIEW, GL_ONE_MINUS_SRC_ALPHA, GL_POINTS, GL_POINT_SMOOTH, GL_PROJECTION, GL_SRC_ALPHA, GL_TRIANGLES, GL_UNSIGNED_INT, GL_VERTEX_ARRAY, glBindBuffer, glBlendFunc, glBufferData, glBufferSubData, glClear, glClearColor, glColor4f, glDisable, glDrawArrays, glDrawElements, glEnable, glEnableClientState, glGenBuffers, glLineWidth, glLoadIdentity, glMatrixMode, glOrtho, glPointSize, glVertexPointer, glViewport)
@@ -11,14 +13,6 @@ from scipy.spatial import Voronoi
 # 做 numpy fancy-index；这里改为：
 #   * 一次向量化构建扁平多边形缓冲（只对少量边界 cell 走 Python 循环）；
 #   * 质心 / 移动 / 蒙特卡洛直接用 Numba 操作 NumPy 数组，零拷贝。
-def setup_gl_format():
-    fmt = QSurfaceFormat()
-    fmt.setVersion(4, 3)
-    fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
-    fmt.setSwapInterval(0)
-    QSurfaceFormat.setDefaultFormat(fmt)
-
-
 # ================== Numba 核函数 ==================
 @njit(nogil=True, fastmath=True, cache=True)
 def compute_cell_centroids(polygons, offsets, sizes, centroids):
@@ -645,94 +639,55 @@ class VoronoiSimulation(QMainWindow):
         main_layout.addWidget(self.voronoi_widget)
 
     def _create_control_group(self):
-        group = QGroupBox("控制")
-        layout = QHBoxLayout()
         self.start_btn = QPushButton("开始")
         self.step_btn = QPushButton("单步")
         self.reset_btn = QPushButton("重置")
         self.start_btn.clicked.connect(self.toggle_simulation)
         self.step_btn.clicked.connect(self.single_step)
         self.reset_btn.clicked.connect(self.reset_simulation)
-        layout.addWidget(self.start_btn)
-        layout.addWidget(self.step_btn)
-        layout.addWidget(self.reset_btn)
-        group.setLayout(layout)
-        return group
+        return group_box("控制", hbox(self.start_btn, self.step_btn, self.reset_btn))
 
     def _create_performance_group(self):
-        group = QGroupBox("性能设置")
-        layout = QFormLayout()
-        self.steps_spin = QSpinBox()
-        self.steps_spin.setRange(1, 20)
-        self.steps_spin.setValue(1)
-        self.freq_spin = QSpinBox()
-        self.freq_spin.setRange(1, 500)
-        self.freq_spin.setValue(16)     # 约 60 fps；旧默认 1 ms 会让 GUI 一直满载
-        layout.addRow("每帧迭代:", self.steps_spin)
-        layout.addRow("更新时间(ms):", self.freq_spin)
-        group.setLayout(layout)
+        group, form = form_group("性能设置")
+        self.steps_spin = spinbox(1, 20, 1)
+        self.freq_spin = spinbox(1, 500, 16)     # 约 60 fps；旧默认 1 ms 会让 GUI 一直满载
+        form.addRow("每帧迭代:", self.steps_spin)
+        form.addRow("更新时间(ms):", self.freq_spin)
         return group
 
     def _create_viz_group(self):
-        group = QGroupBox("显示选项")
-        layout = QVBoxLayout()
         self.show_pts_check = QCheckBox("显示点")
         self.show_vor_check = QCheckBox("显示 Voronoi 图")
         self.show_pts_check.setChecked(True)
         self.show_vor_check.setChecked(True)
         self.show_pts_check.toggled.connect(self._update_viz_options)
         self.show_vor_check.toggled.connect(self._update_viz_options)
-        layout.addWidget(self.show_pts_check)
-        layout.addWidget(self.show_vor_check)
-        group.setLayout(layout)
-        return group
+        return group_box("显示选项", self.show_pts_check, self.show_vor_check)
 
     def _create_parameter_group(self):
-        group = QGroupBox("算法参数")
-        layout = QFormLayout()
-        self.points_spin = QSpinBox()
-        self.points_spin.setRange(10, 10000)
-        self.points_spin.setValue(2000)
-        self.mob_spin = QDoubleSpinBox()
-        self.mob_spin.setRange(0.01, 2.0)
-        self.mob_spin.setValue(1.5)
-        self.mob_spin.setSingleStep(0.05)
-        self.mob_spin.setDecimals(3)
-        layout.addRow("点数(10-10000):", self.points_spin)
-        layout.addRow("移动性(0.01-2.0):", self.mob_spin)
-        group.setLayout(layout)
+        group, form = form_group("算法参数")
+        self.points_spin = spinbox(10, 10000, 2000)
+        self.mob_spin = double_spinbox(0.01, 2.0, 1.5, 0.05)
+        form.addRow("点数(10-10000):", self.points_spin)
+        form.addRow("移动性(0.01-2.0):", self.mob_spin)
         return group
 
     def _create_monte_group(self):
-        group = QGroupBox("蒙特卡洛质心估计")
-        layout = QFormLayout()
+        group, form = form_group("蒙特卡洛质心估计")
         self.monte_enable_check = QCheckBox("启用蒙特卡洛")
         self.monte_enable_check.toggled.connect(self._on_monte_toggled)
-        self.monte_samples_spin = QSpinBox()
-        self.monte_samples_spin.setRange(1, 10000)
-        self.monte_samples_spin.setValue(50)
-        self.monte_prob_spin = QDoubleSpinBox()
-        self.monte_prob_spin.setRange(0.0, 1.0)
-        self.monte_prob_spin.setSingleStep(0.01)
-        self.monte_prob_spin.setDecimals(3)
-        self.monte_prob_spin.setValue(0.2)
-        self.monte_samples_spin.valueChanged.connect(self._on_monte_param_changed)
-        self.monte_prob_spin.valueChanged.connect(self._on_monte_param_changed)
-        layout.addRow(self.monte_enable_check)
-        layout.addRow("蒙卡次数:", self.monte_samples_spin)
-        layout.addRow("启用概率:", self.monte_prob_spin)
-        group.setLayout(layout)
+        self.monte_samples_spin = spinbox(1, 10000, 50, callback=self._on_monte_param_changed)
+        self.monte_prob_spin = double_spinbox(0.0, 1.0, 0.2, 0.01,
+                                              callback=self._on_monte_param_changed)
+        form.addRow(self.monte_enable_check)
+        form.addRow("蒙卡次数:", self.monte_samples_spin)
+        form.addRow("启用概率:", self.monte_prob_spin)
         return group
 
     def _create_stats_group(self):
-        group = QGroupBox("统计信息")
-        layout = QVBoxLayout()
         self.status_label1 = QLabel("就绪")
         self.status_label2 = QLabel("")
-        layout.addWidget(self.status_label1)
-        layout.addWidget(self.status_label2)
-        group.setLayout(layout)
-        return group
+        return group_box("统计信息", self.status_label1, self.status_label2)
 
     def init_simulation(self):
         self.sim = HoneycombCVT(
@@ -832,8 +787,6 @@ class VoronoiSimulation(QMainWindow):
 
 
 if __name__ == "__main__":
-    setup_gl_format()
-    app = QApplication(sys.argv)
-    window = VoronoiSimulation()
-    window.show()
-    sys.exit(app.exec())
+    # Lloyd 的 VBO 渲染用 GL 4.3 核心特性，关闭垂直同步以便跑满刷新率
+    raise SystemExit(run_app(VoronoiSimulation, gl=True,
+                             gl_options={"version": (4, 3), "swap_interval": 0}))

@@ -10,12 +10,16 @@ import unittest
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(ROOT, "apps"))
-sys.path.insert(0, os.path.join(ROOT, "apps", "Physics"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _app_paths import add_all_app_paths, app_dir  # noqa: E402
+
+add_all_app_paths()
 
 
 def _load_app():
-    path = os.path.join(ROOT, "apps", "Physics", "Circulation.py")
+    # Circulation 可能被拖到任意分类，路径从清单里取
+    path = os.path.join(app_dir("Circulation", "Physics"), "Circulation.py")
     spec = importlib.util.spec_from_file_location("circulation_app", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -3,10 +3,8 @@ import os
 import sys
 import unittest
 
-APPS_DIR = os.path.join(os.path.dirname(__file__), "..", "apps")
-FRACTALS_DIR = os.path.join(APPS_DIR, "Fractals")
-sys.path.insert(0, APPS_DIR)
-sys.path.insert(0, FRACTALS_DIR)
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, ROOT)
 
 from common.dynamic_fractal import ViewTransform
 
@@ -44,14 +42,14 @@ class TestViewTransform(unittest.TestCase):
 
 class TestCustomExpression(unittest.TestCase):
     def test_compile_returns_callable_with_requested_name(self):
-        from fractal_common import compile_complex_function
+        from support.fractals.fractal_common import compile_complex_function
 
         func = compile_complex_function("csqr(z) + csin(z)", "custom_func")
         self.assertTrue(callable(func))
         self.assertEqual(func.__name__, "custom_func")
 
     def test_syntax_error_is_reported(self):
-        from fractal_common import compile_complex_function
+        from support.fractals.fractal_common import compile_complex_function
 
         with self.assertRaises(SyntaxError):
             compile_complex_function("csqr(z", "custom_func")

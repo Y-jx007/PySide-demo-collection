@@ -13,6 +13,10 @@ from PySide6.QtCore import *
 from PySide6.QtGui import *
 from PySide6.QtOpenGLWidgets import *
 
+from common.paths import MODELS_DIR
+from common.qt_base import LabeledSlider, run_app
+from common.workers import StoppableThread
+
 # ==================== 神经网络模型（支持两种边界） ====================
 class CAModel(nn.Module):
     def __init__(self, channel_n, fire_rate, device, hidden_size=128):
@@ -90,7 +94,7 @@ class SamplePool:
         self.pool[idxs] = new_x
 
 # ==================== 训练线程 ====================
-class TrainThread(QThread):
+class TrainThread(StoppableThread):
     loss_signal = Signal(float)
     state_signal = Signal(np.ndarray)
     progress_signal = Signal(int)
@@ -112,7 +116,6 @@ class TrainThread(QThread):
         self.batch_size = batch_size
         self.device = device
         self.use_circular = use_circular
-        self._is_running = True
 
     def run(self):
         H, W = self.grid_size, self.grid_size
@@ -142,7 +145,7 @@ class TrainThread(QThread):
         ema = None
 
         for epoch in range(1, self.epochs + 1):
-            if not self._is_running:
+            if self.stopping:
                 break
 
             if self.use_pool:
@@ -209,9 +212,6 @@ class TrainThread(QThread):
 
         self.finished_signal.emit()
 
-    def stop(self):
-        self._is_running = False
-
 # ==================== OpenGL 显示组件（1px 边框，始终显示） ====================
 class GLDisplayWidget(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -273,7 +273,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Neural CA - 自生长修复 (OpenGL)")
         self.setMinimumSize(1000, 700)
 
-        self.model_dir = str(Path(__file__).resolve().parents[2] / "models")
+        self.model_dir = str(MODELS_DIR)
         os.makedirs(self.model_dir, exist_ok=True)
 
         # 论文配方：40×40 网格、随机展开 40-60 步、约 8000 轮、零填充边界
@@ -363,15 +363,9 @@ class MainWindow(QMainWindow):
         model_row.addWidget(self.btn_save_model)
         data_layout.addLayout(model_row)
 
-        scale_row = QHBoxLayout()
-        scale_row.addWidget(QLabel("训练缩放:"))
-        self.train_scale_slider = QSlider(Qt.Horizontal)
-        self.train_scale_slider.setRange(10, 100)
-        self.train_scale_slider.setValue(100)
-        self.train_scale_label = QLabel("1.00")
-        scale_row.addWidget(self.train_scale_slider)
-        scale_row.addWidget(self.train_scale_label)
-        data_layout.addLayout(scale_row)
+        self.train_scale_slider = LabeledSlider("训练缩放:", 10, 100, 100,
+                                                formatter=lambda v: f"{v / 100:.2f}", value_width=40)
+        data_layout.addWidget(self.train_scale_slider)
         self.train_scale_slider.valueChanged.connect(self.on_train_scale_changed)
 
         top_layout.addWidget(data_grp, 1)
@@ -441,36 +435,18 @@ class MainWindow(QMainWindow):
         run_layout.setSpacing(2)
 
         run_layout.addWidget(QLabel("速度(步/帧):"), 0, 0)
-        self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(1, 100)
-        self.speed_slider.setValue(self.sim_steps_per_tick)
-        self.speed_label = QLabel(str(self.sim_steps_per_tick))
-        speed_row = QHBoxLayout()
-        speed_row.addWidget(self.speed_slider)
-        speed_row.addWidget(self.speed_label)
-        run_layout.addLayout(speed_row, 0, 1)
+        self.speed_slider = LabeledSlider("", 1, 100, self.sim_steps_per_tick, value_width=36)
+        run_layout.addWidget(self.speed_slider, 0, 1)
         self.speed_slider.valueChanged.connect(self.on_speed_changed)
 
         run_layout.addWidget(QLabel("旋转角度:"), 1, 0)
-        self.angle_slider = QSlider(Qt.Horizontal)
-        self.angle_slider.setRange(0, 360)
-        self.angle_slider.setValue(0)
-        self.angle_label = QLabel("0°")
-        angle_row = QHBoxLayout()
-        angle_row.addWidget(self.angle_slider)
-        angle_row.addWidget(self.angle_label)
-        run_layout.addLayout(angle_row, 1, 1)
+        self.angle_slider = LabeledSlider("", 0, 360, 0, formatter=lambda v: f"{v}°", value_width=36)
+        run_layout.addWidget(self.angle_slider, 1, 1)
         self.angle_slider.valueChanged.connect(self.on_angle_changed)
 
         run_layout.addWidget(QLabel("笔刷:"), 2, 0)
-        self.brush_slider = QSlider(Qt.Horizontal)
-        self.brush_slider.setRange(1, 10)
-        self.brush_slider.setValue(self.brush_size)
-        self.brush_label = QLabel(str(self.brush_size))
-        brush_row = QHBoxLayout()
-        brush_row.addWidget(self.brush_slider)
-        brush_row.addWidget(self.brush_label)
-        run_layout.addLayout(brush_row, 2, 1)
+        self.brush_slider = LabeledSlider("", 1, 10, self.brush_size, value_width=36)
+        run_layout.addWidget(self.brush_slider, 2, 1)
         self.brush_slider.valueChanged.connect(self.on_brush_changed)
 
         # 添加周期边界复选框
@@ -607,19 +583,15 @@ class MainWindow(QMainWindow):
     # ---------- 滑块回调 ----------
     def on_speed_changed(self, value):
         self.sim_steps_per_tick = value
-        self.speed_label.setText(str(value))
 
     def on_angle_changed(self, value):
         self.current_angle = float(value)
-        self.angle_label.setText(f"{value}°")
 
     def on_brush_changed(self, value):
         self.brush_size = value
-        self.brush_label.setText(str(value))
 
     def on_train_scale_changed(self, value):
         self.target_train_scale = value / 100.0
-        self.train_scale_label.setText(f"{self.target_train_scale:.2f}")
         if self.original_image is not None:
             self.recompute_target()
 
@@ -859,11 +831,4 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "提示", "训练完成！画布已重置为单粒种子，点「运行」即可观察生长。")
 
 if __name__ == "__main__":
-    fmt = QSurfaceFormat()
-    fmt.setRenderableType(QSurfaceFormat.OpenGL)
-    QSurfaceFormat.setDefaultFormat(fmt)
-
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow, gl=True))

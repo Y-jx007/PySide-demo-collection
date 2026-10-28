@@ -22,8 +22,18 @@ import numpy as np
 TOOLS_DIR = Path(__file__).resolve().parent
 ROOT = TOOLS_DIR.parent
 APPS = ROOT / "apps"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(APPS))
-sys.path.insert(0, str(APPS / "Physics"))
+
+# 应用可能被启动器拖到别的分类，目录从 apps_manifest 里查
+from apps_manifest import APPS as APP_ENTRIES  # noqa: E402
+
+for _entry in APP_ENTRIES:
+    if Path(_entry["path"]).stem == "Maxwell":
+        sys.path.insert(0, str(APPS / Path(_entry["path"]).parent))
+        break
+else:
+    sys.path.insert(0, str(APPS / "Physics"))
 
 from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402

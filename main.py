@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import shutil
 import subprocess
 import importlib.util
 import logging
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from apps_manifest import APPS, CATEGORY_ORDER, INSTALL_HINTS
+from manifest_edit import rewrite_app_entry
 
 # ===================== 全局常量 =====================
 CARD_WIDTH = 150
@@ -60,11 +62,14 @@ INFO_DEFAULT = "选择工具开始使用 | 拖动卡片可排序或换分类 | �
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 APPS_DIR = os.path.join(PROJECT_DIR, "apps")
+ASSETS_DIR = os.path.join(PROJECT_DIR, "assets")
+THUMBNAIL_DIR = os.path.join(ASSETS_DIR, "thumbnails")
+RUNTIME_DIR = os.path.join(PROJECT_DIR, "runtime")
 
 FAMILY_TITLE = "Segoe UI"
 FAMILY_DEFAULT = "Microsoft YaHei"
 APP_CARD_MIME = "application/x-pyside-app-card"
-LAYOUT_PATH = os.path.join(PROJECT_DIR, "launcher_layout.json")
+LAYOUT_PATH = os.path.join(RUNTIME_DIR, "launcher_layout.json")
 
 
 class HScrollArea(QScrollArea):
@@ -375,7 +380,9 @@ class CategoryWidget(QFrame):
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setFixedHeight(CATEGORY_HEIGHT)
-        self.scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # 透明背景只作用在 viewport 上：给 QScrollArea 设样式表会让滚动条
+        # 改用 QStyleSheetStyle 绘制，失去系统默认外观
+        self.scroll_area.viewport().setAutoFillBackground(False)
 
         # 移除触摸手势，避免桌面端按钮点击冲突
         # QScroller.grabGesture(...)
@@ -581,7 +588,8 @@ class ApplicationLauncher(QMainWindow):
         self.outer_scroll = QScrollArea()
         self.outer_scroll.setWidgetResizable(True)
         self.outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.outer_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.outer_scroll.setFrameShape(QFrame.NoFrame)
+        self.outer_scroll.viewport().setAutoFillBackground(False)
 
         self.scroll_content = QWidget()
         self.categories_layout = QVBoxLayout(self.scroll_content)
@@ -619,7 +627,7 @@ class ApplicationLauncher(QMainWindow):
         command = self._make_launcher(app["path"], app["friendly"])
         module_filename = os.path.basename(app["path"])
         image_name = os.path.splitext(module_filename)[0] + ".png"
-        image_path = os.path.join(PROJECT_DIR, "images", image_name)
+        image_path = os.path.join(THUMBNAIL_DIR, image_name)
         card = AppCard(
             app["title"], app["description"], command,
             bg_image_path=image_path, app_path=app["path"],
@@ -780,6 +788,74 @@ class ApplicationLauncher(QMainWindow):
         self._clear_card_drag()
         self._restore_info()
 
+    def _relocate_app_file(self, card, target):
+        """跨分类拖卡片时，把对应的 .py 挪到目标分类目录并同步清单。
+
+        返回 False 表示这次拖动要放弃（文件动不了 / 正在运行 / 同名冲突）。
+        """
+        if not card.app_path or target is None:
+            return True
+        old_rel = card.app_path
+        category = (target.category_name or "").strip()
+        old_dir = old_rel.split("/")[0] if "/" in old_rel else ""
+        if category == old_dir:
+            return True
+        if not category or category in (".", "..") or any(
+                ch in category for ch in '\\/:*?"<>|'):
+            self.show_error(f"分类名「{category}」不能用作文件夹名，文件保持原位。")
+            return False
+
+        name = os.path.basename(old_rel)
+        new_rel = f"{category}/{name}"
+        old_abs = os.path.join(APPS_DIR, old_rel.replace("/", os.sep))
+        new_abs = os.path.join(APPS_DIR, new_rel.replace("/", os.sep))
+        if not os.path.isfile(old_abs):
+            self.show_error(f"找不到应用文件，卡片先留在原分类：\n{old_abs}")
+            return False
+        if os.path.exists(new_abs):
+            self.show_error(f"目标分类里已经有同名文件：\n{new_abs}")
+            return False
+        for entry in self.active_processes:
+            if (os.path.normcase(entry["path"]) == os.path.normcase(old_abs)
+                    and entry["process"].poll() is None):
+                self.show_error(f"{card.title} 正在运行，先关掉它再换分类。")
+                return False
+
+        try:
+            os.makedirs(os.path.dirname(new_abs), exist_ok=True)
+            shutil.move(old_abs, new_abs)
+        except OSError as exc:
+            self.show_error(f"移动文件失败：{exc}")
+            return False
+        if not rewrite_app_entry(old_rel, new_rel, category):
+            try:
+                shutil.move(new_abs, old_abs)
+            except OSError:
+                pass
+            self.show_error("写回 apps_manifest.py 失败，文件已移回原处。")
+            return False
+
+        app = None
+        for entry in APPS:
+            if entry.get("path") == old_rel:
+                entry["path"] = new_rel
+                entry["category"] = category
+                app = entry
+                break
+        for entry in self.active_processes:
+            if os.path.normcase(entry["path"]) == os.path.normcase(old_abs):
+                entry["path"] = new_abs
+        self.cards_by_path.pop(old_rel, None)
+        card.app_path = new_rel
+        self.cards_by_path[new_rel] = card
+        try:
+            card.button.clicked.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        card.command = self._make_launcher(new_rel, (app or {}).get("friendly", card.title))
+        card.button.clicked.connect(card.command)
+        return True
+
     def _finish_card_drag(self, target, index=None):
         if self._drag_card is None or target is None:
             self.cancel_card_drag()
@@ -788,6 +864,9 @@ class ApplicationLauncher(QMainWindow):
         if self._placeholder is not None and self._placeholder_cat is target:
             index = target.placeholder_card_index(self._placeholder)
         self._remove_placeholder()
+        if not self._relocate_app_file(card, target):
+            self.cancel_card_drag()
+            return
         index = max(0, min(int(index or 0), target.card_count()))
         target.insert_card(card, index)
         card.show()
@@ -805,6 +884,8 @@ class ApplicationLauncher(QMainWindow):
         # kept for programmatic moves/tests
         source = card.category_widget
         if source is None or target is None:
+            return
+        if not self._relocate_app_file(card, target):
             return
         source_index = source.cards_layout.indexOf(card)
         if source is target and 0 <= source_index < index:
@@ -892,8 +973,8 @@ class ApplicationLauncher(QMainWindow):
             self.show_error(f"找不到启动器入口:\n{runner}")
             return
 
-        # 子进程输出写入 logs/：比管道更稳（打包后无控制台时也能查错）
-        log_dir = os.path.join(PROJECT_DIR, "logs")
+        # 子进程输出写入 runtime/logs：比管道更稳（打包后无控制台时也能查错）
+        log_dir = os.path.join(RUNTIME_DIR, "logs")
         base = os.path.splitext(os.path.basename(module_path))[0]
         safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in base)
         out_log = os.path.join(log_dir, f"{safe}.out.log")

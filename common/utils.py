@@ -1,4 +1,5 @@
 import math
+import time
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QVector3D, QMatrix4x4, QQuaternion
@@ -188,3 +189,34 @@ class ColorButton(QPushButton):
         pen.setWidth(2)
         painter.setPen(pen)
         painter.drawRoundedRect(1, 1, self.width()-2, self.height()-2, 3, 3)
+
+class FPSCounter:
+    """帧率统计：tick() 每帧调用，统计窗口到期时返回新的 fps，否则返回 None。
+
+    Stigmergy、Lenia 等实时 app 原先都在 on_tick 里手写
+    "_frame / (now - _last_time) > 0.5" 的那一小段，统一放在这里。
+    """
+
+    def __init__(self, interval: float = 0.5):
+        self.interval = float(interval)
+        self.fps = 0.0
+        self._frames = 0
+        self._since = time.perf_counter()
+
+    def tick(self, now: float | None = None):
+        """记一帧；返回本次统计窗口的 fps（未到期时为 None）。"""
+        self._frames += 1
+        now = time.perf_counter() if now is None else now
+        elapsed = now - self._since
+        if elapsed < self.interval:
+            return None
+        self.fps = self._frames / elapsed if elapsed > 0 else 0.0
+        self._frames = 0
+        self._since = now
+        return self.fps
+
+    def reset(self) -> None:
+        self.fps = 0.0
+        self._frames = 0
+        self._since = time.perf_counter()
+

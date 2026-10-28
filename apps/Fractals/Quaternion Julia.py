@@ -1,18 +1,18 @@
-import sys
-
 import numpy as np
 import taichi_forge as ti
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QSurfaceFormat, QVector3D
+from PySide6.QtGui import QVector3D
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QSpinBox, QSlider, QLineEdit, QGroupBox,
     QSplitter, QSizePolicy,
 )
 from OpenGL.GL import *
 
+from common.app import run_app
 from common.utils import OrbitCamera
+from common.widgets import LabeledSlider
 
 # ==================== Taichi 初始化 ====================
 # 默认离线缓存目录 C:/taichi_cache 可能不可写，导致每次启动都重新 JIT
@@ -473,6 +473,7 @@ class FractalWidget(QOpenGLWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__(); self.setWindowTitle("四元数 Julia / Mandelbrot - 熔岩与火山灰")
+        self.resize(1100, 750)
         self.cam = OrbitCamera(QVector3D(0,0,0), 3.6); self.cam.pitch = -30; self.cam._update_vectors()
         self._ui()
 
@@ -503,26 +504,26 @@ class MainWindow(QMainWindow):
 
         # 渲染参数
         param = QGroupBox("渲染参数"); g = QGridLayout(); g.setSpacing(4)
-        g.addWidget(QLabel("迭代次数"),0,0); self.iter_s = QSlider(Qt.Horizontal); self.iter_s.setRange(50,500); self.iter_s.setValue(DEFAULT_MAX_ITER)
-        self.iter_l = QLabel(str(DEFAULT_MAX_ITER))
-        self.iter_s.valueChanged.connect(lambda v: (self.iter_l.setText(str(v)), self._reset()))
-        g.addWidget(self.iter_s,0,1); g.addWidget(self.iter_l,0,2)
+        g.addWidget(QLabel("迭代次数"),0,0)
+        self.iter_s = LabeledSlider("", 50, 500, DEFAULT_MAX_ITER)
+        self.iter_s.valueChanged.connect(lambda _v: self._reset())
+        g.addWidget(self.iter_s,0,1,1,2)
 
-        g.addWidget(QLabel("精度"),1,0); self.prec_s = QSlider(Qt.Horizontal); self.prec_s.setRange(1,50); self.prec_s.setValue(int(DEFAULT_SURFACE_PRECISION*100000))
-        self.prec_l = QLabel(f"{DEFAULT_SURFACE_PRECISION:.5f}")
-        self.prec_s.valueChanged.connect(lambda v: (self.prec_l.setText(f"{v/100000:.5f}"), self._reset()))
-        g.addWidget(self.prec_s,1,1); g.addWidget(self.prec_l,1,2)
+        g.addWidget(QLabel("精度"),1,0)
+        self.prec_s = LabeledSlider("", 1, 50, int(DEFAULT_SURFACE_PRECISION*100000),
+                                    formatter=lambda v: f"{v/100000:.5f}", value_width=52)
+        self.prec_s.valueChanged.connect(lambda _v: self._reset())
+        g.addWidget(self.prec_s,1,1,1,2)
 
-        g.addWidget(QLabel("采样"),2,0); self.samp_s = QSlider(Qt.Horizontal); self.samp_s.setRange(1,8); self.samp_s.setValue(DEFAULT_SAMPLES)
-        self.samp_l = QLabel(str(DEFAULT_SAMPLES))
-        self.samp_s.valueChanged.connect(lambda v: (self.samp_l.setText(str(v)), self._reset()))
-        g.addWidget(self.samp_s,2,1); g.addWidget(self.samp_l,2,2)
+        g.addWidget(QLabel("采样"),2,0)
+        self.samp_s = LabeledSlider("", 1, 8, DEFAULT_SAMPLES)
+        self.samp_s.valueChanged.connect(lambda _v: self._reset())
+        g.addWidget(self.samp_s,2,1,1,2)
 
-        g.addWidget(QLabel("累积帧"),3,0); self.accum_s = QSlider(Qt.Horizontal)
-        self.accum_s.setRange(1,128); self.accum_s.setValue(DEFAULT_ACCUM)
-        self.accum_l = QLabel(str(DEFAULT_ACCUM))
-        self.accum_s.valueChanged.connect(lambda v: (self.accum_l.setText(str(v)), self._on_accum_changed(v)))
-        g.addWidget(self.accum_s,3,1); g.addWidget(self.accum_l,3,2)
+        g.addWidget(QLabel("累积帧"),3,0)
+        self.accum_s = LabeledSlider("", 1, 128, DEFAULT_ACCUM)
+        self.accum_s.valueChanged.connect(self._on_accum_changed)
+        g.addWidget(self.accum_s,3,1,1,2)
         param.setLayout(g); lay.addWidget(param)
 
         # C 常数 (仅 Julia 可用)
@@ -556,10 +557,10 @@ class MainWindow(QMainWindow):
 
         # 相机距离
         dist_g = QGroupBox("相机距离"); dh = QHBoxLayout()
-        self.dist_s = QSlider(Qt.Horizontal); self.dist_s.setRange(1,200); self.dist_s.setValue(36)
-        self.dist_l = QLabel("3.6")
-        self.dist_s.valueChanged.connect(lambda v: (self.dist_l.setText(f"{v/10:.1f}"), self._set_dist(v)))
-        dh.addWidget(QLabel("距离:")); dh.addWidget(self.dist_s); dh.addWidget(self.dist_l)
+        self.dist_s = LabeledSlider("距离:", 1, 200, 36,
+                                    formatter=lambda v: f"{v/10:.1f}", value_width=40)
+        self.dist_s.valueChanged.connect(self._set_dist)
+        dh.addWidget(self.dist_s)
         btn_reset_view = QPushButton("重置视角"); btn_reset_view.clicked.connect(self._reset_cam)
         dh.addWidget(btn_reset_view); dist_g.setLayout(dh); lay.addWidget(dist_g)
         lay.addStretch()
@@ -652,9 +653,6 @@ class MainWindow(QMainWindow):
         e.accept()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    fmt = QSurfaceFormat(); fmt.setVersion(2,1); fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
-    QSurfaceFormat.setDefaultFormat(fmt)
-    w = MainWindow(); w.resize(1100, 750); w.show()
-    app.processEvents()      # 先把窗口/状态栏画出来，再做首帧 JIT
-    sys.exit(app.exec())
+    # before_exec：先把窗口画出来再跑首帧 JIT，避免启动时白屏
+    raise SystemExit(run_app(MainWindow, gl=True,
+                             before_exec=lambda app: app.processEvents()))

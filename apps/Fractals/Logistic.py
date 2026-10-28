@@ -1,8 +1,7 @@
-import sys
 import math
 import logging
 import numpy as np
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QLineEdit,
                                QComboBox, QSpinBox, QScrollArea,
                                QGroupBox, QMessageBox, QTabWidget,
@@ -11,6 +10,8 @@ from PySide6.QtCore import QThread, Signal, QRectF, QSize, Qt
 from PySide6.QtGui import QPainter, QPen, QColor, QImage
 import time
 from numba import jit, prange
+
+from common.app import run_app
 
 logging.debug("Lyapunov 分形使用 CPU/Numba 计算")
 
@@ -946,7 +947,4 @@ class LyapunovFractalApp(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = LyapunovFractalApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(LyapunovFractalApp))

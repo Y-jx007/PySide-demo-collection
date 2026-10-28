@@ -7,9 +7,8 @@ import numpy as np
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "apps", "Physics"))
 
-from lienard_wiechert import C, Trajectory  # noqa: E402
+from support.physics.lienard_wiechert import C, Trajectory  # noqa: E402
 
 
 class TestLienardWiechert(unittest.TestCase):

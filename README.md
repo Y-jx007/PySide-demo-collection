@@ -75,7 +75,7 @@ Noise 用麦克风实时统计环境噪声：
 - 50–2000 Hz 频谱对数斜率 α（0 白、1 粉红/1/f、2 红/棕），并叠加拟合线与 1/f 参考线；
 - 时域波形、A 计权频谱、声级历史、声级分布、1/f–能量密度图；
 - 1/f–能量密度图：横轴是线性的 1/f（ms），纵轴是**未计权**能量密度（FS²/Hz），默认取 30 s 时间平均（可选 5/10/30/60 s）；对 S(f)=C/f，令 x=1/f 得到 S=Cx，应呈过原点的直线。上一版误用了 A 计权谱，低频被衰减，才会看起来随 1/f 下降；
-- 每秒把一条聚合记录（含 α）写入 logs/noise_history.sqlite，并显示最近 7 天的小时均值与 7 d α；
+- 每秒把一条聚合记录（含 α）写入 runtime/logs/noise_history.sqlite，并显示最近 7 天的小时均值与 7 d α；
 - 校准滑杆 -30…+30 dB，默认满幅按 94 dB 估算；
 - 演示模式默认只勾选 1/f；1/f^0.5、1/f、1/f^1.5、1/f²、白噪声、180 Hz 瞬态都是独立可选项，可任意组合；全都不勾选或无输入信号时清空实时统计，不再把数值 epsilon 底噪显示成能量；演示数据不写入历史。无输入设备或设置 NOISE_DEMO=1 时自动进入演示模式。
 
@@ -101,7 +101,9 @@ pip install -r requirements-distill.txt
 python main.py
 ```
 
-主界面支持直接拖动卡片调整顺序和分类，布局保存在 `launcher_layout.json`（已加入 `.gitignore`）。
+主界面支持直接拖动卡片调整顺序和分类：跨分类拖动时，应用文件会一起挪到 `apps/<新分类>/`，
+并同步改写 `apps_manifest.py` 里的 `path` / `category`（应用正在运行或目标处有同名文件时会拒绝这次拖动）。
+卡片顺序与所在分类保存在 `runtime/launcher_layout.json`（已加入 `.gitignore`）。
 
 主界面会为每个应用启动**独立子进程**，因此可以同时打开多个应用，互不影响 Taichi / OpenGL / PyTorch 运行时；关闭主界面时会一并关闭子进程。
 
@@ -130,43 +132,85 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ├── app_runner.py            # 单应用运行入口（配置 sys.path / cwd）
 ├── apps_manifest.py         # 应用清单：标题、描述、分类、依赖
 ├── common/                  # 共享导入与基础模块
-│   ├── qt_base.py           # Qt + 标准库
-│   ├── numpy_base.py        # NumPy + Pillow
+│   ├── paths.py             # 目录约定：assets/ runtime/ 的唯一入口
+│   ├── qt_base.py           # Qt + 标准库（再导出 widgets / app / workers）
+│   ├── numpy_base.py        # NumPy + Pillow（再导出 imaging 助手）
+│   ├── widgets.py           # LabeledSlider、分组框/表单、分隔线、正方形容器
+│   ├── imaging.py           # ndarray ↔ QImage、ImageLabel、打开/保存对话框
+│   ├── field_canvas.py      # ArrayCanvas：等比绘制的 numpy 图像画布
+│   ├── mpl_canvas.py        # MplCanvas：matplotlib 画布 + Gcf 登记 + 工具栏
+│   ├── app.py               # QApplication / QSS / QSurfaceFormat / run_app
+│   ├── workers.py           # StoppableThread：可协作停止的后台线程
+│   ├── utils.py             # OrbitCamera, ColorButton, FPSCounter
 │   ├── taichi_base.py       # Taichi
-│   ├── numba_base.py        # Numba
+│   ├── numba_base.py        # Numba（缺依赖时自动降级为纯 Python）
 │   ├── opengl_base.py       # OpenGL
 │   ├── mp_base.py           # mpmath
 │   ├── custom_base.py       # custom_function / dynamic_fractal
 │   ├── custom_function.py   # Taichi 复数运算与自定义表达式
-│   ├── utils.py             # OrbitCamera, ColorButton
 │   ├── dynamic_fractal.py   # 分形画布基类 + 视图坐标变换
 │   └── reaction_diffusion.py# 反应扩散基类
-├── apps/                    # 只放应用与 app 专用数据/助手
-│   ├── Cellular Automata/Greenberg-Hastings.py # 激发介质 CA
-│   ├── Cellular Automata/greenberg_hastings_model.py
-│   ├── Fractals/
-│   │   ├── fractal_common.py # 双画布窗口、自定义函数、轨道叠加
-│   │   └── fractal_kernels.py# Mandelbrot/Newton Taichi 内核
-│   ├── Physics/circulation_data.py # 地形 / 真实风场数据助手
-│   ├── Physics/soil_water.py       # Erosion 的两层土壤水/蒸散模型
-│   ├── Physics/Bremsstrahlung.py     # 轫致/同步辐射可视化
-│   ├── Physics/lienard_wiechert.py    # 推迟 LW 场
-│   ├── Physics/lw_taichi.py            # 1024×1024 Taichi 场核
-│   ├── Physics/Noise.py            # 环境噪声实时统计与长期历史
-│   ├── Physics/noise_dsp.py        # A 计权 / Leq / 频谱
-│   ├── Physics/noise_history.py    # SQLite 长期记录
-│   ├── Physics/worldelev.npz       # ETOPO1 1° 海拔
-│   ├── Physics/wind_real.npz       # NCEP 2015–2024 月平均 10 m 风
-│   ├── Math/ Physics/ Fractals/ Cellular Automata/
-│   └── 2D Qusicrystal.py, Mass Spring.py
-├── models/                  # Distill 预训练模型
-├── images/                  # 卡片缩略图
+├── apps/                    # 只放应用入口（清单里的每个条目一个 .py）
+│   ├── Math/                # Arnold / Cplot / Fourier / Lloyd / Lorenz / Stigmergy / Traveler
+│   ├── Physics/             # Beam / Bremsstrahlung / Ising / KAM / Maxwell / Navier-Stokes /
+│   │                        #   Noise / Schrödinger / Turing
+│   ├── Fractals/            # IFS / Lindenmayer / Logistic / Mandelbrot / Newton /
+│   │                        #   Quaternion Julia / Snowflake
+│   ├── Cellular Automata/   # Conway / Distill / Greenberg-Hastings / Lenia / Particle Lenia
+│   └── Unpolished/          # 2D Qusicrystal / Caustic / Circulation / Erosion / MPM2D /
+│                            #   Greenberg-Hastings / Mass Spring
+├── support/                 # 应用专用支撑模块（按分类分目录，供 app 与测试导入）
+│   ├── physics/             # circulation_data / lienard_wiechert / lw_taichi /
+│   │                        #   noise_dsp / noise_history / soil_water
+│   ├── math/                # cplot_parallel / cplot_fast_contour
+│   ├── fractals/            # fractal_common（双画布窗口、轨道叠加）/ fractal_kernels
+│   └── cellular_automata/   # greenberg_hastings_model
+├── assets/                  # 资源目录（应用启动时读取；Lenia 保存预设会回写 data/）
+│   ├── data/                # worldelev / wind_real / worldmask / czm_* / lenia_presets
+│   ├── presets/             # turing/fk_map.png、snowflake_alpha/、snowflake_terrain/
+│   ├── models/              # Distill 预训练 .pth
+│   ├── thumbnails/          # 启动器卡片缩略图
+│   └── style.qss            # 统一 QSS（可选：run_app(stylesheet=True) 时自动加载）
+├── runtime/                 # 运行期产物（不入库）：logs/、launcher_layout.json、imgui.ini
 ├── tools/                   # 数据重建、Lenia 预设搜索、CZM bank
 ├── tests/                   # 导入 / manifest / 数据冒烟测试
-├── style.qss                # 统一 QSS（Arnold 使用）
 ├── requirements.txt
 ├── requirements-distill.txt
 └── pyproject.toml
+```
+
+## 公共组件（common/）
+
+各 app 原先都在自己文件里重写同一批样板代码，现已抽到 common/ 下。
+Math 7 个、Physics 13 个、Fractals 6 个、Cellular Automata 6 个应用都已改用统一的
+`run_app` 入口（`Mass Spring.py` 用的是 Taichi 自带 GUI，不涉及 PySide）。
+画布层也统一了：matplotlib 画布（`MplCanvas`）覆盖 Fourier / Cplot / Noise / Lenia 核预览，
+numpy 图像画布（`ArrayCanvas`）覆盖 Erosion / MPM2D / Circulation / Conway / Snowflake /
+Greenberg-Hastings。其余替换按需推进（`ndarray_to_qimage` 覆盖 Erosion / MPM2D /
+Bremsstrahlung / Caustic / Circulation；`LabeledSlider` 覆盖 Beam / Erosion / Schrödinger /
+MPM2D / Bremsstrahlung / Navier-Stokes / KAM / Noise / Circulation / Quaternion Julia /
+Conway / Snowflake / Greenberg-Hastings / Particle Lenia / Distill，共 60 余个滑块；
+`FPSCounter` 覆盖 Erosion / Schrödinger / Conway，`StoppableThread` 覆盖 KAM / Distill）：
+
+| 组件 | 位置 | 替代掉的重复代码 |
+| --- | --- | --- |
+| `run_app` / `setup_gl_format` | `common/app.py` | `__main__` 里的 QApplication + QSS + QSurfaceFormat 样板 |
+| `LabeledSlider` | `common/widgets.py` | `_create_slider_pair` / `_add_slider` 等手写滑块行 |
+| `spinbox` / `double_spinbox` | `common/widgets.py` | 每处都写的 setRange / setValue / setSingleStep |
+| `group_box` / `form_group` / `hbox` / `vbox` / `caption` / `separator` | `common/widgets.py` | QGroupBox + layout + addWidget 的样板 |
+| `SquareContainer` | `common/widgets.py` | Lorenz 里的 SquareGLContainer |
+| `ImageLabel` / `ndarray_to_qimage` / `ndarray_to_qpixmap` | `common/imaging.py` | Arnold 的 display_image + resizeEvent 重绘 |
+| `ask_open_image` / `ask_save_path` / `save_ndarray` | `common/imaging.py` | 文件对话框 + 补后缀 + Pillow 落盘 |
+| `StoppableThread` | `common/workers.py` | CatMapWorker / TSPWorker 各自维护的 stop 标志与收尾 |
+| `FPSCounter` | `common/utils.py` | Stigmergy 手写的帧率统计 |
+| `MplCanvas` | `common/mpl_canvas.py` | Fourier / Cplot / Noise / Lenia 各自的 Figure + FigureCanvas（Cplot 的 Gcf 登记） |
+| `ArrayCanvas` | `common/field_canvas.py` | Erosion / MPM2D / Circulation / Conway / Snowflake / Greenberg-Hastings 的居中绘制与鼠标坐标换算 |
+
+新的 app 只需要两行入口：
+
+```python
+if __name__ == "__main__":
+    raise SystemExit(run_app(MainWindow, gl=True))   # gl=True 时自动设置 QSurfaceFormat
 ```
 
 ## 主要特性
@@ -185,15 +229,15 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 
 ### Circulation 的地形与真实风场数据
 
-- **地形**：`apps/Physics/worldelev.npz` 是 ETOPO1（NOAA NGDC）的 1° 抽样，用于底图海拔配色、坡向阴影，以及合成模式的减速/绕流修正。界面里的“地形影响”可在 0–200% 调节；真实风场本身已包含地形效应，因此该滑杆只作用于合成模式。
+- **地形**：`assets/data/worldelev.npz` 是 ETOPO1（NOAA NGDC）的 1° 抽样，用于底图海拔配色、坡向阴影，以及合成模式的减速/绕流修正。界面里的“地形影响”可在 0–200% 调节；真实风场本身已包含地形效应，因此该滑杆只作用于合成模式。
 - **海岸线**：`worldmask.npz` 为 Natural Earth 720×360 海陆掩膜。
 - **说明**：合成场是旧版解析气压（不含温度），南极陆地是低压；真实月平均风场请用“真实模式”，它来自完整原始方程 GCM 的再分析产品。
-- **真实风场**：`apps/Physics/wind_real.npz` 来自 NCEP/NCAR Reanalysis 1（观测同化的再分析产品）的月平均 10 m 风，2015–2024 共 120 个月，插值到 2.5° 网格。界面可选年份和月份，逐月播放；“月际变化 Δ”是相对 2015–2024 同月平均的 Δ 风；“十年趋势”是年均值的线性拟合（m/s per decade）。10 个年均值上的趋势只用于展示，不用于气候归因。
+- **真实风场**：`assets/data/wind_real.npz` 来自 NCEP/NCAR Reanalysis 1（观测同化的再分析产品）的月平均 10 m 风，2015–2024 共 120 个月，插值到 2.5° 网格。界面可选年份和月份，逐月播放；“月际变化 Δ”是相对 2015–2024 同月平均的 Δ 风；“十年趋势”是年均值的线性拟合（m/s per decade）。10 个年均值上的趋势只用于展示，不用于气候归因。
 - **重建数据**：`python tools/build_circulation_data.py`。数据源为 NOAA ERDDAP（ETOPO1）和 NOAA PSL NetCDF Subset Service（NCEP/NCAR），无需 API key。来源与引用见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ### Erosion 的 Voronoi CZM 场
 
-apps/Physics/czm_fields.npz 保存 4 组独立 Voronoi 多边形 cohesive 网络的 9 级裂缝场（4×9×320×320）。Erosion 的“CZM 裂缝（离线）”开关按当前土壤水平均收缩率在帧间插值；干燥步仍由 SoilWater 驱动。
+assets/data/czm_fields.npz 保存 4 组独立 Voronoi 多边形 cohesive 网络的 9 级裂缝场（4×9×320×320）。Erosion 的“CZM 裂缝（离线）”开关按当前土壤水平均收缩率在帧间插值；干燥步仍由 SoilWater 驱动。
 
     python tools/build_czm_bank.py
 
@@ -202,7 +246,7 @@ apps/Physics/czm_fields.npz 保存 4 组独立 Voronoi 多边形 cohesive 网络
 - tools/cohesive_voronoi_desiccation.py：Voronoi 多边形 cohesive 求解器；
 - tools/build_czm_bank.py：生成多组裂缝场；
 - apps/Physics/czm_fields.npz：预计算裂缝场；
-- apps/Physics/soil_water.py：两层土壤水。
+- support/physics/soil_water.py：两层土壤水。
 
 原先的 1D/2D patch test、单缺口、多单元缺口、Q4 网络等验证脚本已删除；它们只用于开发期验证，不参与应用启动。
 
@@ -247,7 +291,7 @@ CI 见 `.github/workflows/ci.yml`：静态编译 + manifest 测试，以及在 W
 # 只看看结果，不写文件
 python tools/search_lenia_presets.py --trials 300 --dry-run
 
-# 找到并保存（自动备份到 apps/preset_backups/）
+# 找到并保存（自动备份到 assets/data/preset_backups/）
 python tools/search_lenia_presets.py --trials 300 --save
 ```
 

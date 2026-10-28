@@ -1,9 +1,7 @@
-import sys
 import taichi_forge as ti
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                                QHBoxLayout, QLabel, QSlider, QPushButton)
-from PySide6.QtCore import QTimer, Qt, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QPolygonF
+
+from common.qt_base import (LabeledSlider, QColor, QHBoxLayout, QMainWindow, QPainter, QPen, QPointF, QPolygonF,
+                            QPushButton, QTimer, QVBoxLayout, QWidget, Qt, run_app)
 
 # ---- Taichi 初始化（无 GPU 时自动回退 CPU）----
 try:
@@ -144,20 +142,14 @@ class MainWindow(QMainWindow):
         self.timer.start(16)
 
     def add_slider(self, layout, label, field, lo, hi, step):
+        """滑块值 = 实际值 / step；写入 Taichi field 立即生效。"""
         initial = float(field[None])
-        lbl = QLabel(f"{label}: {initial:.2f}")
-        s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(int(lo / step), int(hi / step))
-        s.setValue(int(round(initial / step)))
-
-        def on_change(v):
-            val = v * step
-            field[None] = val
-            lbl.setText(f"{label}: {val:.2f}")
-
-        s.valueChanged.connect(on_change)
-        layout.addWidget(lbl)
-        layout.addWidget(s)
+        widget = LabeledSlider(label, int(lo / step), int(hi / step),
+                               int(round(initial / step)),
+                               formatter=lambda v: f"{v * step:.2f}")
+        widget.valueChanged.connect(lambda v: field.__setitem__(None, v * step))
+        layout.addWidget(widget)
+        return widget
 
     def tick(self):
         step(DT)
@@ -165,7 +157,4 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    w = MainWindow()
-    w.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow))

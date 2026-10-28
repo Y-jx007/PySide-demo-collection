@@ -1,4 +1,6 @@
-from common.qt_base import (QApplication, QCheckBox, QColor, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPainter, QPen, QPushButton, QRect, QSlider, QSpinBox, QStyle, QStyleOptionSlider, QTimer, QVBoxLayout, QWidget, Qt, sys)
+from common.qt_base import (QCheckBox, QColor, QDoubleSpinBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                            QOpenGLWidget, QPainter, QPen, QPushButton, QRect, QSlider, QSpinBox, QStyle,
+                            QStyleOptionSlider, QTimer, QVBoxLayout, QWidget, Qt, run_app)
 from common.numpy_base import (np)
 from common.taichi_base import (ti)
 from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_FLOAT, GL_LUMINANCE, GL_NEAREST, GL_QUADS, GL_RGB, GL_TEXTURE_2D, GL_UNSIGNED_BYTE, glTexSubImage2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, glBegin, glBindTexture, glClear, glEnable, glEnd, glGenTextures, glLoadIdentity, glTexCoord2f, glTexImage2D, glTexParameteri, glVertex2f, glViewport)
@@ -654,7 +656,4 @@ class MainWindow(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow, gl=True))

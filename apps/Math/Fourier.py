@@ -1,7 +1,10 @@
-from common.qt_base import (QApplication, QBrush, QButtonGroup, QCheckBox, QColor, QComboBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout, QImage, QLabel, QLineEdit, QMainWindow, QMessageBox, QMouseEvent, QPainter, QPen, QPixmap, QPoint, QPushButton, QRect, QSlider, QSplitter, QTabWidget, QVBoxLayout, QWidget, Qt, math, sys)
-from common.numpy_base import (Image, ImageDraw, np)
+from common.qt_base import (LabeledSlider, QBrush, QButtonGroup, QCheckBox, QColor, QComboBox, QGroupBox,
+                            QHBoxLayout, QImage, QLabel, QLineEdit, QMainWindow, QMessageBox, QMouseEvent,
+                            QPainter, QPen, QPixmap, QPoint, QPushButton, QRect, QSplitter, QTabWidget,
+                            QVBoxLayout, QWidget, Qt, math, run_app, separator)
+from common.numpy_base import (Image, ImageDraw, ask_save_path, np)
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from common.mpl_canvas import MplCanvas
 
 # ── 数学辅助 ────────────────────────
 def preprocess_expression(expr):
@@ -300,13 +303,6 @@ class FourierDrawApp(QMainWindow):
         self.create_drawing_area(main_layout)
         self.create_function_panel(main_layout)
 
-    def _make_separator(self):
-        sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        sep.setObjectName("separator")   # 样式通过 ID 选择器定义在 qss 中
-        return sep
-
     def _set_entry_from_example(self, text, entry_widget):
         if text != "选择示例函数...":
             entry_widget.setText(text.split("  (")[0])
@@ -329,7 +325,7 @@ class FourierDrawApp(QMainWindow):
         row.addWidget(self.invert_btn)
         basic_box.addLayout(row)
         tool_layout.addLayout(basic_box)
-        tool_layout.addWidget(self._make_separator())
+        tool_layout.addWidget(separator())
 
         # 绘图模式
         mode_box = QVBoxLayout()
@@ -350,7 +346,7 @@ class FourierDrawApp(QMainWindow):
         self.mode_group.addButton(self.erase_btn)
         mode_box.addLayout(row)
         tool_layout.addLayout(mode_box)
-        tool_layout.addWidget(self._make_separator())
+        tool_layout.addWidget(separator())
 
         # 形状工具
         shape_box = QVBoxLayout()
@@ -367,25 +363,15 @@ class FourierDrawApp(QMainWindow):
         row.addWidget(self.fill_shape)
         shape_box.addLayout(row)
         tool_layout.addLayout(shape_box)
-        tool_layout.addWidget(self._make_separator())
+        tool_layout.addWidget(separator())
 
         # 画笔设置
         brush_box = QVBoxLayout()
         brush_box.addWidget(QLabel("画笔设置"))
-        row = QHBoxLayout()
-        row.addWidget(QLabel("大小:"))
-        self.brush_size = QSlider(Qt.Horizontal)
-        self.brush_size.setRange(1, 20)
-        self.brush_size.setValue(5)
-        self.brush_size.setFixedWidth(70)
-        row.addWidget(self.brush_size)
-        size_label = QLabel("5")
-        size_label.setFixedWidth(15)
-        self.brush_size.valueChanged.connect(lambda v: size_label.setText(str(v)))
-        row.addWidget(size_label)
-        brush_box.addLayout(row)
+        self.brush_size = LabeledSlider("大小:", 1, 20, 5, slider_width=70, value_width=15)
+        brush_box.addWidget(self.brush_size)
         tool_layout.addLayout(brush_box)
-        tool_layout.addWidget(self._make_separator())
+        tool_layout.addWidget(separator())
 
         # 保存
         save_box = QVBoxLayout()
@@ -423,12 +409,11 @@ class FourierDrawApp(QMainWindow):
         spec_group = QGroupBox("傅里叶变换频谱")
         inner = QVBoxLayout(spec_group)
         inner.setAlignment(Qt.AlignCenter)
-        self.fig = plt.Figure(figsize=(4, 4), dpi=100)
+        self.canvas_fig = MplCanvas(4, 4, 100, fixed_size=True)
+        self.fig = self.canvas_fig.figure
         self.ax = self.fig.add_subplot(111)
         self.ax.axis('off')
         self.fig.subplots_adjust(0, 0, 1, 1)
-        self.canvas_fig = FigureCanvas(self.fig)
-        self.canvas_fig.setFixedSize(400, 400)
         inner.addWidget(self.canvas_fig)
         right_layout.addWidget(spec_group)
         splitter.addWidget(right)
@@ -567,16 +552,12 @@ class FourierDrawApp(QMainWindow):
 
     def save_image(self, img_type):
         if img_type == "drawing":
-            path, _ = QFileDialog.getSaveFileName(self, "保存绘图", "", "PNG (*.png)")
+            path = ask_save_path(self, "保存绘图")
             if path:
-                if not path.lower().endswith('.png'):
-                    path += '.png'
                 self.drawing_canvas.save_image(path)
         else:
-            path, _ = QFileDialog.getSaveFileName(self, "保存频谱", "", "PNG (*.png)")
+            path = ask_save_path(self, "保存频谱")
             if path:
-                if not path.lower().endswith('.png'):
-                    path += '.png'
                 self.fig.savefig(path, bbox_inches='tight', pad_inches=0, dpi=100)
 
     def _read_ranges(self):
@@ -632,7 +613,4 @@ class FourierDrawApp(QMainWindow):
 
 # ── 入口 ──────────────────────────
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = FourierDrawApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(FourierDrawApp))

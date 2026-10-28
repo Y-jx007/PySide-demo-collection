@@ -1,14 +1,15 @@
 from common.taichi_base import (ti)
 from common.custom_base import (BaseFractalWidget, c64)
-from common.qt_base import (QApplication, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPainter, QSpinBox, QVBoxLayout, Qt, sys)
+from common.qt_base import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPainter, QSpinBox,
+                            QVBoxLayout, Qt, run_app)
 
-from fractal_common import (
+from support.fractals.fractal_common import (
     DualCanvasFractalWindow,
     compile_complex_function,
     draw_orbit,
     hint_label,
 )
-from fractal_kernels import (
+from support.fractals.fractal_kernels import (
     MANDELBROT_FUNCTION_NAMES,
     compute_orbit,
     mandelbrot_preset,
@@ -275,7 +276,4 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = ComplexDynamicsApp()
-    win.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(ComplexDynamicsApp))

@@ -1,4 +1,6 @@
-from common.qt_base import (QApplication, QColor, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QPainter, QPen, QPointF, QPolygonF, QPushButton, QRectF, QSlider, QTimer, QVBoxLayout, QWidget, Qt, math, sys)
+from common.qt_base import (QColor, QComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                            QPainter, QPen, QPointF, QPolygonF, QPushButton, QRectF, QTimer, QVBoxLayout,
+                            QWidget, Qt, LabeledSlider, math, run_app)
 from common.numpy_base import (np)
 from common.taichi_base import (ti)
 from PySide6.QtCore import QPointF, QRectF
@@ -729,12 +731,12 @@ class BeamApp(QMainWindow):
         self.sup_combo.addItems(["简支（钉子可转）", "固支（完全固定）"])
         self.sup_combo.currentIndexChanged.connect(lambda _i: self.schedule_rebuild())
         form.addRow("支承", self.sup_combo)
-        self.len_slider, self.len_label = self._slider(form, "长度", 30, 300,
-                                                       int(self.beam_length * 100),
-                                                       lambda v: v / 100.0, " m")
-        self.hgt_slider, self.hgt_label = self._slider(form, "高度", 2, 30,
-                                                       int(self.beam_height * 100),
-                                                       lambda v: v / 100.0, " m")
+        self.len_slider = self._slider(form, "长度", 30, 300,
+                                       int(self.beam_length * 100),
+                                       lambda v: v / 100.0, " m")
+        self.hgt_slider = self._slider(form, "高度", 2, 30,
+                                       int(self.beam_height * 100),
+                                       lambda v: v / 100.0, " m")
         parent.addWidget(group)
 
     def _build_load_group(self, parent):
@@ -783,25 +785,14 @@ class BeamApp(QMainWindow):
         parent.addWidget(group)
 
     def _slider(self, form, text, lo, hi, value, transform, suffix=""):
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(lo, hi)
-        slider.setValue(value)
-        label = QLabel(f"{transform(value):.2f}{suffix}")
-        label.setFixedWidth(54)
-        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        label.setStyleSheet("color: #45454a;")
-
-        def on_change(v):
-            label.setText(f"{transform(v):.2f}{suffix}")
-            self.schedule_rebuild()
-
-        slider.valueChanged.connect(on_change)
-        row.addWidget(slider, 1)
-        row.addWidget(label)
-        form.addRow(text, row)
-        return slider, label
+        """一行滑块 + 数值标签；外观交给公共 LabeledSlider。"""
+        widget = LabeledSlider("", lo, hi, value,
+                               formatter=lambda v: f"{transform(v):.2f}{suffix}",
+                               value_width=54)
+        widget.setStyleSheet("color: #45454a;")
+        widget.valueChanged.connect(lambda _v: self.schedule_rebuild())
+        form.addRow(text, widget)
+        return widget
 
     # ---------- 交互 ----------
     def schedule_rebuild(self):
@@ -882,7 +873,4 @@ class BeamApp(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = BeamApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(BeamApp))

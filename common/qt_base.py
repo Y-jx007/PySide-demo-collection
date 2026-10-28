@@ -31,4 +31,26 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
-from common.utils import OrbitCamera, ColorButton
+from common.utils import OrbitCamera, ColorButton, FPSCounter
+
+# ---- 公共 UI 积木 / 启动流程 / 后台线程 ----
+from common.widgets import (
+    LabeledSlider,
+    SquareContainer,
+    caption,
+    double_spinbox,
+    form_group,
+    group_box,
+    hbox,
+    separator,
+    spinbox,
+    vbox,
+)
+from common.workers import StoppableThread
+from common.app import (
+    apply_stylesheet,
+    create_application,
+    load_stylesheet,
+    run_app,
+    setup_gl_format,
+)

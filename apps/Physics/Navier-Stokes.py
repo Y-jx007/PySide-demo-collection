@@ -1,4 +1,5 @@
-from common.qt_base import (QApplication, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPushButton, QSizePolicy, QSlider, QTimer, QVBoxLayout, QWidget, Qt, re, sys)
+from common.qt_base import (LabeledSlider, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                            QOpenGLWidget, QPushButton, QSizePolicy, QTimer, QVBoxLayout, QWidget, re, run_app)
 from common.numpy_base import (np)
 from common.taichi_base import (ti)
 from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_LINEAR, GL_MODELVIEW, GL_PROJECTION, GL_QUADS, GL_RGBA, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_UNSIGNED_BYTE, glBegin, glBindTexture, glClear, glClearColor, glEnable, glEnd, glGenTextures, glLoadIdentity, glMatrixMode, glOrtho, glTexCoord2f, glTexImage2D, glTexParameteri, glVertex2i, glViewport)
@@ -414,57 +415,36 @@ class ControlPanel(QWidget):
         # 物理参数
         phys = QGroupBox("物理参数")
         g = QGridLayout(phys)
-        self.re_slider = QSlider(Qt.Horizontal); self.re_slider.setRange(10,500); self.re_slider.setValue(default_re)
-        self.re_label = QLabel(str(default_re))
-        g.addWidget(QLabel("Re"),0,0); g.addWidget(self.re_slider,0,1); g.addWidget(self.re_label,0,2)
-        self.re_slider.valueChanged.connect(self._on_re_changed)
-
-        self.nu_slider = QSlider(Qt.Horizontal); self.nu_slider.setRange(1,500); self.nu_slider.setValue(int(default_nu*2000))
-        self.nu_label = QLabel(f"{default_nu:.4f}")
-        g.addWidget(QLabel("ν"),1,0); g.addWidget(self.nu_slider,1,1); g.addWidget(self.nu_label,1,2)
-        self.nu_slider.valueChanged.connect(self._on_nu_changed)
-
-        self.u_slider = QSlider(Qt.Horizontal); self.u_slider.setRange(1,30); self.u_slider.setValue(int(default_u0*100))
-        self.u_label = QLabel(f"{default_u0:.2f}")
-        g.addWidget(QLabel("u0"),2,0); g.addWidget(self.u_slider,2,1); g.addWidget(self.u_label,2,2)
-        self.u_slider.valueChanged.connect(self._on_u_changed)
+        self.re_slider = self._slider_row(g, 0, "Re", 10, 500, default_re,
+                                          callback=self._on_re_changed)
+        self.nu_slider = self._slider_row(g, 1, "ν", 1, 500, int(default_nu * 2000),
+                                          formatter=lambda v: f"{v / 2000:.4f}",
+                                          callback=self._on_nu_changed)
+        self.u_slider = self._slider_row(g, 2, "u0", 1, 30, int(default_u0 * 100),
+                                         formatter=lambda v: f"{v / 100:.2f}",
+                                         callback=self._on_u_changed)
 
         self.tau_label = QLabel("0.5001")
         g.addWidget(QLabel("τ"),3,0); g.addWidget(self.tau_label,3,1,1,2)
 
-        self.cs_slider = QSlider(Qt.Horizontal); self.cs_slider.setRange(0,20); self.cs_slider.setValue(10)
-        self.cs_label = QLabel("0.10")
-        g.addWidget(QLabel("Smag. Cs"),4,0); g.addWidget(self.cs_slider,4,1); g.addWidget(self.cs_label,4,2)
-        self.cs_slider.valueChanged.connect(lambda v: (cs.__setitem__(None, v/100.0), self.cs_label.setText(f"{v/100.0:.2f}")))
-
-        self.steps_slider = QSlider(Qt.Horizontal); self.steps_slider.setRange(1,20); self.steps_slider.setValue(10)
-        self.steps_label = QLabel("10")
-        g.addWidget(QLabel("步数"),5,0); g.addWidget(self.steps_slider,5,1); g.addWidget(self.steps_label,5,2)
-        self.steps_slider.valueChanged.connect(lambda v: self.steps_label.setText(str(v)))
+        self.cs_slider = self._slider_row(g, 4, "Smag. Cs", 0, 20, 10,
+                                          formatter=lambda v: f"{v / 100:.2f}")
+        self.cs_slider.valueChanged.connect(lambda v: cs.__setitem__(None, v / 100.0))
+        self.steps_slider = self._slider_row(g, 5, "步数", 1, 20, 10)
         left.addWidget(phys)
 
         # MRT 松弛参数
         mrt_group = QGroupBox("MRT 松弛参数")
         mg = QGridLayout(mrt_group)
-        self.s1_slider = QSlider(Qt.Horizontal); self.s1_slider.setRange(10,200); self.s1_slider.setValue(119)
-        self.s1_label = QLabel("1.19")
-        mg.addWidget(QLabel("能量 s1"),0,0); mg.addWidget(self.s1_slider,0,1); mg.addWidget(self.s1_label,0,2)
-        self.s1_slider.valueChanged.connect(lambda v: (s1.__setitem__(None, v/100.0), self.s1_label.setText(f"{v/100.0:.2f}")))
-
-        self.s2_slider = QSlider(Qt.Horizontal); self.s2_slider.setRange(10,200); self.s2_slider.setValue(140)
-        self.s2_label = QLabel("1.40")
-        mg.addWidget(QLabel("能量平方 s2"),1,0); mg.addWidget(self.s2_slider,1,1); mg.addWidget(self.s2_label,1,2)
-        self.s2_slider.valueChanged.connect(lambda v: (s2.__setitem__(None, v/100.0), self.s2_label.setText(f"{v/100.0:.2f}")))
-
-        self.s4_slider = QSlider(Qt.Horizontal); self.s4_slider.setRange(10,200); self.s4_slider.setValue(120)
-        self.s4_label = QLabel("1.20")
-        mg.addWidget(QLabel("x动量通量 s4"),2,0); mg.addWidget(self.s4_slider,2,1); mg.addWidget(self.s4_label,2,2)
-        self.s4_slider.valueChanged.connect(lambda v: (s4.__setitem__(None, v/100.0), self.s4_label.setText(f"{v/100.0:.2f}")))
-
-        self.s6_slider = QSlider(Qt.Horizontal); self.s6_slider.setRange(10,200); self.s6_slider.setValue(120)
-        self.s6_label = QLabel("1.20")
-        mg.addWidget(QLabel("y动量通量 s6"),3,0); mg.addWidget(self.s6_slider,3,1); mg.addWidget(self.s6_label,3,2)
-        self.s6_slider.valueChanged.connect(lambda v: (s6.__setitem__(None, v/100.0), self.s6_label.setText(f"{v/100.0:.2f}")))
+        relax = lambda v: f"{v / 100:.2f}"
+        self.s1_slider = self._slider_row(mg, 0, "能量 s1", 10, 200, 119, formatter=relax)
+        self.s1_slider.valueChanged.connect(lambda v: s1.__setitem__(None, v / 100.0))
+        self.s2_slider = self._slider_row(mg, 1, "能量平方 s2", 10, 200, 140, formatter=relax)
+        self.s2_slider.valueChanged.connect(lambda v: s2.__setitem__(None, v / 100.0))
+        self.s4_slider = self._slider_row(mg, 2, "x动量通量 s4", 10, 200, 120, formatter=relax)
+        self.s4_slider.valueChanged.connect(lambda v: s4.__setitem__(None, v / 100.0))
+        self.s6_slider = self._slider_row(mg, 3, "y动量通量 s6", 10, 200, 120, formatter=relax)
+        self.s6_slider.valueChanged.connect(lambda v: s6.__setitem__(None, v / 100.0))
         left.addWidget(mrt_group)
 
         # 障碍物选择
@@ -480,39 +460,21 @@ class ControlPanel(QWidget):
         right = QVBoxLayout()
         geo = QGroupBox("几何尺寸")
         gg = QGridLayout(geo)
-        self.thick_slider = QSlider(Qt.Horizontal); self.thick_slider.setRange(1,10); self.thick_slider.setValue(2)
-        self.thick_label = QLabel("2")
-        gg.addWidget(QLabel("厚度"),0,0); gg.addWidget(self.thick_slider,0,1); gg.addWidget(self.thick_label,0,2)
-        self.thick_slider.valueChanged.connect(self._on_thickness_changed)
-        self.ss_slider = QSlider(Qt.Horizontal); self.ss_slider.setRange(2,100); self.ss_slider.setValue(10)
-        self.ss_label = QLabel("10")
-        gg.addWidget(QLabel("单缝宽"),1,0); gg.addWidget(self.ss_slider,1,1); gg.addWidget(self.ss_label,1,2)
-        self.ss_slider.valueChanged.connect(self._on_ss_width_changed)
-        self.ds_w_slider = QSlider(Qt.Horizontal); self.ds_w_slider.setRange(2,50); self.ds_w_slider.setValue(10)
-        self.ds_w_label = QLabel("10")
-        gg.addWidget(QLabel("双缝宽"),2,0); gg.addWidget(self.ds_w_slider,2,1); gg.addWidget(self.ds_w_label,2,2)
-        self.ds_w_slider.valueChanged.connect(self._on_ds_width_changed)
-        self.ds_s_slider = QSlider(Qt.Horizontal); self.ds_s_slider.setRange(4,150); self.ds_s_slider.setValue(20)
-        self.ds_s_label = QLabel("20")
-        gg.addWidget(QLabel("双缝距"),3,0); gg.addWidget(self.ds_s_slider,3,1); gg.addWidget(self.ds_s_label,3,2)
-        self.ds_s_slider.valueChanged.connect(self._on_ds_sep_changed)
-        self.d_slider = QSlider(Qt.Horizontal); self.d_slider.setRange(10,50); self.d_slider.setValue(default_D)
-        self.d_label = QLabel(str(default_D))
-        gg.addWidget(QLabel("圆方尺寸"),4,0); gg.addWidget(self.d_slider,4,1); gg.addWidget(self.d_label,4,2)
-        self.d_slider.valueChanged.connect(lambda v: (self.d_label.setText(str(v)), self._on_D_changed(v)))
+        self.thick_slider = self._slider_row(gg, 0, "厚度", 1, 10, 2, callback=self._on_thickness_changed)
+        self.ss_slider = self._slider_row(gg, 1, "单缝宽", 2, 100, 10, callback=self._on_ss_width_changed)
+        self.ds_w_slider = self._slider_row(gg, 2, "双缝宽", 2, 50, 10, callback=self._on_ds_width_changed)
+        self.ds_s_slider = self._slider_row(gg, 3, "双缝距", 4, 150, 20, callback=self._on_ds_sep_changed)
+        self.d_slider = self._slider_row(gg, 4, "圆方尺寸", 10, 50, default_D, callback=self._on_D_changed)
         right.addWidget(geo)
 
         # 可视化范围 (修正滑块归属)
         vis = QGroupBox("可视化范围")
         vg = QGridLayout(vis)
-        self.vort_vmax_slider = QSlider(Qt.Horizontal); self.vort_vmax_slider.setRange(1,100); self.vort_vmax_slider.setValue(20)
-        self.vort_vmax_label = QLabel("0.020")
-        vg.addWidget(QLabel("涡量"),0,0); vg.addWidget(self.vort_vmax_slider,0,1); vg.addWidget(self.vort_vmax_label,0,2)
-        self.vort_vmax_slider.valueChanged.connect(lambda v: (vort_vmax.__setitem__(None, v/1000.0), self.vort_vmax_label.setText(f"{v/1000.0:.3f}")))
-        self.speed_vmax_slider = QSlider(Qt.Horizontal); self.speed_vmax_slider.setRange(1,300); self.speed_vmax_slider.setValue(150)
-        self.speed_vmax_label = QLabel("0.150")
-        vg.addWidget(QLabel("速度"),1,0); vg.addWidget(self.speed_vmax_slider,1,1); vg.addWidget(self.speed_vmax_label,1,2)
-        self.speed_vmax_slider.valueChanged.connect(lambda v: (speed_vmax.__setitem__(None, v/1000.0), self.speed_vmax_label.setText(f"{v/1000.0:.3f}")))
+        scale_3 = lambda v: f"{v / 1000:.3f}"
+        self.vort_vmax_slider = self._slider_row(vg, 0, "涡量", 1, 100, 20, formatter=scale_3)
+        self.vort_vmax_slider.valueChanged.connect(lambda v: vort_vmax.__setitem__(None, v / 1000.0))
+        self.speed_vmax_slider = self._slider_row(vg, 1, "速度", 1, 300, 150, formatter=scale_3)
+        self.speed_vmax_slider.valueChanged.connect(lambda v: speed_vmax.__setitem__(None, v / 1000.0))
         right.addWidget(vis)
 
         run = QHBoxLayout()
@@ -533,6 +495,16 @@ class ControlPanel(QWidget):
         cs[None] = 0.1
         self._update_tau_display()
 
+    def _slider_row(self, grid, row, text, lo, hi, value, formatter=str, callback=None):
+        """在 3 列网格里放一行「名称 + 滑块 + 数值」；数值显示交给 LabeledSlider。"""
+        widget = LabeledSlider("", lo, hi, value, formatter=formatter, value_width=40)
+        if callback is not None:
+            widget.valueChanged.connect(callback)
+        grid.addWidget(QLabel(text), row, 0)
+        grid.addWidget(widget, row, 1, 1, 2)
+        grid.setColumnStretch(1, 1)     # 滑块吃掉剩余宽度，数值贴右
+        return widget
+
     def _sync_re_nu(self, changed):
         if self._updating_re_nu: return
         self._updating_re_nu = True
@@ -546,35 +518,34 @@ class ControlPanel(QWidget):
             nu_val = nu_slider_val / 2000.0
             new_re = int(u * D_val / nu_val)
             new_re = max(10, min(500, new_re))
-            self.re_slider.setValue(new_re); self.re_label.setText(str(new_re))
-            self.nu_slider.setValue(nu_slider_val); self.nu_label.setText(f"{nu_val:.4f}")
+            self.re_slider.setValue(new_re)
+            self.nu_slider.setValue(nu_slider_val)
         elif changed == 'nu':
             nu_val = self.nu_slider.value() / 2000.0
             re = int(u * D_val / nu_val)
             re = max(10, min(500, re))
-            self.re_slider.setValue(re); self.re_label.setText(str(re))
-            self.nu_label.setText(f"{nu_val:.4f}")
+            self.re_slider.setValue(re)
         elif changed == 'u':
             re = self.re_slider.value()
             nu_val = u * D_val / re
             nu_slider_val = int(nu_val * 2000)
             nu_slider_val = max(1, min(500, nu_slider_val))
             nu_val = nu_slider_val / 2000.0
-            self.nu_slider.setValue(nu_slider_val); self.nu_label.setText(f"{nu_val:.4f}")
+            self.nu_slider.setValue(nu_slider_val)
         elif changed == 'D':
             re = self.re_slider.value()
             nu_val = u * D_val / re
             nu_slider_val = int(nu_val * 2000)
             nu_slider_val = max(1, min(500, nu_slider_val))
             nu_val = nu_slider_val / 2000.0
-            self.nu_slider.setValue(nu_slider_val); self.nu_label.setText(f"{nu_val:.4f}")
+            self.nu_slider.setValue(nu_slider_val)
         self._updating_re_nu = False
         self._update_tau_display()
 
-    def _on_re_changed(self, v): self.re_label.setText(str(v)); self._sync_re_nu('re')
-    def _on_nu_changed(self, v): self.nu_label.setText(f"{v/2000.0:.4f}"); self._sync_re_nu('nu')
-    def _on_u_changed(self, v): self.u_label.setText(f"{v/100.0:.2f}"); self._sync_re_nu('u')
-    def _on_D_changed(self, v): self.d_label.setText(str(v)); self._sync_re_nu('D'); self._reapply_current_obstacle()
+    def _on_re_changed(self, _v): self._sync_re_nu('re')
+    def _on_nu_changed(self, _v): self._sync_re_nu('nu')
+    def _on_u_changed(self, _v): self._sync_re_nu('u')
+    def _on_D_changed(self, _v): self._sync_re_nu('D'); self._reapply_current_obstacle()
 
     def _update_tau_display(self):
         u = self.u_slider.value()/100.0; D_val = float(self.d_slider.value()); re = self.re_slider.value()
@@ -582,10 +553,10 @@ class ControlPanel(QWidget):
         if tau < 0.5001: tau = 0.5001
         self.tau_label.setText(f"{tau:.4f}")
 
-    def _on_thickness_changed(self, v): self.barrier_thickness=v; self.thick_label.setText(str(v)); self._reapply_current_obstacle()
-    def _on_ss_width_changed(self, v): self.single_slit_width=float(v); self.ss_label.setText(str(v)); self._reapply_current_obstacle()
-    def _on_ds_width_changed(self, v): self.double_slit_width=float(v); self.ds_w_label.setText(str(v)); self._reapply_current_obstacle()
-    def _on_ds_sep_changed(self, v): self.double_slit_sep=float(v); self.ds_s_label.setText(str(v)); self._reapply_current_obstacle()
+    def _on_thickness_changed(self, v): self.barrier_thickness = v; self._reapply_current_obstacle()
+    def _on_ss_width_changed(self, v): self.single_slit_width = float(v); self._reapply_current_obstacle()
+    def _on_ds_width_changed(self, v): self.double_slit_width = float(v); self._reapply_current_obstacle()
+    def _on_ds_sep_changed(self, v): self.double_slit_sep = float(v); self._reapply_current_obstacle()
 
     def _reapply_current_obstacle(self):
         idx = self.obs_combo.currentIndex()
@@ -693,7 +664,7 @@ class MainWindow(QMainWindow):
         self.timer.stop(); event.accept()
 
 def main():
-    app = QApplication(sys.argv); window = MainWindow(); window.show(); sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow, gl=True))
 
 if __name__ == "__main__":
     main()

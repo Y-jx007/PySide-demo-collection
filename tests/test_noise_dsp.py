@@ -9,14 +9,13 @@ import numpy as np
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "apps", "Physics"))
 
-from noise_dsp import (  # noqa: E402
+from support.physics.noise_dsp import (  # noqa: E402
     analyse_block, a_weighting_db, leq, log_spectrum, noise_colour,
     percentile_levels, spectral_slope, third_octave_density,
     third_octave_energy, third_octave_levels,
 )
-from noise_history import NoiseHistory  # noqa: E402
+from support.physics.noise_history import NoiseHistory  # noqa: E402
 
 
 class TestNoiseDSP(unittest.TestCase):

@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile all Python files
-        run: python -m compileall -q main.py app_runner.py apps_manifest.py apps tests
+        run: python -m compileall -q main.py app_runner.py apps_manifest.py manifest_edit.py apps common support tests
       - name: Manifest tests (stdlib only)
         run: python -m unittest discover -s tests -p "test_manifest.py" -v
 

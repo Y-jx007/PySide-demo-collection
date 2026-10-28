@@ -20,13 +20,24 @@ import numpy as np
 TOOLS_DIR = Path(__file__).resolve().parent
 ROOT = TOOLS_DIR.parent
 APPS = ROOT / "apps"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(APPS))
-sys.path.insert(0, str(APPS / "Math"))
+
+# 应用可能被启动器拖到别的分类，目录从 apps_manifest 里查
+from apps_manifest import APPS as APP_ENTRIES  # noqa: E402
+
+for _entry in APP_ENTRIES:
+    if Path(_entry["path"]).stem == "Lloyd":
+        sys.path.insert(0, str(APPS / Path(_entry["path"]).parent))
+        break
+else:
+    sys.path.insert(0, str(APPS / "Math"))
 
 from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import Lloyd  # noqa: E402
+from common.app import setup_gl_format  # noqa: E402
 
 
 def main():
@@ -36,7 +47,8 @@ def main():
     parser.add_argument("--size", type=int, nargs=2, default=[1280, 760])
     args = parser.parse_args()
 
-    Lloyd.setup_gl_format()
+    # GL 4.3 + 关闭垂直同步：与 Lloyd 的 run_app(gl_options=...) 保持一致
+    setup_gl_format(version=(4, 3), swap_interval=0)
     app = QApplication.instance() or QApplication(sys.argv[:1])
     window = Lloyd.VoronoiSimulation()
     window.resize(*args.size)

@@ -1,4 +1,6 @@
-from common.qt_base import (QApplication, QBrush, QColor, QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget, QPainter, QPen, QPointF, QPolygonF, QPushButton, QRect, QSlider, QSpinBox, QSplitter, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, ctypes, math, sys)
+from common.qt_base import (QBrush, QColor, QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QOpenGLWidget,
+                            QPainter, QPen, QPointF, QPolygonF, QPushButton, QRect, QSlider, QSpinBox, QSplitter,
+                            QTimer, QVBoxLayout, QWidget, Qt, ctypes, math, run_app)
 from common.numpy_base import (np)
 from common.numba_base import (njit)
 from common.opengl_base import (GL_ARRAY_BUFFER, GL_COLOR_BUFFER_BIT, GL_DYNAMIC_DRAW, GL_FALSE, GL_FLOAT, GL_FRAGMENT_SHADER, GL_LINE_LOOP, GL_POINTS, GL_POINT_SPRITE, GL_PROGRAM_POINT_SIZE, GL_STATIC_DRAW, GL_VERTEX_SHADER, glBegin, glBindBuffer, glBufferData, glBufferSubData, glClear, glClearColor, glColor4f, glDeleteBuffers, glDeleteProgram, glDisableVertexAttribArray, glDrawArrays, glEnable, glEnableVertexAttribArray, glEnd, glGenBuffers, glGetUniformLocation, glLineWidth, glUniform2f, glUseProgram, glVertex2f, glVertexAttribPointer, glViewport)
@@ -889,14 +891,7 @@ class MaxwellBoltzmannApp(QMainWindow):
         self.histogram_widget.update_data(self.simulation_widget.speed_array)
 
 def main():
-    fmt = QSurfaceFormat()
-    fmt.setRenderableType(QSurfaceFormat.OpenGL)
-    fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
-    QSurfaceFormat.setDefaultFormat(fmt)
-    app = QApplication(sys.argv)
-    window = MaxwellBoltzmannApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MaxwellBoltzmannApp, gl=True))
 
 if __name__ == "__main__":
     main()

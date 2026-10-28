@@ -9,7 +9,6 @@ second in SQLite.
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import time
 from collections import deque
@@ -18,16 +17,16 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 from matplotlib import rcParams
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+from common.mpl_canvas import MplCanvas
 
 from common.qt_base import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
+    QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QTimer, QVBoxLayout, QWidget, Qt, sys,
+    QSizePolicy, QTimer, QVBoxLayout, QWidget, Qt, LabeledSlider, run_app,
 )
-from noise_history import NoiseHistory
-from noise_dsp import (
+from common.paths import LOG_DIR, RUNTIME_DIR
+from support.physics.noise_history import NoiseHistory
+from support.physics.noise_dsp import (
     EPS, REFERENCE_SPL, a_weighting_db, analyse_power, fit_curve_db, leq,
     noise_colour, percentile_levels, reference_1f_db, spectral_slope,
     spectral_power, subtract_noise, third_octave_density,
@@ -40,8 +39,7 @@ rcParams["font.sans-serif"] = [
 ]
 rcParams["axes.unicode_minus"] = False
 
-ROOT = Path(__file__).resolve().parents[2]
-LOG_DIR = ROOT / "logs"
+ROOT = RUNTIME_DIR.parent
 DISPLAY_HZ = 10
 DISPLAY_MS = 1000 // DISPLAY_HZ
 DRAW_EVERY = 3
@@ -223,8 +221,8 @@ class NoiseWindow(QMainWindow):
         left_layout.addWidget(scroll)
         root.addWidget(left, 0)
 
-        self.figure = Figure(figsize=(9.2, 7.6), tight_layout=True)
-        self.canvas = FigureCanvas(self.figure)
+        self.canvas = MplCanvas(9.2, 7.6, tight_layout=True)
+        self.figure = self.canvas.figure
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root.addWidget(self.canvas, 1)
 
@@ -308,53 +306,24 @@ class NoiseWindow(QMainWindow):
         group = QGroupBox("校准")
         layout = QVBoxLayout(group)
         layout.setSpacing(5)
-        row = QHBoxLayout()
-        self.cal_slider = QSlider(Qt.Horizontal)
-        self.cal_slider.setRange(-30, 30)
-        self.cal_slider.setValue(0)
-        self.cal_label = QLabel("0 dB")
-        self.cal_label.setFixedWidth(54)
-        self.cal_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        row.addWidget(self.cal_slider, 1)
-        row.addWidget(self.cal_label)
-        layout.addLayout(row)
+        fmt_db = lambda v: f"{v:+d} dB" if v else "0 dB"
+        self.cal_slider = LabeledSlider("", -30, 30, 0, formatter=fmt_db, value_width=54)
+        layout.addWidget(self.cal_slider)
 
-        gate_row = QHBoxLayout()
-        gate_row.addWidget(QLabel("静音门限"))
-        self.gate_slider = QSlider(Qt.Horizontal)
-        self.gate_slider.setRange(-100, -40)
-        self.gate_slider.setValue(-80)
-        self.gate_label = QLabel("-80 dBFS")
-        self.gate_label.setFixedWidth(64)
-        self.gate_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        gate_row.addWidget(self.gate_slider, 1)
-        gate_row.addWidget(self.gate_label)
-        layout.addLayout(gate_row)
+        self.gate_slider = LabeledSlider("静音门限", -100, -40, -80,
+                                         formatter=lambda v: f"{v} dBFS", value_width=64)
+        layout.addWidget(self.gate_slider)
 
-        gain_row = QHBoxLayout()
-        gain_row.addWidget(QLabel("输入增益"))
-        self.gain_slider = QSlider(Qt.Horizontal)
-        self.gain_slider.setRange(-20, 30)
-        self.gain_slider.setValue(0)
-        self.gain_label = QLabel("0 dB")
-        self.gain_label.setFixedWidth(54)
-        self.gain_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        gain_row.addWidget(self.gain_slider, 1)
-        gain_row.addWidget(self.gain_label)
-        layout.addLayout(gain_row)
+        self.gain_slider = LabeledSlider("输入增益", -20, 30, 0, formatter=fmt_db, value_width=54)
+        layout.addWidget(self.gain_slider)
 
         denoise_row = QHBoxLayout()
         self.denoise_check = QCheckBox("去底噪")
         self.denoise_check.setChecked(True)
-        self.denoise_slider = QSlider(Qt.Horizontal)
-        self.denoise_slider.setRange(0, 100)
-        self.denoise_slider.setValue(80)
-        self.denoise_label = QLabel("80%")
-        self.denoise_label.setFixedWidth(44)
-        self.denoise_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.denoise_slider = LabeledSlider("", 0, 100, 80,
+                                            formatter=lambda v: f"{v}%", value_width=44)
         denoise_row.addWidget(self.denoise_check)
         denoise_row.addWidget(self.denoise_slider, 1)
-        denoise_row.addWidget(self.denoise_label)
         layout.addLayout(denoise_row)
 
         note = QLabel("未校准麦克风；数字满幅按 94 dB 估算\n输入增益为数字增益；低于静音门限时清空实时显示")
@@ -631,20 +600,16 @@ class NoiseWindow(QMainWindow):
 
     def _calibration_changed(self, value):
         self.calibration = float(value)
-        self.cal_label.setText(f"{value:+d} dB" if value else "0 dB")
 
     def _denoise_changed(self, _value=None):
         self.denoise_strength = self.denoise_slider.value() / 100.0
-        self.denoise_label.setText(f"{self.denoise_slider.value()}%")
         self.noise_psd = None
 
     def _gate_changed(self, value):
         self.silence_gate_db = float(value)
-        self.gate_label.setText(f"{value} dBFS")
 
     def _gain_changed(self, value):
         self.input_gain_db = float(value)
-        self.gain_label.setText(f"{value:+d} dB" if value else "0 dB")
 
     def _avg_changed(self, _index):
         self.avg_seconds = int(self.avg_combo.currentData() or 10)
@@ -883,10 +848,7 @@ class NoiseWindow(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
-    window = NoiseWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(NoiseWindow))
 
 
 if __name__ == "__main__":

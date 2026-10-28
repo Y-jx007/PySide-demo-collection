@@ -36,7 +36,7 @@ class TestAppManifest(unittest.TestCase):
     def test_thumbnails_are_optional(self):
         for app in APPS:
             name = os.path.splitext(os.path.basename(app["path"]))[0] + ".png"
-            path = os.path.join(ROOT, "images", name)
+            path = os.path.join(ROOT, "assets", "thumbnails", name)
             # A missing thumbnail is allowed (the card falls back to a plain card),
             # but an existing one must be a file.
             if os.path.exists(path):

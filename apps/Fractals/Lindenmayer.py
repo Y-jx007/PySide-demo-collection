@@ -1,7 +1,9 @@
-from common.qt_base import (ColorButton, QApplication, QColor, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPainter, QPen, QPixmap, QPushButton, QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget, Signal, math, sys, time)
+from common.qt_base import (ColorButton, QColor, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+                            QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPainter, QPen, QPixmap, QPushButton,
+                            QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget, Signal, math,
+                            run_app, time)
 from common.numpy_base import (np)
 from array import array
-from PySide6.QtCore import QLineF
 
 # ========== L-system 核心 ==========
 class LSystem:
@@ -530,7 +532,4 @@ class LSystemWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = LSystemWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(LSystemWindow))

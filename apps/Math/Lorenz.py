@@ -1,4 +1,7 @@
-from common.qt_base import (OrbitCamera, QApplication, QColor, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMatrix4x4, QMessageBox, QOpenGLWidget, QPushButton, QSlider, QSpinBox, QSplitter, QSurfaceFormat, QTimer, QVBoxLayout, QWidget, Qt, math, sys)
+from common.qt_base import (LabeledSlider, OrbitCamera, QColor, QComboBox, QDoubleSpinBox, QFormLayout,
+                            QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                            QMatrix4x4, QMessageBox, QOpenGLWidget, QPushButton, QSpinBox, QSplitter,
+                            QTimer, QVBoxLayout, QWidget, Qt, SquareContainer, math, run_app)
 from common.numpy_base import (np)
 from common.taichi_base import (ti)
 from common.opengl_base import (GL_COLOR_BUFFER_BIT, GL_DEPTH_TEST, GL_FLOAT, GL_LINE_STRIP, GL_MODELVIEW, GL_PROJECTION, GL_VERTEX_ARRAY, glClear, glClearColor, glColor3f, glDisable, glDisableClientState, glDrawArrays, glEnableClientState, glLoadIdentity, glLoadMatrixf, glMatrixMode, glVertexPointer, glViewport)
@@ -191,22 +194,6 @@ class AttractorGLWidget(QOpenGLWidget):
         self.update()
 
 
-class SquareGLContainer(QWidget):
-    """强制内部 AttractorGLWidget 保持正方形，并居中显示"""
-    def __init__(self, camera, parent=None):
-        super().__init__(parent)
-        self.gl_widget = AttractorGLWidget(camera, parent=self)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.gl_widget, 0, Qt.AlignCenter)
-        self.setStyleSheet("background-color: #cccccc; border: 2px solid black;")
-
-    def resizeEvent(self, event):
-        size = min(self.width(), self.height())
-        self.gl_widget.setFixedSize(size, size)
-        super().resizeEvent(event)
-
-
 # ---------- 主窗口 ----------
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -299,9 +286,9 @@ class MainWindow(QMainWindow):
         sim_form.addRow("每帧步数:", self.steps_spin)
         sim_form.addRow("最大点数:", self.trail_len_spin)
 
-        zoom_container, self.zoom_slider, self.zoom_label = self._create_slider_pair(
-            5, 200, 100, "视距:", lambda v: setattr(self.camera, 'distance', float(v)))
-        sim_form.addRow(zoom_container)
+        self.zoom_slider = self._camera_slider(
+            "视距:", 5, 200, 100, lambda v: setattr(self.camera, "distance", v))
+        sim_form.addRow(self.zoom_slider)
         grid.addWidget(sim_group, row, 1)
         row += 1
 
@@ -310,16 +297,16 @@ class MainWindow(QMainWindow):
         trans_grid = QGridLayout(trans_group)
         trans_grid.setSpacing(4)
 
-        rx_c, self.rot_x_slider, _ = self._create_slider_pair(0, 360, 0, "绕X:", lambda v: setattr(self.camera, 'rot_x', float(v)))
-        ry_c, self.rot_y_slider, _ = self._create_slider_pair(0, 360, 0, "绕Y:", lambda v: setattr(self.camera, 'rot_y', float(v)))
-        rz_c, self.rot_z_slider, _ = self._create_slider_pair(0, 360, 0, "绕Z:", lambda v: setattr(self.camera, 'rot_z', float(v)))
-        px_c, self.pan_x_slider, _ = self._create_slider_pair(-200, 200, 0, "平移X:", lambda v: self.camera.target.setX(float(v)))
-        py_c, self.pan_y_slider, _ = self._create_slider_pair(-200, 200, 0, "平移Y:", lambda v: self.camera.target.setY(float(v)))
-        pz_c, self.pan_z_slider, _ = self._create_slider_pair(-200, 200, 0, "平移Z:", lambda v: self.camera.target.setZ(float(v)))
+        self.rot_x_slider = self._camera_slider("绕X:", 0, 360, 0, lambda v: setattr(self.camera, "rot_x", v))
+        self.rot_y_slider = self._camera_slider("绕Y:", 0, 360, 0, lambda v: setattr(self.camera, "rot_y", v))
+        self.rot_z_slider = self._camera_slider("绕Z:", 0, 360, 0, lambda v: setattr(self.camera, "rot_z", v))
+        self.pan_x_slider = self._camera_slider("平移X:", -200, 200, 0, lambda v: self.camera.target.setX(v))
+        self.pan_y_slider = self._camera_slider("平移Y:", -200, 200, 0, lambda v: self.camera.target.setY(v))
+        self.pan_z_slider = self._camera_slider("平移Z:", -200, 200, 0, lambda v: self.camera.target.setZ(v))
 
-        trans_grid.addWidget(rx_c, 0, 0); trans_grid.addWidget(ry_c, 0, 1)
-        trans_grid.addWidget(rz_c, 1, 0); trans_grid.addWidget(px_c, 1, 1)
-        trans_grid.addWidget(py_c, 2, 0); trans_grid.addWidget(pz_c, 2, 1)
+        trans_grid.addWidget(self.rot_x_slider, 0, 0); trans_grid.addWidget(self.rot_y_slider, 0, 1)
+        trans_grid.addWidget(self.rot_z_slider, 1, 0); trans_grid.addWidget(self.pan_x_slider, 1, 1)
+        trans_grid.addWidget(self.pan_y_slider, 2, 0); trans_grid.addWidget(self.pan_z_slider, 2, 1)
         grid.addWidget(trans_group, row, 0, 1, 2)
         row += 1
 
@@ -365,27 +352,23 @@ class MainWindow(QMainWindow):
 
         central.addWidget(panel)
 
-        # 右侧正方形 OpenGL 画布
-        self.right_container = SquareGLContainer(self.camera)
-        central.addWidget(self.right_container)
+        # 右侧正方形 OpenGL 画布（SquareContainer 负责保持正方形 + 居中）
+        self.gl_widget = AttractorGLWidget(self.camera)
+        central.addWidget(SquareContainer(self.gl_widget))
 
         central.setSizes([280, 700])
-        self.gl_widget = self.right_container.gl_widget
 
-    def _create_slider_pair(self, min_val, max_val, init, label_text, callback):
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel(label_text))
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(min_val, max_val)
-        slider.setValue(init)
-        val_label = QLabel(str(init))
-        val_label.setMinimumWidth(30)
-        slider.valueChanged.connect(lambda v: (callback(v), val_label.setText(str(v)), self.gl_widget.update()))
-        layout.addWidget(slider)
-        layout.addWidget(val_label)
-        return container, slider, val_label
+    def _camera_slider(self, label_text, lo, hi, init, setter):
+        """相机滑块：改动后写回 OrbitCamera 并刷新 GL 画布。"""
+        widget = LabeledSlider(label_text, lo, hi, init)
+        widget.valueChanged.connect(lambda v: (setter(float(v)), self._refresh_view()))
+        return widget
+
+    def _refresh_view(self):
+        # UI 构建阶段 gl_widget 还没创建，滑块回调需要容错
+        widget = getattr(self, "gl_widget", None)
+        if widget is not None:
+            widget.update()
 
     # ---------- 预设与自定义逻辑 ----------
     def on_preset_changed(self, name):
@@ -465,11 +448,4 @@ class MainWindow(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    fmt = QSurfaceFormat()
-    fmt.setVersion(2, 1)
-    fmt.setProfile(QSurfaceFormat.CompatibilityProfile)
-    QSurfaceFormat.setDefaultFormat(fmt)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow, gl=True))

@@ -1,5 +1,7 @@
-from common.qt_base import (QApplication, QCheckBox, QFileDialog, QFont, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPixmap, QProgressBar, QPushButton, QSize, QSlider, QSpinBox, QSplitter, QThread, QVBoxLayout, QWidget, Qt, Signal, os, sys)
-from common.numpy_base import (Image, np)
+from common.qt_base import (LabeledSlider, QCheckBox, QFont, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                            QProgressBar, QPushButton, QSplitter, QVBoxLayout, QWidget, Qt, Signal,
+                            StoppableThread, caption, run_app, spinbox)
+from common.numpy_base import (Image, ImageLabel, ask_open_image, ask_save_path, np, save_ndarray)
 from common.numba_base import (njit, prange)
 
 # ========== 核心变换（不变）==========
@@ -44,7 +46,7 @@ def inverse_cat_map_transform(img, p, q):
 
 
 # ========== 工作线程（重构）==========
-class CatMapWorker(QThread):
+class CatMapWorker(StoppableThread):
     progress_updated = Signal(int, int)          # 进度百分比, 当前全局迭代次数
     transformation_finished = Signal(np.ndarray, int, int)  # 结果, 最终全局迭代次数, 检测到的周期
     frame_ready = Signal(np.ndarray, int)        # 帧, 当前全局迭代次数
@@ -59,7 +61,6 @@ class CatMapWorker(QThread):
         self.q = q
         self.max_iterations = max_iterations
         self.update_interval = max(1, update_interval)
-        self._is_running = True
         self.start_iteration = start_iteration  # 起始全局计数（可负）
 
     def run(self):
@@ -69,7 +70,7 @@ class CatMapWorker(QThread):
         iter_count = self.start_iteration
 
         for i in range(self.max_iterations):
-            if not self._is_running:
+            if self.stopping:
                 break
 
             current = cat_map_transform(current, self.p, self.q)
@@ -91,12 +92,9 @@ class CatMapWorker(QThread):
                 self.progress_updated.emit(progress, iter_count)
 
         # 达到最大次数仍未回到原始图
-        if self._is_running:
+        if not self.stopping:
             self.frame_ready.emit(current.copy(), iter_count)
             self.transformation_finished.emit(current, iter_count, 0)
-
-    def stop(self):
-        self._is_running = False
 
 
 # ========== 主窗口（重构状态管理）==========
@@ -113,18 +111,6 @@ class CatMapWidget(QMainWindow):
         self.init_ui()
 
     # ------- UI 构建（与之前相似，仅修改状态相关部分）------
-    def _create_spinbox(self, label, minv, maxv, default, callback=None, step=1):
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel(label))
-        spin = QSpinBox()
-        spin.setRange(minv, maxv)
-        spin.setValue(default)
-        spin.setSingleStep(step)
-        if callback:
-            spin.valueChanged.connect(callback)
-        layout.addWidget(spin)
-        return layout, spin
-
     def _update_all_info(self):
         self.iteration_label.setText(f"迭代次数: {self.global_iteration}")
         p_text = str(self.detected_period) if self.detected_period > 0 else "未检测"
@@ -152,7 +138,7 @@ class CatMapWidget(QMainWindow):
         self.detected_period = 0
         self.period_candidates = []
         self._update_all_info()
-        self.display_image(self.current_image, self.transformed_label)
+        self.transformed_label.set_array(self.current_image)
         self._set_controls_enabled(False)
 
     def init_ui(self):
@@ -194,30 +180,20 @@ class CatMapWidget(QMainWindow):
         param_group = QGroupBox("变换参数")
         pl = QVBoxLayout(param_group)
         row1 = QHBoxLayout()
-        _, self.n_spinbox = self._create_spinbox("图像尺寸 (N)", 1, 10000, 256, self.on_n_changed)
-        row1.addLayout(_)
-        _, self.p_spinbox = self._create_spinbox("p 参数", 1, 50, 1)
-        row1.addLayout(_)
-        _, self.q_spinbox = self._create_spinbox("q 参数", 1, 50, 1)
-        row1.addLayout(_)
+        self.n_spinbox = spinbox(1, 10000, 256, callback=self.on_n_changed)
+        row1.addWidget(caption("图像尺寸 (N)", self.n_spinbox))
+        self.p_spinbox = spinbox(1, 50, 1)
+        row1.addWidget(caption("p 参数", self.p_spinbox))
+        self.q_spinbox = spinbox(1, 50, 1)
+        row1.addWidget(caption("q 参数", self.q_spinbox))
         pl.addLayout(row1)
 
         row2 = QHBoxLayout()
-        _, self.iter_spinbox = self._create_spinbox("最大迭代次数", 100, 1000000, 10000, step=100)
-        row2.addLayout(_)
+        self.iter_spinbox = spinbox(100, 1000000, 10000, step=100)
+        row2.addWidget(caption("最大迭代次数", self.iter_spinbox))
 
-        interval_layout = QVBoxLayout()
-        interval_layout.addWidget(QLabel("更新间隔"))
-        int_ctl = QHBoxLayout()
-        self.interval_slider = QSlider(Qt.Horizontal)
-        self.interval_slider.setRange(1, 1000)
-        self.interval_slider.setValue(20)
-        self.interval_slider.valueChanged.connect(lambda v: self.interval_label.setText(str(v)))
-        int_ctl.addWidget(self.interval_slider)
-        self.interval_label = QLabel("20")
-        int_ctl.addWidget(self.interval_label)
-        interval_layout.addLayout(int_ctl)
-        row2.addLayout(interval_layout)
+        self.interval_slider = LabeledSlider("", 1, 1000, 20, value_width=30)
+        row2.addWidget(caption("更新间隔", self.interval_slider))
 
         self.aspect_ratio_check = QCheckBox("保持宽高比")
         self.aspect_ratio_check.setChecked(True)
@@ -281,10 +257,8 @@ class CatMapWidget(QMainWindow):
 
         og = QGroupBox("原始图像")
         ogl = QVBoxLayout(og)
-        self.original_label = QLabel("原始图像将显示在这里")
-        self.original_label.setAlignment(Qt.AlignCenter)
+        self.original_label = ImageLabel("原始图像将显示在这里")
         self.original_label.setMinimumSize(400, 400)
-        self.original_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
         self.original_info = QLabel("尺寸: - x -")
         ogl.addWidget(self.original_label)
         ogl.addWidget(self.original_info)
@@ -292,10 +266,8 @@ class CatMapWidget(QMainWindow):
 
         tg = QGroupBox("变换后图像")
         tgl = QVBoxLayout(tg)
-        self.transformed_label = QLabel("变换结果将显示在这里")
-        self.transformed_label.setAlignment(Qt.AlignCenter)
+        self.transformed_label = ImageLabel("变换结果将显示在这里")
         self.transformed_label.setMinimumSize(400, 400)
-        self.transformed_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
         self.transformed_info = QLabel("迭代: 0, 周期: -")
         tgl.addWidget(self.transformed_label)
         tgl.addWidget(self.transformed_info)
@@ -322,8 +294,7 @@ class CatMapWidget(QMainWindow):
         return np.array(pil_img.resize((n, n), Image.Resampling.LANCZOS))
 
     def load_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择图像", "",
-                                              "图像文件 (*.png *.jpg *.jpeg *.bmp *.tiff)")
+        path = ask_open_image(self, "选择图像")
         if not path:
             return
         try:
@@ -343,28 +314,9 @@ class CatMapWidget(QMainWindow):
         n = self.n_spinbox.value()
         resized = self.resize_image_to_n(self.original_image, n)
         self._full_reset_state(resized)
-        self.display_image(resized, self.original_label)
+        self.original_label.set_array(resized)
         self.original_info.setText(f"尺寸: {resized.shape[1]} × {resized.shape[0]}")
         self.status_label.setText(f"像素: {n}×{n}")
-
-    def display_image(self, img_array, label):
-        if img_array is None:
-            return
-        try:
-            if not img_array.flags['C_CONTIGUOUS']:
-                img_array = np.ascontiguousarray(img_array)
-            h, w = img_array.shape[:2]
-            if img_array.ndim == 3:
-                ch = img_array.shape[2]
-                fmt = QImage.Format_RGB888 if ch == 3 else QImage.Format_RGBA8888
-                qimg = QImage(img_array.data, w, h, ch * w, fmt)
-            else:
-                qimg = QImage(img_array.data, w, h, w, QImage.Format_Grayscale8)
-            pix = QPixmap.fromImage(qimg)
-            scaled = pix.scaled(label.size() - QSize(20, 20), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            label.setPixmap(scaled)
-        except Exception as e:
-            label.setText(f"显示错误: {e}")
 
     # ------- 单步操作（支持负迭代）-------
     def step_transformation(self):
@@ -375,7 +327,7 @@ class CatMapWidget(QMainWindow):
         self.global_iteration += 1
         self._check_period()
         self._update_all_info()
-        self.display_image(self.current_image, self.transformed_label)
+        self.transformed_label.set_array(self.current_image)
 
     def inverse_step_transformation(self):
         if self.current_image is None:
@@ -385,7 +337,7 @@ class CatMapWidget(QMainWindow):
         self.global_iteration -= 1
         self._check_period()
         self._update_all_info()
-        self.display_image(self.current_image, self.transformed_label)
+        self.transformed_label.set_array(self.current_image)
 
     def _check_period(self):
         """简单检测：当前图像等于原始图像 且 迭代次数≠0"""
@@ -418,10 +370,7 @@ class CatMapWidget(QMainWindow):
 
     def stop_transformation(self):
         if self.worker:
-            self.worker.stop()
-            if not self.worker.wait(2000):
-                self.worker.terminate()
-                self.worker.wait(1000)
+            self.worker.stop_and_wait(2000)
             self.worker = None
         self._set_controls_enabled(False)
         self.status_label.setText("变换已停止")
@@ -431,7 +380,7 @@ class CatMapWidget(QMainWindow):
         self.current_image = img
         self.global_iteration = iter_num
         self._update_all_info()
-        self.display_image(img, self.transformed_label)
+        self.transformed_label.set_array(img)
 
     def _on_progress(self, val, iter_num):
         self.progress_bar.setValue(val)
@@ -449,7 +398,7 @@ class CatMapWidget(QMainWindow):
         if period > 0:
             self._record_period(period)
         self._update_all_info()
-        self.display_image(result, self.transformed_label)
+        self.transformed_label.set_array(result)
         self.worker = None
         self._set_controls_enabled(False)
         if period == 0:
@@ -463,40 +412,23 @@ class CatMapWidget(QMainWindow):
     def save_image(self):
         if self.current_image is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "保存图像", "", "PNG (*.png);;JPEG (*.jpg)")
-        if path:
-            try:
-                Image.fromarray(self.current_image).save(path)
-                self.status_label.setText(f"已保存: {path}")
-            except Exception as e:
-                self.status_label.setText(f"保存失败: {e}")
+        path = ask_save_path(self, "保存图像", filters="PNG (*.png);;JPEG (*.jpg)")
+        if not path:
+            return
+        try:
+            save_ndarray(self.current_image, path)
+            self.status_label.setText(f"已保存: {path}")
+        except Exception as e:
+            self.status_label.setText(f"保存失败: {e}")
 
     def closeEvent(self, event):
         self.stop_transformation()
         super().closeEvent(event)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.original_image is not None:
-            self.display_image(
-                self.resize_image_to_n(self.original_image, self.n_spinbox.value()),
-                self.original_label
-            )
-        if self.current_image is not None:
-            self.display_image(self.current_image, self.transformed_label)
-
 
 # ========== 入口 ==========
 def main():
-    app = QApplication(sys.argv)
-    import os
-    qss_path = os.path.join(os.path.dirname(__file__), "..", "style.qss")
-    if os.path.exists(qss_path):
-        with open(qss_path, "r", encoding="utf-8") as f:
-            app.setStyleSheet(f.read())
-    window = CatMapWidget()
-    window.show()
-    sys.exit(app.exec_())
+    raise SystemExit(run_app(CatMapWidget))
 
 if __name__ == "__main__":
     main()

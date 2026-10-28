@@ -1,9 +1,10 @@
-from common.qt_base import (QApplication, QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QMainWindow, QPainter, QPushButton, QRect, QSlider, QTimer, QVBoxLayout, QWidget, Qt, os, sys, time)
+from common.field_canvas import ArrayCanvas
 from common.numpy_base import (np)
-import os
-from PySide6.QtGui import QImage
+from common.paths import DATA_DIR
+from common.qt_base import (FPSCounter, QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                            QPushButton, QSlider, QTimer, QVBoxLayout, QWidget, Qt, LabeledSlider, os, run_app)
 
-from soil_water import SoilWater
+from support.physics.soil_water import SoilWater
 
 # ==================== 地形与侵蚀 ====================
 def _blur3(a):
@@ -149,14 +150,14 @@ class ErosionSim:
         self.czm_levels = None
         self.czm_variant = 0
         try:
-            z = np.load(os.path.join(os.path.dirname(__file__), "czm_fields.npz"))
+            z = np.load(DATA_DIR / "czm_fields.npz")
             self.czm_bank = z["frames"].astype(np.float32) / 255.0
             self.czm_levels = z["levels"].astype(np.float32)
             self.czm_variant = int(self.rng.integers(len(self.czm_bank)))
             self.czm_frames = self.czm_bank[self.czm_variant]
         except Exception:
             try:
-                z = np.load(os.path.join(os.path.dirname(__file__), "czm_field.npz"))
+                z = np.load(DATA_DIR / "czm_field.npz")
                 self.czm_frames = z["frames"].astype(np.float32) / 255.0
                 self.czm_levels = z["levels"].astype(np.float32)
             except Exception:
@@ -475,27 +476,20 @@ class ErosionSim:
         self.crack_target = target
 
 # ==================== 画布 ====================
-class TerrainCanvas(QWidget):
+class TerrainCanvas(ArrayCanvas):
     def __init__(self, sim, app=None):
-        super().__init__()
+        super().__init__(minimum=(420, 420), renderer=self._render_image)
         self.sim = sim
         self.app = app
         self.show_water = True
         self.show_cracks = True
         self.show_shade = True
         self._soil_lut = None
-        self._image = None
-        self._dirty = True
-        self.setMinimumSize(420, 420)
         self._drawing = False
 
     def set_sim(self, sim):
         self.sim = sim
-        self._dirty = True
-
-    def invalidate(self):
-        self._dirty = True
-        self.update()
+        self.invalidate()
 
     # ---------- 着色 ----------
     def _build_soil_lut(self):
@@ -534,33 +528,14 @@ class TerrainCanvas(QWidget):
             crack = np.clip(_blur3(sim.crack) * 1.2, 0.0, 1.0)[..., None]
             rgb = rgb * (1 - crack * 0.85) + np.array([40, 32, 25], np.float32) * (crack * 0.85)
 
-        out = np.clip(rgb, 0, 255).astype(np.uint8)
-        self._image = QImage(out.data, n, n, n * 3, QImage.Format_RGB888).copy()
-        self._dirty = False
-
-    def paintEvent(self, event):
-        if self._dirty or self._image is None:
-            self._render_image()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        side = min(self.width(), self.height())
-        x0 = (self.width() - side) // 2
-        y0 = (self.height() - side) // 2
-        painter.drawImage(QRect(x0, y0, side, side), self._image)
-        painter.end()
+        return np.clip(rgb, 0, 255).astype(np.uint8)
 
     # ---------- 鼠标：局部降雨 ----------
     def _to_sim(self, pos):
-        side = min(self.width(), self.height())
-        x0 = (self.width() - side) // 2
-        y0 = (self.height() - side) // 2
-        if side <= 0:
+        uv = self.map_pos(pos)
+        if uv is None:
             return None
-        sx = (pos.x() - x0) / side * self.sim.size
-        sy = (pos.y() - y0) / side * self.sim.size
-        if 0 <= sx < self.sim.size and 0 <= sy < self.sim.size:
-            return sx, sy
-        return None
+        return uv[0] * self.sim.size, uv[1] * self.sim.size
 
     def mousePressEvent(self, event):
         p = self._to_sim(event.position().toPoint())
@@ -627,8 +602,7 @@ class ErosionApp(QMainWindow):
         self.lbl_fps = QLabel("帧率 –")
         for w in (self.lbl_dry, self.lbl_water, self.lbl_drops, self.lbl_fps):
             self.statusBar().addPermanentWidget(w)
-        self._frames = 0
-        self._fps_t = time.perf_counter()
+        self.fps_counter = FPSCounter()
 
     def _build_weather_group(self, layout):
         group = QGroupBox("天气")
@@ -683,31 +657,18 @@ class ErosionApp(QMainWindow):
         form.setContentsMargins(6, 6, 6, 6)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        self.sl_clay, _ = self._slider(form, "黏粒", 5, 75, int(self.sim.soil_clay * 100),
-                                       lambda v: self.sim.set_clay(v / 100.0))
-        self.sl_kic, _ = self._slider(form, "韧性", 10, 60, int(self.sim.fracture_kic / 1000.0),
-                                      lambda v: setattr(self.sim, "fracture_kic", v * 1000.0))
+        self._slider(form, "黏粒", 5, 75, int(self.sim.soil_clay * 100),
+                     lambda v: self.sim.set_clay(v / 100.0))
+        self._slider(form, "韧性", 10, 60, int(self.sim.fracture_kic / 1000.0),
+                     lambda v: setattr(self.sim, "fracture_kic", v * 1000.0))
         layout.addWidget(group)
 
     def _slider(self, form, text, lo, hi, value, setter):
-        row = QHBoxLayout()
-        row.setSpacing(4)
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(lo, hi)
-        slider.setValue(value)
-        label = QLabel(str(value))
-        label.setFixedWidth(38)
-        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        def on_change(v):
-            label.setText(str(v))
-            setter(v)
-
-        slider.valueChanged.connect(on_change)
-        row.addWidget(slider, 1)
-        row.addWidget(label)
-        form.addRow(text, row)
-        return slider, label
+        """一行滑块 + 数值标签，具体外观交给公共 LabeledSlider。"""
+        widget = LabeledSlider("", lo, hi, value, value_width=38)
+        widget.bind(setter, emit_now=False)
+        form.addRow(text, widget)
+        return widget
 
     def _build_display_group(self, layout):
         group = QGroupBox("显示")
@@ -770,18 +731,15 @@ class ErosionApp(QMainWindow):
         sim.step()
         self.canvas.invalidate()
         self.update_stats()
-        self._frames += 1
+        fps = self.fps_counter.tick()
+        if fps is not None:
+            self.lbl_fps.setText(f"帧率 {fps:.0f}")
 
     def update_stats(self):
         wet = float(self.sim.soil.wetness.mean()) * 100.0
         self.lbl_dry.setText(f"表土含水 {wet:.0f}%")
         self.lbl_water.setText(f"地表水 {float(self.sim.soil.pond.mean()):.1f} mm")
         self.lbl_drops.setText(f"雨滴 {self.sim.count:,}")
-        now = time.perf_counter()
-        if now - self._fps_t >= 0.5:
-            self.lbl_fps.setText(f"帧率 {self._frames / (now - self._fps_t):.0f}")
-            self._frames = 0
-            self._fps_t = now
 
     def closeEvent(self, event):
         self.timer.stop()
@@ -789,7 +747,4 @@ class ErosionApp(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = ErosionApp()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(ErosionApp))

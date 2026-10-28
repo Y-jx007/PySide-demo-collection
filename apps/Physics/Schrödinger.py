@@ -1,4 +1,6 @@
-from common.qt_base import (QApplication, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QOpenGLWidget, QPushButton, QScrollArea, QSizePolicy, QSlider, QTextEdit, QTimer, QVBoxLayout, QWidget, Qt, math, sys, time)
+from common.qt_base import (FPSCounter, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+                            QMessageBox, QOpenGLWidget, QPushButton, QScrollArea, QSizePolicy, QTextEdit, QTimer,
+                            QVBoxLayout, QWidget, Qt, LabeledSlider, math, run_app)
 from common.numpy_base import (np)
 from common.taichi_base import (ti, tm)
 from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_LINEAR, GL_NEAREST, GL_QUADS, GL_RGBA, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_UNSIGNED_BYTE, glBegin, glBindTexture, glClear, glEnable, glEnd, glGenTextures, glTexCoord2f, glTexImage2D, glTexSubImage2D, glTexParameteri, glVertex2f, glViewport)
@@ -521,29 +523,13 @@ class ControlPanel(QWidget):
 
     def _add_slider(self, form, key):
         label, lo, hi, default, fmt = self.SLIDERS[key]
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(4)
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(int(lo), int(hi))
-        slider.setValue(int(default))
-        value_label = QLabel(fmt(default))
-        value_label.setFixedWidth(44)
-        value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        def _on_change(v):
-            value_label.setText(fmt(v))
-            self._apply_param(key, v)
-
-        slider.valueChanged.connect(_on_change)
-        h.addWidget(slider, 1)
-        h.addWidget(value_label)
-        form.addRow(label, row)
-        self.sliders[key] = slider
-        self.labels[key] = value_label
+        widget = LabeledSlider(label, int(lo), int(hi), int(default), formatter=fmt, value_width=44)
+        widget.valueChanged.connect(lambda v: self._apply_param(key, v))
+        form.addRow(widget)
+        self.sliders[key] = widget
+        self.labels[key] = widget.value_label
         self._apply_param(key, default)
-        return slider
+        return widget
 
     # ---------- 参数写入 ----------
     def _apply_param(self, key, value):
@@ -667,8 +653,7 @@ class MainWindow(QMainWindow):
         self.control_panel.lbl_time = self.lbl_time
 
         self._sim_time = 0.0
-        self._frames = 0
-        self._last_stat = time.perf_counter()
+        self.fps_counter = FPSCounter()
 
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_simulation)
@@ -680,13 +665,9 @@ class MainWindow(QMainWindow):
             self.canvas.update_simulation()
             self._sim_time += (simulation_params[None].steps_per_frame
                                * simulation_params[None].time_step)
-            self._frames += 1
 
-        now = time.perf_counter()
-        if now - self._last_stat > 0.5:
-            fps = self._frames / (now - self._last_stat)
-            self._frames = 0
-            self._last_stat = now
+        fps = self.fps_counter.tick() if panel.simulation_running else None
+        if fps is not None:
             self.lbl_time.setText(f"模拟时间 {self._sim_time:.1f}")
             self.lbl_fps.setText(f"帧率 {fps:.1f}")
             self.lbl_norm.setText(f"积分 |ψ|² {compute_norm():.3e}")
@@ -707,10 +688,7 @@ def compute_norm() -> ti.f32:
 
 
 def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow, gl=True))
 
 
 if __name__ == "__main__":

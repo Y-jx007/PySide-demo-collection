@@ -5,10 +5,11 @@ import unittest
 
 import numpy as np
 
-APPS_DIR = os.path.join(os.path.dirname(__file__), "..", "apps")
-MATH_DIR = os.path.join(APPS_DIR, "Math")
-sys.path.insert(0, APPS_DIR)
-sys.path.insert(0, MATH_DIR)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _app_paths import add_app_path  # noqa: E402
+
+add_app_path("Lloyd", "Math")
 
 import Lloyd  # noqa: E402
 

@@ -36,7 +36,7 @@ sys.path.insert(0, str(APPS / "Cellular Automata"))
 import Lenia  # noqa: E402  (needs sys.path setup above)
 
 SIZE = 256
-DEFAULT_PRESET = APPS / "Lenia presets.npz"
+DEFAULT_PRESET = ROOT / "assets" / "data" / "lenia_presets.npz"
 
 
 # ---------------------------------------------------------------- presets

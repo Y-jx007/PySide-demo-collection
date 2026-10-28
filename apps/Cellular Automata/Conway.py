@@ -1,6 +1,8 @@
-from common.qt_base import (ColorButton, QApplication, QCheckBox, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QLabel, QLineF, QMainWindow, QPainter, QPen, QPushButton, QScrollArea, QSlider, QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, sys, time)
+from common.field_canvas import ArrayCanvas
 from common.numpy_base import (np)
-from PySide6.QtCore import QLineF
+from common.qt_base import (ColorButton, FPSCounter, LabeledSlider, QCheckBox, QColor, QComboBox, QFormLayout,
+                            QGroupBox, QHBoxLayout, QLabel, QLineF, QMainWindow, QPen, QPushButton, QScrollArea,
+                            QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, run_app)
 
 # ==================== 经典预设图案 ====================
 # '.' 或 ' ' 表示死亡，其余字符表示存活
@@ -190,11 +192,11 @@ class LifeAutomaton:
 
 
 # ==================== 画布 ====================
-class LifeCanvas(QWidget):
+class LifeCanvas(ArrayCanvas):
     """整块画布用一个缩放 QImage 绘制，单帧开销与细胞数无关。"""
 
     def __init__(self, automaton, cell_size=2, main_window=None):
-        super().__init__()
+        super().__init__(minimum=None, renderer=self._render_image, smooth=False)
         self.automaton = automaton
         self.cell_size = cell_size
         self.main_window = main_window
@@ -211,8 +213,6 @@ class LifeCanvas(QWidget):
         self.show_grid = True
         self.show_trail = False
         self._lut = None
-        self._image = None
-        self._dirty = True
         self._update_size()
 
     # ---------- 尺寸与图像 ----------
@@ -220,16 +220,11 @@ class LifeCanvas(QWidget):
         self.setFixedSize(self.automaton.width * self.cell_size,
                           self.automaton.height * self.cell_size)
 
-    def invalidate(self):
-        self._dirty = True
-        self.update()
-
     def set_colors(self, alive, dead):
         self.alive_color = alive
         self.dead_color = dead
         self._lut = None
-        self._dirty = True
-        self.update()
+        self.invalidate()
 
     def _build_lut(self):
         """256 级 LUT：把轨迹强度映射成颜色，避免每帧做浮点混合。"""
@@ -249,22 +244,11 @@ class LifeCanvas(QWidget):
             idx = (np.clip(self.automaton.trail, 0, 1) * 255).astype(np.uint8)
         else:
             idx = np.where(self.automaton.grid, 255, 0).astype(np.uint8)
-        rgb = self._lut[idx]
-        h, w = idx.shape
-        img = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
-        self._image = img.copy()
-        self._dirty = False
+        return self._lut[idx]
 
-    def paintEvent(self, event):
-        if self._dirty or self._image is None:
-            self._render_image()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-        painter.drawImage(self.rect(), self._image)
-
+    def paint_overlay(self, painter, rect):
         if self.show_grid and self.cell_size >= 6:
-            self._draw_grid(painter, event.rect())
-        painter.end()
+            self._draw_grid(painter, self.rect())
 
     def _draw_grid(self, painter, rect):
         cs = self.cell_size
@@ -369,8 +353,7 @@ class MainWindow(QMainWindow):
         self.fps = 30
         self.automaton = LifeAutomaton(self.grid_width, self.grid_height)
 
-        self._fps_frames = 0
-        self._fps_time = time.perf_counter()
+        self.fps_counter = FPSCounter()
 
         self.init_ui()
 
@@ -474,31 +457,14 @@ class MainWindow(QMainWindow):
         form.setContentsMargins(0, 0, 0, 0)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(1, 120)
-        self.speed_slider.setValue(self.fps)
+        self.speed_slider = LabeledSlider("", 1, 120, self.fps, value_width=34)
         self.speed_slider.valueChanged.connect(self.set_fps)
-        self.speed_label = QLabel(f"{self.fps}")
-        self.speed_label.setFixedWidth(34)
-        self.speed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        speed_row = QHBoxLayout()
-        speed_row.setSpacing(4)
-        speed_row.addWidget(self.speed_slider, 1)
-        speed_row.addWidget(self.speed_label)
-        form.addRow("速度", speed_row)
+        form.addRow("速度", self.speed_slider)
 
-        self.zoom_slider = QSlider(Qt.Horizontal)
-        self.zoom_slider.setRange(1, 20)
-        self.zoom_slider.setValue(self.cell_size)
+        self.zoom_slider = LabeledSlider("", 1, 20, self.cell_size,
+                                         formatter=lambda v: f"{v}px", value_width=34)
         self.zoom_slider.valueChanged.connect(self.set_zoom)
-        self.zoom_label = QLabel(f"{self.cell_size}px")
-        self.zoom_label.setFixedWidth(34)
-        self.zoom_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        zoom_row = QHBoxLayout()
-        zoom_row.setSpacing(4)
-        zoom_row.addWidget(self.zoom_slider, 1)
-        zoom_row.addWidget(self.zoom_label)
-        form.addRow("缩放", zoom_row)
+        form.addRow("缩放", self.zoom_slider)
 
         vbox.addLayout(form)
         layout.addWidget(group)
@@ -592,17 +558,17 @@ class MainWindow(QMainWindow):
     def update_automaton(self):
         self.automaton.step()
         self.canvas.invalidate()
-        self._fps_frames += 1
+        fps = self.fps_counter.tick()
+        if fps is not None:
+            self.lbl_fps.setText(f"{fps:.0f}")
 
     def set_fps(self, value):
         self.fps = value
-        self.speed_label.setText(str(value))
         if self.timer.isActive():
             self.timer.start(max(1, 1000 // value))
 
     def set_zoom(self, value):
         self.cell_size = value
-        self.zoom_label.setText(f"{value}px")
         self.zoom_by(0)
 
     def zoom_by(self, delta):
@@ -664,11 +630,6 @@ class MainWindow(QMainWindow):
     def update_stats(self):
         self.lbl_generation.setText(f"{self.automaton.generation:,}")
         self.lbl_population.setText(f"{self.automaton.population:,}")
-        now = time.perf_counter()
-        if now - self._fps_time >= 0.5:
-            self.lbl_fps.setText(f"{self._fps_frames / (now - self._fps_time):.0f}")
-            self._fps_frames = 0
-            self._fps_time = now
 
     def closeEvent(self, event):
         self.timer.stop()
@@ -677,7 +638,4 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(run_app(MainWindow))
