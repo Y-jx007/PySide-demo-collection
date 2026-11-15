@@ -99,6 +99,13 @@ APPS = [
     },
     # ---------------- Physics ----------------
     {
+        "title": "SPM",
+        "description": "时间域 NLSE：自相位调制展宽与孤子呼吸、分裂",
+        "path": "Physics/SPM.py",
+        "friendly": "自相位调制与孤子",
+        "category": "Physics",
+    },
+    {
         "title": "Soliton",
         "description": "非线性薛定谔：自聚焦、坍缩、涡旋破裂与光丝",
         "path": "Physics/Soliton.py",

@@ -14,6 +14,7 @@
 | **Lorenz** | Math | Math/Lorenz.py | 三维奇异吸引子可视化 |
 | **Connection** | Math | Math/Connection.py | 在曲面上平滑拖动测地点，观察协变导数、场长起伏与 holonomy |
 | **Stigmergy** | Math | Math/Stigmergy.py | 黏菌/蚁群的信息素寻路：个体留下痕迹，痕迹反过来引导个体 |
+| **SPM** | Physics | Physics/SPM.py | 时间域 NLSE：自相位调制展宽与孤子呼吸、分裂 |
 | **Soliton** | Physics | Physics/Soliton.py | 非线性薛定谔：自聚焦、坍缩、涡旋破裂与光丝 |
 | **Schrödinger** | Physics | Physics/Schrödinger.py | Runge-Kutta 模拟二维量子波包演化过程 |
 | **Turing** | Physics | Physics/Turing.py | 反应扩散系统模拟 |
