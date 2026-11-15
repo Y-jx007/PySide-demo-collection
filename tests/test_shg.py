@@ -69,6 +69,24 @@ class TestMap(unittest.TestCase):
         self.assertEqual(rgb.shape, (41, 60, 3))
         self.assertEqual(rgb.dtype, np.uint8)
 
+    def test_render_uses_the_wavelength_colours(self):
+        model = SHGMap(mismatches=41, samples=60, length=2.0, kappa=1.0, span=8.0)
+        rgb = model.render()
+        # 转换最弱处偏红（基频），最强处偏绿（倍频）
+        weakest = rgb[np.unravel_index(np.argmin(model.map), model.map.shape)]
+        strongest = rgb[np.unravel_index(np.argmax(model.map), model.map.shape)]
+        self.assertGreater(int(weakest[0]), int(weakest[1]))
+        self.assertGreater(int(strongest[1]), int(strongest[0]))
+
+    def test_beam_colours_run_from_pump_to_harmonic(self):
+        model = SHGMap(mismatches=41, samples=60, length=2.0, kappa=1.0, span=8.0)
+        colours = model.beam_colours()
+        self.assertEqual(colours.shape, (60, 3))
+        self.assertGreater(int(colours[0, 0]), int(colours[0, 1]))
+        self.assertGreater(int(colours[-1, 1]), int(colours[-1, 0]))
+        strip = model.beam_strip(strip=12)
+        self.assertEqual(strip.shape, (12, 60, 3))
+
     def test_symmetry_switch_zeroes_the_map(self):
         model = SHGMap(mismatches=21, samples=40, length=1.0, kappa=1.0, span=8.0)
         self.assertGreater(model.peak_efficiency(), 0.0)

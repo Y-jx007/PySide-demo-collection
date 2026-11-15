@@ -13,6 +13,8 @@ import time
 
 import numpy as np
 
+from PySide6.QtGui import QImage
+
 from common.lab_window import LabWindow
 from common.qt_base import (
     LabeledSlider, QCheckBox, QColor, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
@@ -40,8 +42,9 @@ EQUATION_TIP = (
     "· 开周期极化：条纹折成两条共振（Δk = ±2π/Λ），效率回升；\n"
     "· 关对称性（κ=0）：χ⁽²⁾ 不存在，整幅图空白。\n\n"
     "下面小图是出射面的效率随 Δk 的变化，就是实验里扫波长看到的 Maker 曲线。\n"
-    "图下那条光带是同一束光在 Δk=0 时的颜色变化：基频（红）逐渐转成倍频（绿），"
-    "中途两束光重叠的地方看起来偏黄——实验室里就是这样。"
+    "左侧色带是同一条光在 Δk=0 时的颜色变化：基频 1064 nm（红）逐渐转成"
+    "倍频 532 nm（绿），中途两束光重叠的地方偏黄——实验室里就是这样。"
+    "右边整幅图用的也是这套波长色：红处还是基频光，绿处已经转成倍频光。"
 )
 
 
@@ -50,7 +53,7 @@ class FringePlot(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(96)
+        self.setFixedHeight(84)
         self.model = None
         self.setToolTip("出射面的倍频效率随相位失配的变化。")
 
@@ -92,20 +95,66 @@ class FringePlot(QWidget):
         painter.end()
 
 
+class BeamStrip(QWidget):
+    """面板里的光束色带：沿晶体的颜色 + 两端波长标注。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(64)
+        self.model = None
+        self.setToolTip(
+            "同一条光在晶体里的颜色：入口 1064 nm（红），出口 532 nm（绿），"
+            "中间重叠处偏黄。"
+        )
+
+    def update_model(self, model):
+        self.model = model
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        rect = QRectF(self.rect())
+        painter.fillRect(rect, QColor(255, 255, 255))
+        model = self.model
+        if model is None:
+            painter.end()
+            return
+        strip = model.beam_strip(strip=48)
+        height, width, _ = strip.shape
+        image = QImage(strip.data, width, height, 3 * width,
+                       QImage.Format_RGB888).copy()
+        band = QRectF(4.0, 4.0, rect.width() - 8.0, 40.0)
+        painter.drawImage(band, image)
+        painter.setPen(QPen(QColor(214, 214, 214), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(band)
+        font = painter.font()
+        font.setPointSizeF(7.5)
+        painter.setFont(font)
+        painter.setPen(QColor(110, 110, 110))
+        painter.drawText(QRectF(4, 46, 80, 14), Qt.AlignLeft, "1064 nm")
+        painter.drawText(QRectF(rect.width() - 84, 46, 80, 14),
+                         Qt.AlignRight, "532 nm")
+        painter.drawText(QRectF(4, 46, rect.width() - 8, 14),
+                         Qt.AlignCenter, "z →")
+        painter.end()
+
+
 class SHGCanvas(ArrayCanvas):
     """相位匹配图：横轴传播距离、竖轴失配。"""
 
     def __init__(self, window, parent=None):
-        # 上图是 (Δk, z) 相位匹配图，下面再接一条光束示意，宽高比约 1.15
-        super().__init__(aspect=1.15, minimum=(480, 320), parent=parent)
+        # (Δk, z) 相位匹配图，正方形铺满画布
+        super().__init__(aspect=1.0, minimum=(480, 480), parent=parent)
         self.setFixedSize(600, 600)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.window = window
         self.model = SHGMap()
 
     def render_frame(self):
-        # 上图：行是 Δk、列是 z（光从左往右）；下图：同一束光的颜色随转换变化
-        self.set_array(np.ascontiguousarray(self.model.render_with_beams()))
+        # 行是 Δk、列是 z（光从左往右）；颜色就是光的颜色：红=基频，绿=倍频
+        self.set_array(np.ascontiguousarray(np.flipud(self.model.render())))
 
 
 class MainWindow(LabWindow):
@@ -175,6 +224,12 @@ class MainWindow(LabWindow):
         qpm_layout.addWidget(self.poling_slider)
         column.addWidget(qpm_box)
 
+        beam_box = QGroupBox("光束颜色")
+        beam_layout = QVBoxLayout(beam_box)
+        self.beam_strip = BeamStrip()
+        beam_layout.addWidget(self.beam_strip)
+        column.addWidget(beam_box)
+
         fringe_box = QGroupBox("出射面效率")
         fringe_layout = QVBoxLayout(fringe_box)
         self.fringe_plot = FringePlot()
@@ -243,6 +298,7 @@ class MainWindow(LabWindow):
         model = self.canvas.model
         self.canvas.render_frame()
         self.fringe_plot.update_model(model)
+        self.beam_strip.update_model(model)
         self.readout_label.setText(
             "L %.2f · κ %.2f · 峰值效率 %.1f%% · Δk 范围 ±%.0f"
             % (model.length, model.kappa, model.peak_efficiency() * 100.0, model.span)

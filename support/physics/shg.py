@@ -24,6 +24,30 @@ import numpy as np
 
 from support.physics.nls import PALETTE, PALETTES, palette_lut
 
+# 演示用的两个波长（Nd:YAG / KTP）：1064 nm 基频 → 532 nm 倍频
+PUMP_RGB = (208, 46, 36)
+SHG_RGB = (40, 170, 98)
+MID_RGB = (232, 196, 64)
+PUMP_NM = 1064
+SHG_NM = 532
+
+_BEAM_LUT = None
+
+
+def beam_lut():
+    """256-entry pump -> yellow -> harmonic ramp, the colour key of the map."""
+    global _BEAM_LUT
+    if _BEAM_LUT is None:
+        ramp = np.linspace(0.0, 1.0, 256)[:, None]
+        low = np.asarray(PUMP_RGB, dtype=float)
+        mid = np.asarray(MID_RGB, dtype=float)
+        high = np.asarray(SHG_RGB, dtype=float)
+        first = low[None, :] * (1.0 - 2.0 * ramp) + mid[None, :] * (2.0 * ramp)
+        second = mid[None, :] * (2.0 - 2.0 * ramp) + high[None, :] * (2.0 * ramp - 1.0)
+        table = np.where(ramp <= 0.5, first, second)
+        _BEAM_LUT = np.clip(table, 0, 255).astype(np.uint8)
+    return _BEAM_LUT
+
 
 def _derivative(a1, a2, kappa, detune):
     """Right-hand side of the rotating-frame equations (arrays over dk)."""
@@ -69,7 +93,7 @@ def propagate(delta_k, length=2.0, samples=400, kappa=1.0, amplitude=1.0,
 class SHGMap:
     """|A2|^2(z) for a fan of phase mismatches: the phase-matching diagram."""
 
-    def __init__(self, mismatches=241, samples=360, length=2.0, kappa=1.0,
+    def __init__(self, mismatches=361, samples=361, length=2.0, kappa=1.0,
                  amplitude=1.0, span=20.0):
         self.mismatches = int(mismatches)
         self.samples = int(samples)
@@ -120,29 +144,13 @@ class SHGMap:
     def peak_efficiency(self):
         return float(np.max(self.efficiency()))
 
-    def beam_strip(self, strip=64, pump_rgb=(208, 46, 36), sh_rgb=(40, 170, 98)):
-        """One beam drawn along z at dk = 0: the pump turning into 2 omega.
-
-        The colour is an additive mix of the two wavelengths weighted by the
-        energy fractions 1-2*eta (pump) and 2*eta (second harmonic), so the
-        middle of the crystal looks yellow where both beams overlap -- the
-        same thing you see on a lab bench.
-        """
-        eta = np.clip(self.map[self.mismatches // 2], 0.0, 1.0)
-        pump_share = np.clip(1.0 - 2.0 * eta, 0.0, 1.0)
-        pump = np.asarray(pump_rgb, dtype=float)
-        harmonic = np.asarray(sh_rgb, dtype=float)
-        columns = eta.size
-        colour = (pump_share[None, :, None] * pump
-                  + (1.0 - pump_share)[None, :, None] * harmonic)
-        # 按最亮通道归一化：真实重叠时两束各占一半能量、看起来会暗一些，
-        # 这里只保留色相变化，便于一眼看出红 → 黄 → 绿。
-        peak = np.maximum(colour.max(axis=2, keepdims=True), 1.0)
-        colour = colour / peak * 235.0
+    def beam_strip(self, strip=48):
+        """The beam itself: a soft band whose colour is the mixed wavelength."""
+        colours = self.beam_colours().astype(float)
         profile = np.exp(-((np.arange(strip) - strip / 2.0) / (0.34 * strip)) ** 2)
         alpha = (0.92 * profile)[:, None, None]
-        paper = np.full((strip, columns, 3), 255.0)
-        return (paper * (1.0 - alpha) + colour * alpha).astype(np.uint8)
+        paper = np.full((strip, colours.shape[0], 3), 255.0)
+        return (paper * (1.0 - alpha) + colours[None, :, :] * alpha).astype(np.uint8)
 
     def render(self, palette=PALETTE, floor_db=30.0):
         """dB image of the efficiency map.
@@ -159,13 +167,16 @@ class SHGMap:
         db = 10.0 * np.log10(np.clip(field / reference, 1e-12, 1.0))
         norm = np.clip((db + floor_db) / floor_db, 0.0, 1.0)
         index = (norm * 255.0).astype(np.uint8)
-        return palette_lut(palette, gamma=1.0)[index]
+        # 用光的颜色而不是墨青：弱处红（还是基频），强处绿（已转成倍频）
+        return beam_lut()[index]
 
-    def render_with_beams(self, palette=PALETTE, floor_db=30.0, strip=64, gap=14):
-        """Diagram on top, the beam itself underneath, on one sheet."""
-        diagram = np.flipud(self.render(palette, floor_db))
-        rows, columns, _ = diagram.shape
-        sheet = np.full((rows + gap + strip, columns, 3), 255, dtype=np.uint8)
-        sheet[:rows] = diagram
-        sheet[rows + gap:] = self.beam_strip(strip=strip)
-        return sheet
+    def beam_colours(self):
+        """One RGB per z sample: the beam colour along the crystal at dk = 0."""
+        eta = np.clip(self.map[self.mismatches // 2], 0.0, 1.0)
+        pump_share = np.clip(1.0 - 2.0 * eta, 0.0, 1.0)
+        pump = np.asarray(PUMP_RGB, dtype=float)
+        harmonic = np.asarray(SHG_RGB, dtype=float)
+        colour = (pump_share[:, None] * pump
+                  + (1.0 - pump_share)[:, None] * harmonic)
+        peak = np.maximum(colour.max(axis=1, keepdims=True), 1.0)
+        return np.clip(colour / peak * 235.0, 0, 255).astype(np.uint8)
