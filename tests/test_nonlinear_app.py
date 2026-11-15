@@ -130,6 +130,12 @@ class TestNonlinearWindow(unittest.TestCase):
         self.assertTrue(self.window.momentum_sketch.show_qpm)
         self.assertGreater(self.window.momentum_sketch.period, 0.0)
 
+    def test_raman_slider_reaches_the_temporal_solver(self):
+        self.switch("时间孤子")
+        self.assertEqual(self.window.canvas.time.raman, 0.0)
+        self.window.raman_slider.setValue(30)
+        self.assertAlmostEqual(self.window.canvas.time.raman, 0.03, places=9)
+
     def test_process_switch_changes_the_model_and_the_readout(self):
         self.switch("调频")
         self.assertEqual(self.window.process_combo.currentText(), "倍频")

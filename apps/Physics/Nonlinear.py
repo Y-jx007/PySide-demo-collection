@@ -703,6 +703,13 @@ class MainWindow(LabWindow):
         run_layout = QVBoxLayout(run_box)
         self.time_steps_slider = LabeledSlider("每帧步数", 1, 8, 2)
         run_layout.addWidget(self.time_steps_slider)
+        self.raman_slider = LabeledSlider(
+            "拉曼 τ_R", 0, 50, 0, formatter=lambda v: "%.3f" % (v / 1000.0))
+        self.raman_slider.setToolTip(
+            "拉曼自频移：脉冲前后沿不对称，能量被搬到红端；0 为关闭。"
+        )
+        self.raman_slider.valueChanged.connect(self.on_raman)
+        run_layout.addWidget(self.raman_slider)
         column.addWidget(run_box)
 
         spectrum_box = QGroupBox("当前频谱")
@@ -881,6 +888,11 @@ class MainWindow(LabWindow):
         if self.mode == "空间自聚焦":
             self.canvas.render_frame()
             self.update_readout()
+
+    def on_raman(self, value):
+        self.canvas.time.raman = value / 1000.0
+        if self.mode == "时间孤子":
+            self.canvas.render_frame()
 
     def reset_time(self):
         self.canvas.time.reset(self.order(), self.pulse_width())
