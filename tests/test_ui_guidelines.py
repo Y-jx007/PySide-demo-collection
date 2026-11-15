@@ -55,5 +55,13 @@ class TestUIGuidelines(unittest.TestCase):
         self.assertIn("docs/UI_GUIDELINES.md", readme)
 
 
+class TestCheckBoxStyle(unittest.TestCase):
+    def test_stylesheet_leaves_checkboxes_to_qt(self):
+        path = os.path.join(ROOT, "assets", "style.qss")
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn("QCheckBox::indicator", source)
+
+
 if __name__ == "__main__":
     unittest.main()

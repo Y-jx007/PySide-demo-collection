@@ -145,17 +145,13 @@ class ResponsePlot(QWidget):
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        # 纵轴刻度贴左，横轴标题居中放在轴下方，读数放右上角，互不重叠
-        painter.drawText(QRectF(2, plot.top() - 6, 24, 12),
-                         Qt.AlignLeft, "1.0")
-        painter.drawText(QRectF(2, plot.bottom() - 6, 24, 12),
-                         Qt.AlignLeft, "0")
-        painter.drawText(QRectF(plot.left(), plot.bottom() + 2, plot.width() / 2, 12),
-                         Qt.AlignLeft, "光强 I →")
+        # 和振子 P(E) 一致的轴标注：纵轴名在轴上方，横轴名在轴右端
         ratio = (1.0 / (1.0 + self.peak / sim.saturation) if saturable
                  else max(1.0 - sim.kappa * self.peak, 0.0))
-        painter.drawText(QRectF(plot.right() - 130, plot.bottom() + 2, 130, 12),
-                         Qt.AlignRight, "响应 %.2f" % ratio)
+        painter.drawText(QRectF(plot.left() + 2, plot.top() - 14, 90, 12),
+                         Qt.AlignLeft, "响应 ↑ %.2f" % ratio)
+        painter.drawText(QRectF(plot.right() - 40, plot.bottom() + 2, 38, 12),
+                         Qt.AlignRight, "I →")
         painter.end()
 
 

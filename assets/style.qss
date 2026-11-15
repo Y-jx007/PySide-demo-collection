@@ -93,22 +93,12 @@ QPushButton:checked {
     border-color: #6c757d;
 }
 
-/* 复选框 */
+/* 复选框：交给 Qt 默认样式，不要自定义 indicator（勾上会被画成一个
+   没有对勾的灰方块，取消又像根本没有框）。见 docs/UI_GUIDELINES.md §6。 */
 QCheckBox {
     color: #495057;
     spacing: 4px;
     font-size: 11px;
-}
-QCheckBox::indicator {
-    width: 14px;
-    height: 14px;
-    border: 1px solid #ced4da;
-    border-radius: 2px;
-    background: white;
-}
-QCheckBox::indicator:checked {
-    background: #6c757d;
-    border: 1px solid #6c757d;
 }
 
 /* 选项卡（傅里叶工具） */
