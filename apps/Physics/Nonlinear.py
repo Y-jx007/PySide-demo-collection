@@ -32,6 +32,12 @@ from support.physics.spm import TemporalNLSE
 MODES = ("空间自聚焦", "时间孤子", "调频")
 
 MIX_HTML = {
+    "脉冲倍频": (
+        '<div style="font-size:12px; color:#1b1b1b;">∂A₁/∂z = iκA₂A₁*e<sup>−iΔkz</sup> − i(β₁/2)∂²A₁/∂t²</div>'
+        '<div style="font-size:12px; color:#1b1b1b;">∂A₂/∂z = i(κ/2)A₁²e<sup>+iΔkz</sup> − i(β₂/2)∂²A₂/∂t² + δ∂A₂/∂t</div>'
+        '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
+        "δ = 1/v_g(2ω) − 1/v_g(ω)：倍频跑得快慢不同，会从泵浦里滑出去。</div>"
+    ),
     "四波混频": (
         '<div style="font-size:12px; color:#1b1b1b;">dA₃/dz = iκ(2P)A₃ + iκA₁A₂A₄*&thinsp;e<sup>+iΔkz</sup></div>'
         '<div style="font-size:12px; color:#1b1b1b;">dA₄/dz = iκ(2P)A₄ + iκA₁A₂A₃*&thinsp;e<sup>+iΔkz</sup></div>'
@@ -490,9 +496,9 @@ class OpticsCanvas(ArrayCanvas):
             self.set_array(self.time.render_waterfall())
         elif self.mode == "调频":
             if self.process == "脉冲倍频":
-                field = self.pulse.map()
+                field = self.pulse.map().T
                 reference = float(field.max()) or 1.0
-                norm = np.clip(field / reference, 0.0, 1.0)
+                norm = np.clip(field / reference, 0.0, 1.0) ** 0.7
                 self.set_array(palette_lut(PALETTE, gamma=0.8)[(norm * 255).astype(np.uint8)])
                 return
             model = self.doubling if self.process == "倍频" else self.sfg
@@ -764,7 +770,7 @@ class MainWindow(LabWindow):
         self.crystal_kappa_slider.valueChanged.connect(self.refresh_doubling)
         crystal_layout.addWidget(self.crystal_kappa_slider)
         self.walk_slider = LabeledSlider(
-            "走离 δ", 0, 80, 20, formatter=lambda v: "%.2f" % (v / 100.0))
+            "走离 δ", 0, 200, 60, formatter=lambda v: "%.2f" % (v / 100.0))
         self.walk_slider.valueChanged.connect(self.refresh_doubling)
         crystal_layout.addWidget(self.walk_slider)
         self.seed_slider = LabeledSlider(
@@ -922,7 +928,11 @@ class MainWindow(LabWindow):
             symmetric=self.symmetric_check.isChecked(),
             poling=self.poling(),
         )
-        self.canvas.pulse.walk = self.walk_slider.value() / 100.0
+        pulse = self.canvas.pulse
+        pulse.walk = self.walk_slider.value() / 100.0
+        pulse.length = self.length_slider.value() / 100.0
+        pulse.kappa = self.crystal_kappa_slider.value() / 100.0
+        pulse.dz = pulse.length / pulse.steps
         self.canvas.pulse.reset()
         self.canvas.pulse.step(self.canvas.pulse.steps)
         sfg = self.canvas.sfg
@@ -996,6 +1006,14 @@ class MainWindow(LabWindow):
         else:
             if self.canvas.process != "倍频":
                 sfg = self.canvas.sfg
+                if self.canvas.process == "脉冲倍频":
+                    pulse = self.canvas.pulse
+                    self.readout_label.setText(
+                        "脉冲倍频 · L %.2f · 走离 %.2f · 时间偏移 %+.2f · 转换 %.1f%%"
+                        % (pulse.length, pulse.walk, pulse.shift(),
+                           pulse.efficiency() * 100.0)
+                    )
+                    return
                 if self.canvas.process == "四波混频":
                     gain = float(np.sqrt(max(sfg.peak(), 0.0)) / 1e-9)
                     symbol = "增益 %.0f×" % gain
