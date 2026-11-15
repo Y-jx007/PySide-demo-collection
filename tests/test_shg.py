@@ -92,6 +92,20 @@ class TestMap(unittest.TestCase):
         self.assertEqual(conversions.shape, (60,))
         self.assertGreater(float(conversions[-1]), float(conversions[0]))
 
+    def test_efficiency_counts_energy_not_field_ratio(self):
+        model = SHGMap(mismatches=41, samples=120, length=2.0, kappa=1.0,
+                       span=4.0)
+        centre = model.mismatches // 2
+        field_ratio = float(model.map[centre, -1])
+        self.assertAlmostEqual(float(model.efficiency()[centre]),
+                               2.0 * field_ratio, places=9)
+        self.assertLess(field_ratio, 0.5001)
+
+    def test_long_matched_crystal_depletes_the_pump_completely(self):
+        model = SHGMap(mismatches=21, samples=400, length=8.0, kappa=1.0,
+                       span=4.0)
+        self.assertGreater(model.peak_efficiency(), 0.99)
+
     def test_symmetry_switch_zeroes_the_map(self):
         model = SHGMap(mismatches=21, samples=40, length=1.0, kappa=1.0, span=8.0)
         self.assertGreater(model.peak_efficiency(), 0.0)

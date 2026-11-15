@@ -212,7 +212,10 @@ class FringePlot(QWidget):
         super().__init__(parent)
         self.setFixedHeight(84)
         self.model = None
-        self.setToolTip("出射面的倍频效率随相位失配的变化（扫描看到的 Maker 曲线）。")
+        self.setToolTip(
+            "出射面的倍频效率随相位失配的变化（扫描看到的 Maker 曲线）。\n"
+            "按能量算：相位匹配且晶体够长时泵浦被耗尽，效率可达 100%。"
+        )
 
     def update_model(self, model):
         self.model = model

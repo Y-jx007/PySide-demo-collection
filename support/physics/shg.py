@@ -125,8 +125,15 @@ class SHGMap:
         return self.map
 
     def efficiency(self):
-        """Conversion efficiency at the exit face, one value per mismatch."""
-        return self.map[:, -1]
+        """Energy conversion at the exit face, one value per mismatch (0..1).
+
+        |a2|^2 is a field-intensity ratio, and one second-harmonic photon
+        carries the energy of two pump photons, so the *energy* fraction is
+        2|a2|^2/P0: it reaches 100% when the pump is fully depleted, while
+        |a2|^2/P0 itself saturates at 1/2 (that is the photon book-keeping,
+        not a physical limit).
+        """
+        return np.clip(2.0 * self.map[:, -1], 0.0, 1.0)
 
     def peak_efficiency(self):
         return float(np.max(self.efficiency()))
