@@ -89,8 +89,24 @@
   - `Mass-Spring.py` → `assets/thumbnails/Mass-Spring.png`
   - `Particle Lenia.py` → `assets/thumbnails/Particle Lenia.png`
 - 启动器在启动时加载封面；更新封面后需要重启启动器。
+- **实验田（`Unpolished`）** 里的应用可以不配封面；装了封面就按上面的规则截。
 
-## 5. 交互与状态
+## 5. 实验田（Unpolished）
+
+`Unpolished` 是一个**分类意义上的实验田**，不是“没写完”的垃圾桶。放进去的条件是下面任意一条：
+
+- 依赖额外数据或权重（Circulation 的 ETOPO1/风场、Erosion 的地形数据）；
+- 依赖外部设备或可选依赖（Noise 需要 `sounddevice`）；
+- 接口、参数或界面仍在改（KAM、MPM2D、Caustic）。
+
+实验田的约定：
+
+- 分类标记与说明只写在 `apps_manifest.CATEGORY_NOTES` 一处，启动器分类条、`docs/APP_MATRIX.md`、README 共用；
+- 封面可省略；**但窗口结构、`check_ui_style.py`、测试仍然必须通过**，不能拿“实验田”当不守规范的借口；
+- 需要额外依赖时，必须在清单条目里写 `requires`，启动器据此提示安装；
+- 打磨到“不依赖外部数据、接口稳定”之后，把它挪进 Math / Physics / 对应分类，并从 `CATEGORY_NOTES` 的语境里移出。
+
+## 6. 交互与状态
 
 - 参数滑块改动后立即生效，不要求用户点“应用”。
 - 必须有：
@@ -101,7 +117,11 @@
 - 状态栏右侧持续显示规模与帧率（或等价读数）。
 - 错误只在保存失败等必要场景弹窗；不要用弹窗代替状态栏。
 
-## 6. 代码组织
+## 7. 代码组织
+
+用 `python tools/new_app.py <分类>/<名称> --title <标题> --description <说明>` 生成骨架：
+它会写出合规的 app 文件、插入 `apps_manifest.py` 条目、重新生成 `docs/APP_MATRIX.md`，
+并离屏渲染 520×520 封面；生成的文件当场就能通过 `tools/check_ui_style.py`。
 
 - 新应用使用 `common.lab_window` 的 `LabWindow` / `SquareCanvas` 基类，统一白底、960×640 窗口和 600×600 画布。
 - 应用入口放在 `apps/<Category>/<Name>.py`，一个入口一个文件。
@@ -118,7 +138,7 @@
   - `assets/thumbnails/`；
   - 对应测试。
 
-## 7. 提交前检查清单
+## 8. 提交前检查清单
 
 - [ ] 窗口 960 × 640，无大默认窗口。
 - [ ] 左栏 330，右画布 600 × 600。
@@ -133,7 +153,7 @@
 - [ ] `python -m unittest discover -s tests` 通过。
 - [ ] `python tools/check_ui_style.py <app路径>` 无报错。
 
-## 8. 自动检查
+## 9. 自动检查
 
 样板应用会由 `tests/test_ui_guidelines.py` 检查以下硬性结构：
 

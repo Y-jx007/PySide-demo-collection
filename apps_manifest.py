@@ -13,6 +13,24 @@ from pathlib import Path
 # Category display order.  Unknown categories are appended alphabetically.
 CATEGORY_ORDER = ["Math", "Physics", "Fractals", "Cellular Automata", "Unpolished"]
 
+# Categories that are not held to the same bar carry a note; the launcher tag,
+# docs/APP_MATRIX.md and the README all repeat this same wording.
+CATEGORY_NOTES = {
+    "Unpolished": (
+        "可能依赖额外数据或设备，接口与界面仍会变动，不承诺与其他分类同等的完善度"
+    ),
+}
+
+
+def category_label(name):
+    """Display name for a category, carrying its marker when it has one."""
+    return f"{name} · 实验田" if name in CATEGORY_NOTES else name
+
+
+def category_note(name):
+    """Explanation shown in tooltips and docs; empty for regular categories."""
+    return CATEGORY_NOTES.get(name, "")
+
 # Optional runtime dependencies: module -> install hint.
 INSTALL_HINTS = {
     "torch": "pip install -r requirements-distill.txt",
@@ -306,14 +324,22 @@ def app_matrix_markdown():
         "",
         "> 此文件由 python tools/sync_registry.py 从 apps_manifest.py 自动生成，请勿手改。",
         "",
+    ]
+    for name in CATEGORY_ORDER:
+        note = category_note(name)
+        if note:
+            lines.append(f"> **{category_label(name)}**：{note}")
+            lines.append("")
+    lines.extend([
         "| 应用 | 分类 | 路径 | 说明 |",
         "| --- | --- | --- | --- |",
-    ]
+    ])
     for app in APPS:
         title = str(app["title"]).replace("|", "\\|")
         description = str(app["description"]).replace("|", "\\|")
+        category = category_label(app["category"]).replace("|", "\\|")
         lines.append(
-            f"| **{title}** | {app['category']} | {app['path']} | {description} |"
+            f"| **{title}** | {category} | {app['path']} | {description} |"
         )
     lines.append("")
     return "\n".join(lines)

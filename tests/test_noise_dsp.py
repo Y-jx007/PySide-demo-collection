@@ -1,7 +1,6 @@
 """DSP checks for the Noise app (no audio device needed)."""
 import os
 import sys
-import tempfile
 import time
 import unittest
 
@@ -16,6 +15,7 @@ from support.physics.noise_dsp import (  # noqa: E402
     third_octave_energy, third_octave_levels,
 )
 from support.physics.noise_history import NoiseHistory  # noqa: E402
+from tests.tmpdir import temporary_directory  # noqa: E402
 
 
 class TestNoiseDSP(unittest.TestCase):
@@ -44,7 +44,7 @@ class TestNoiseDSP(unittest.TestCase):
         self.assertAlmostEqual(l90, 68.0, places=5)
 
     def test_history_roundtrip_and_hourly(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             history = NoiseHistory(os.path.join(tmp, "noise.sqlite"))
             now = time.time()
             history.add(now, 50.0, 52.0, 70.0, 0.8)

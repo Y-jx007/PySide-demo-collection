@@ -3,7 +3,6 @@
 import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
@@ -12,6 +11,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import apps_manifest  # noqa: E402
+from tests.tmpdir import temporary_directory  # noqa: E402
 
 HELPER = os.path.join(ROOT, "tools", "smoke_one_window.py")
 
@@ -24,7 +24,7 @@ class TestAllAppWindows(unittest.TestCase):
     def test_every_app_window_constructs_runs_and_saves(self):
         env = os.environ.copy()
         env["QT_QPA_PLATFORM"] = "offscreen"
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             def run(app):
                 title = app["title"]
                 output = os.path.join(tmp, title.replace("/", "_") + ".png")

@@ -18,4 +18,6 @@
 - 画布纯白、无边框、无内缩、无左上角 HUD；图像铺满画布。
 - 封面 520×520，只截画布图像/有效内容，不包含窗口或面板空白。
 - 新增应用同步更新 `apps_manifest.py`、`runtime/launcher_layout.json`、README 和缩略图。
+- `Unpolished` 是**实验田**：依赖额外数据/设备、接口或界面仍在改的应用放这里，分类标记与说明统一由
+  `apps_manifest.CATEGORY_NOTES` 提供；实验田同样要过 `check_ui_style.py`，缩略图可不配。
 - 提交前运行 `python tools/check_ui_style.py <app路径>` 和 `python -m unittest discover -s tests`。

@@ -2,7 +2,6 @@
 """Headless construction/run/save smoke for the canonical apps."""
 import importlib.util
 import os
-import tempfile
 import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -10,6 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from tests.tmpdir import temporary_directory  # noqa: E402
 
 CASES = (
     ("apps/Math/Quasicrystal.py", "Quasicrystal"),
@@ -24,7 +25,7 @@ class TestHeadlessAppSmoke(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_apps_construct_run_save_and_close(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             for relative, label in CASES:
                 spec = importlib.util.spec_from_file_location(
                     "smoke_" + label.replace(" ", "_"),

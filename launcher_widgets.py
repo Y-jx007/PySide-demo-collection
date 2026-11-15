@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
 )
 
-from apps_manifest import APPS, CATEGORY_ORDER, INSTALL_HINTS
+from apps_manifest import APPS, CATEGORY_ORDER, INSTALL_HINTS, category_note
 from manifest_edit import rewrite_app_entry
 
 # ===================== 全局常量 =====================
@@ -762,6 +762,10 @@ class CategoryWidget(QFrame):
     def __init__(self, category_name, parent=None):
         super().__init__(parent)
         self.category_name = category_name
+        self.category_marker = "实验田" if category_note(category_name) else ""
+        if self.category_marker:
+            # 实验田的说明放在整条胶卷的 tooltip 上，竖排标签保持短
+            self.setToolTip(f"实验田：{category_note(category_name)}")
         self.setAcceptDrops(True)
         self.setup_ui()
         self._apply_style(False)
@@ -1131,6 +1135,8 @@ class CategoryWidget(QFrame):
         painter.drawLine(QPoint(10, FILM_BAND + 17), QPoint(24, FILM_BAND + 17))
 
         text = self.category_name.upper() if self.category_name.isascii() else self.category_name
+        if self.category_marker:
+            text = f"{text} · {self.category_marker}"
         size = FILM_LABEL_SIZE
         available = self.height() - 2 * FILM_BAND - 30
         font = QFont(FAMILY_TITLE, size, QFont.Bold)

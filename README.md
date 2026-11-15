@@ -56,7 +56,10 @@
 | **Snowflake** | Reiter 雪花生长模型，六重对称枝晶，参考 [Reiter 2005](http://www.patarnott.com/pdf/SnowCrystalGrowth.pdf) |
 | **Particle Lenia** | 粒子化 Lenia：两级环核 + 短程排斥 + 惯性，圆盘 / 环 / 链 / 随机四种初始；参考 [Particle Lenia](https://znah.net/lenia/) |
 
-### Unpolished（未打磨）
+### Unpolished（实验田）
+
+> 这一栏是**实验田**：允许依赖额外数据（Circulation、Erosion）、外设（Noise），或接口与界面仍在改（KAM、MPM2D、Caustic）。
+> 不承诺与其他分类同等的完善度，但同样要通过 `tools/check_ui_style.py` 与测试；启动器里的分类条也带 **实验田** 标记。
 
 | 应用 | 说明 |
 |------|------|
@@ -158,7 +161,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 │   ├── Fractals/            # IFS / Lindenmayer / Logistic / Mandelbrot / Newton /
 │   │                        #   Quaternion Julia / Snowflake
 │   ├── Cellular Automata/   # Conway / Distill / Lenia / Particle Lenia
-│   └── Unpolished/          # Caustic / Circulation / Erosion / MPM2D
+│   └── Unpolished/          # 实验田：Caustic / Circulation / Erosion / MPM2D
 ├── support/                 # 应用专用支撑模块（按分类分目录，供 app 与测试导入）
 │   ├── physics/             # circulation_data / kam_crtbp / kam_standard_map / kam_taichi / mass_spring /
 │   │                        #   particle_lenia / quasicrystal / solar_system_orbits / lienard_wiechert / lw_taichi /
@@ -182,6 +185,10 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ## UI 规范
 
 新增或重构应用必须遵循 [docs/UI_GUIDELINES.md](docs/UI_GUIDELINES.md)：960×640 最小窗口、330 左侧分组面板、600×600 白色无边框画布、无左栏标题/副标题/图标、520×520 纯图像封面。样板应用为 Quasicrystal、Mass-Spring、Particle Lenia。**双视图应用**（两张并列图像，如 Distill）是明确例外：标记 `UI_LAYOUT = "two_view"`，控制区放在顶部，使用宽幅双画布，不套 330 左栏/600 方画布，推荐 1040×740、最小 1000×700；两个预览各加 2px 中性色边框，像素网格用最近邻放大（SmoothPixmapTransform=False）。提交前可运行 `python tools/check_ui_style.py apps/<分类>/<应用>.py`，测试会检查样板应用的结构与封面。
+
+新应用可以直接生成骨架：`python tools/new_app.py Math/Matrix --title Matrix --description "2×2 线性变换"`
+会写出符合规范的 app 文件、插入清单条目、重新生成 `APP_MATRIX.md`，并离屏渲染一张 520×520 封面（`--no-cover` 可跳过）。
+生成后把占位绘制换成真实图形、补 `tests/` 即可。
 
 卡片顺序和分类以启动器拖动后的 `runtime/launcher_layout.json` 为准，源文件位置跟随卡片；`python tools/sync_registry.py` 只更新 [docs/APP_MATRIX.md](docs/APP_MATRIX.md)，**不会覆盖你的布局**。CI 在 Windows 上以 offscreen Qt 运行注册表检查、UI 检查、视觉回归、headless smoke 和全量测试。
 
@@ -344,7 +351,8 @@ python tools/search_lenia_presets.py --trials 300 --save
 
 ## 已知限制
 
-- Unpolished 分类中的应用默认不配缩略图（Noise 例外，保留界面预览），界面与稳定性未完全打磨。
+- Unpolished 是实验田：默认不配缩略图（Noise 例外，保留界面预览），依赖数据/外设或接口仍在改的应用放在这里；
+  分类备注统一写在 `apps_manifest.CATEGORY_NOTES`，启动器、`docs/APP_MATRIX.md` 与 README 用同一份说法。
 - 分形渲染仍在 GUI 线程同步计算；4x 抗锯齿 + 高迭代次数时缩放会短暂卡顿。
 - `eval` / `exec` 用于用户自定义表达式，仅应输入本地可信内容，不构成安全沙箱。
 

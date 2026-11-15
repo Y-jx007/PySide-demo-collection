@@ -2,7 +2,6 @@
 import ast
 import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from manifest_edit import rewrite_app_entry  # noqa: E402
+from tests.tmpdir import mkdtemp  # noqa: E402
 
 
 def load_apps(path):
@@ -20,7 +20,7 @@ def load_apps(path):
 
 class ManifestEditTests(unittest.TestCase):
     def setUp(self):
-        self.tmpdir = Path(tempfile.mkdtemp())
+        self.tmpdir = Path(mkdtemp())
         self.manifest = self.tmpdir / "apps_manifest.py"
         shutil.copy2(ROOT / "apps_manifest.py", self.manifest)
 

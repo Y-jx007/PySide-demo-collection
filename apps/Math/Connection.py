@@ -16,123 +16,18 @@ import numpy as np
 
 from common.lab_window import LabWindow, SquareCanvas
 from common.qt_base import (
-    QApplication, LabeledSlider, QCheckBox, QColor, QComboBox, QFileDialog, QGroupBox,
+    LabeledSlider, QCheckBox, QColor, QComboBox, QFileDialog, QGroupBox,
     setup_gl_format,
     QHBoxLayout, QLabel, QMessageBox, QPainter, QPen, QPointF, QPolygonF,
     QPixmap, QPushButton, QTimer, QVBoxLayout, QWidget, Qt, run_app,
 )
 from PySide6.QtCore import QElapsedTimer
-from PySide6.QtGui import QOpenGLContext, QOffscreenSurface, QPainterPath, QSurfaceFormat
-from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
-from common.opengl_base import (
-    GL_COLOR_ARRAY, GL_COLOR_BUFFER_BIT, GL_FLOAT, GL_MODELVIEW, GL_PROJECTION,
-    GL_QUADS, GL_VERTEX_ARRAY,
-    glClear, glClearColor, glColorPointer, glDisableClientState,
-    glDrawArrays, glEnableClientState, glLoadIdentity, glMatrixMode,
-    glOrtho, glVertexPointer, glViewport,
-)
+from PySide6.QtGui import QPainterPath
+from common.gpu_surface import Camera3D, GpuSurface, draw_quads, unit
 from support.math.connection import (
     SURFACES, ambient_directions, field_envelope, make_surface,
     oriented_angle, parallel_transport,
 )
-
-
-def unit(v):
-    n = float(np.linalg.norm(v))
-    if n < 1e-12:
-        return np.zeros(3)
-    return np.asarray(v, dtype=float) / n
-
-
-class Camera3D:
-    def __init__(self):
-        self.target = np.zeros(3)
-        self.yaw = -58.0
-        self.pitch = 20.0
-        self.zoom = 1.0
-        self.update()
-
-    def update(self):
-        y = math.radians(self.yaw)
-        p = math.radians(self.pitch)
-        eye_dir = np.array(
-            [math.cos(p) * math.cos(y), math.sin(p), math.cos(p) * math.sin(y)]
-        )
-        self.forward = -eye_dir
-        self.eye = self.target + eye_dir * 4.0
-        self.right = unit(np.cross(self.forward, np.array([0.0, 1.0, 0.0])))
-        self.up = unit(np.cross(self.right, self.forward))
-
-    def project(self, p, width, height):
-        rel = np.asarray(p, dtype=float) - self.eye
-        scale = min(width, height) * 0.38 * self.zoom
-        x = float(rel @ self.right) * scale + width * 0.5
-        y = -float(rel @ self.up) * scale + height * 0.5
-        depth = float(rel @ self.forward)
-        return QPointF(x, y), depth
-
-    def ray(self, x, y, width, height):
-        scale = min(width, height) * 0.38 * self.zoom
-        ox = (float(x) - width * 0.5) / scale
-        oy = -(float(y) - height * 0.5) / scale
-        origin = self.eye + self.right * ox + self.up * oy
-        return origin, self.forward
-
-
-class GpuSurface:
-    """Rasterises the mesh with OpenGL into a QImage (offscreen FBO).
-
-    The canvas stays a plain QWidget painted with QPainter, so the
-    annotations keep their anti-aliased quality; only the thousands of
-    shaded quads are handed to the GPU.  Falls back cleanly when no GL
-    context can be created (headless tests, remote sessions).
-    """
-
-    def __init__(self):
-        self.ok = False
-        self.context = None
-        self.surface = None
-        self.fbo = None
-        try:
-            fmt = QSurfaceFormat.defaultFormat()
-            self.surface = QOffscreenSurface()
-            self.surface.setFormat(fmt)
-            self.surface.create()
-            self.context = QOpenGLContext()
-            self.context.setFormat(fmt)
-            self.ok = bool(self.context.create())
-            self.ok = self.ok and bool(self.context.makeCurrent(self.surface))
-            if self.ok:
-                self.context.doneCurrent()
-        except Exception:
-            self.ok = False
-
-    def render(self, canvas, pixel_ratio):
-        if not self.ok:
-            return None
-        w = max(1, canvas.width())
-        h = max(1, canvas.height())
-        iw = max(1, int(round(w * pixel_ratio)))
-        ih = max(1, int(round(h * pixel_ratio)))
-        if not self.context.makeCurrent(self.surface):
-            return None
-        try:
-            if self.fbo is None or self.fbo.width() != iw or self.fbo.height() != ih:
-                fmt = QOpenGLFramebufferObjectFormat()
-                fmt.setSamples(0)
-                self.fbo = QOpenGLFramebufferObject(iw, ih, fmt)
-            if not self.fbo.bind():
-                return None
-            glViewport(0, 0, iw, ih)
-            glClearColor(1.0, 1.0, 1.0, 1.0)
-            glClear(GL_COLOR_BUFFER_BIT)
-            canvas.paint_surface_gl(w, h)
-            self.fbo.release()
-            image = self.fbo.toImage()
-            image.setDevicePixelRatio(pixel_ratio)
-            return image
-        finally:
-            self.context.doneCurrent()
 
 
 class ConnectionCanvasBase:
@@ -162,11 +57,7 @@ class ConnectionCanvasBase:
         self.window = window
         self.camera = Camera3D()
         self.surface = make_surface("球面")
-        self._gpu = None
-        if QApplication.platformName() not in ("offscreen", "minimal", "vnc"):
-            gpu = GpuSurface()
-            if gpu.ok:
-                self._gpu = gpu
+        self._gpu = GpuSurface.create()
         self.mesh_size = self.MESH_GPU if self._gpu is not None else self.MESH_CPU
         self.mesh_fine = self._prepare_mesh(self.surface.mesh(*self.mesh_size))
         self.verts = self.mesh_fine["verts"]
@@ -380,7 +271,10 @@ class ConnectionCanvasBase:
         pix.fill(QColor(255, 255, 255))
         image = None
         if self._gpu is not None:
-            image = self._gpu.render(self, self.devicePixelRatioF())
+            image = self._gpu.render(
+                self.width(), self.height(), self.devicePixelRatioF(),
+                lambda w, h: self.paint_surface_gl(w, h),
+            )
         p = QPainter(pix)
         if image is not None:
             p.drawImage(0, 0, image)
@@ -985,23 +879,8 @@ class ConnectionCanvas(ConnectionCanvasBase, SquareCanvas):
     def paint_surface_gl(self, w, h):
         """Push every shaded quad to the GPU in one call."""
         px, py, order, level = self._surface_geometry()
-        quad_xy = np.stack([px[order], py[order]], axis=2)
-        xy = np.ascontiguousarray(quad_xy.reshape(-1, 2), dtype=np.float32)
-        rgb = np.ascontiguousarray(
-            self._shade_rgb()[level[order]].repeat(4, axis=0), dtype=np.float32
-        )
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
-        glOrtho(0.0, float(w), float(h), 0.0, -1.0, 1.0)
-        glMatrixMode(GL_MODELVIEW)
-        glLoadIdentity()
-        glEnableClientState(GL_VERTEX_ARRAY)
-        glEnableClientState(GL_COLOR_ARRAY)
-        glVertexPointer(2, GL_FLOAT, 0, xy)
-        glColorPointer(3, GL_FLOAT, 0, rgb)
-        glDrawArrays(GL_QUADS, 0, xy.shape[0])
-        glDisableClientState(GL_COLOR_ARRAY)
-        glDisableClientState(GL_VERTEX_ARRAY)
+        xy = np.stack([px[order], py[order]], axis=2)
+        draw_quads(xy, self._shade_rgb()[level[order]], w, h)
 
 
 class MainWindow(LabWindow):
