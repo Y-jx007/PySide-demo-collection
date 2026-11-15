@@ -530,13 +530,10 @@ class MainWindow(LabWindow):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(4)
 
-        mode_box = QGroupBox("模式")
-        mode_layout = QVBoxLayout(mode_box)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(MODES)
+        self.mode_combo.setFixedWidth(150)
         self.mode_combo.currentTextChanged.connect(self.on_mode)
-        mode_layout.addWidget(self.mode_combo)
-        column.addWidget(mode_box)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.build_space_page())
@@ -557,7 +554,17 @@ class MainWindow(LabWindow):
         column.addLayout(buttons)
 
         root.addWidget(panel)
-        root.addWidget(self.canvas, 1)
+
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(6)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 8, 0)
+        header.addStretch(1)
+        header.addWidget(self.mode_combo)
+        right.addLayout(header)
+        right.addWidget(self.canvas, 1)
+        root.addLayout(right, 1)
         self.setCentralWidget(central)
 
         self.readout_label = QLabel("")
