@@ -64,6 +64,13 @@ class TestSolitonWindow(unittest.TestCase):
         self.assertAlmostEqual(self.window.amplitude(), 1.0, places=6)
         self.assertEqual(self.window.canvas.sim.steps, 0)
 
+    def test_equation_panel_states_the_model(self):
+        text = self.window.equation_label.text()
+        self.assertIn("∇²ψ", text)
+        self.assertIn("|ψ|²", text)
+        self.assertIn("FFT", text)
+        self.assertTrue(self.window.equation_label.toolTip())
+
     def test_readout_shows_numbers(self):
         self.window.tick()
         self.assertIn("功率", self.window.power_label.text())

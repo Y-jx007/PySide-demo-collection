@@ -18,6 +18,31 @@ from common.qt_base import (
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import NLSE, PALETTES, PRESETS
 
+EQUATION_HTML = (
+    '<div style="font-size:13px; color:#1b1b1b;">i&thinsp;∂ψ/∂t = −½∇²ψ − |ψ|²ψ</div>'
+    '<div style="font-size:11px; color:#5c5c5c; margin-top:4px;">'
+    "衍射项 −½∇²ψ 让波包散开，非线性项 −|ψ|²ψ 把亮处越聚越紧；"
+    "功率低时衍射赢（散开），高时自聚焦赢（坍缩）。</div>"
+    '<div style="font-size:11px; color:#1b1b1b; margin-top:6px;">'
+    "饱和：|ψ|² → |ψ|²/(1+|ψ|²/I<sub>s</sub>)</div>"
+    '<div style="font-size:11px; color:#1b1b1b;">'
+    "分步：ψ ← e<sup>iθ/2</sup>ψ → FFT → e<sup>−ik²Δt/2</sup> → IFFT → e<sup>iθ/2</sup></div>"
+    '<div style="font-size:11px; color:#5c5c5c; margin-top:6px;">'
+    "P = ∫|ψ|² dxdy 守恒；θ = Δt·|ψ|²/(1+|ψ|²/I<sub>s</sub>)/2。</div>"
+)
+
+EQUATION_TIP = (
+    "同一个方程，四种初始条件：\n"
+    "· 单束：窄高斯，看衍射与自聚焦谁赢；\n"
+    "· 涡旋：相位绕核一圈转 3·2π（电荷 m=3），环本身不稳定，"
+    "裂成一圈光丝；\n"
+    "· 双束：两束对撞、干涉后合并；\n"
+    "· 噪声海：均匀背景 + 噪声，最快的空间频率被放大，"
+    "长出六角状光丝网络。\n\n"
+    "左边是主方程，非线性项与色散项不可交换，所以用 Strang 分步："
+    "各切一半把线性部分放进 k 空间精确求解。"
+)
+
 
 class SolitonCanvas(ArrayCanvas):
     """Field canvas: the app pushes one RGB frame per timer tick."""
@@ -87,11 +112,21 @@ class MainWindow(LabWindow):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(6)
 
+        equation_box = QGroupBox("方程")
+        equation_layout = QVBoxLayout(equation_box)
+        self.equation_label = QLabel(EQUATION_HTML)
+        self.equation_label.setTextFormat(Qt.RichText)
+        self.equation_label.setWordWrap(True)
+        self.equation_label.setToolTip(EQUATION_TIP)
+        equation_layout.addWidget(self.equation_label)
+        column.addWidget(equation_box)
+
         init_box = QGroupBox("初始条件")
         init_layout = QVBoxLayout(init_box)
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(PRESETS)
         self.preset_combo.setCurrentText("涡旋")
+        self.preset_combo.setToolTip(EQUATION_TIP)
         self.preset_combo.currentTextChanged.connect(lambda _: self.reset())
         init_layout.addWidget(self.preset_combo)
         self.amp_slider = LabeledSlider(
