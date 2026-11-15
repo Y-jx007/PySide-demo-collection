@@ -39,7 +39,9 @@ EQUATION_TIP = (
     "· 两侧扇形条纹：Maker 条纹，Δk 越大振荡越快，第一个零点在 Δk·L = 2π；\n"
     "· 开周期极化：条纹折成两条共振（Δk = ±2π/Λ），效率回升；\n"
     "· 关对称性（κ=0）：χ⁽²⁾ 不存在，整幅图空白。\n\n"
-    "下面小图是出射面的效率随 Δk 的变化，就是实验里扫波长看到的 Maker 曲线。"
+    "下面小图是出射面的效率随 Δk 的变化，就是实验里扫波长看到的 Maker 曲线。\n"
+    "图下那条光带是同一束光在 Δk=0 时的颜色变化：基频（红）逐渐转成倍频（绿），"
+    "中途两束光重叠的地方看起来偏黄——实验室里就是这样。"
 )
 
 
@@ -94,17 +96,16 @@ class SHGCanvas(ArrayCanvas):
     """相位匹配图：横轴传播距离、竖轴失配。"""
 
     def __init__(self, window, parent=None):
-        # 图是 (Δk 行, z 列)：宽高比约 1.5，别让画布拉扁它
-        super().__init__(aspect=1.5, minimum=(480, 320), parent=parent)
+        # 上图是 (Δk, z) 相位匹配图，下面再接一条光束示意，宽高比约 1.15
+        super().__init__(aspect=1.15, minimum=(480, 320), parent=parent)
         self.setFixedSize(600, 600)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.window = window
         self.model = SHGMap()
 
     def render_frame(self):
-        # 行是 Δk、列是 z：光从左（入口）往右（出口）走；flipud 让 +Δk 朝上
-        image = np.ascontiguousarray(np.flipud(self.model.render()))
-        self.set_array(image)
+        # 上图：行是 Δk、列是 z（光从左往右）；下图：同一束光的颜色随转换变化
+        self.set_array(np.ascontiguousarray(self.model.render_with_beams()))
 
 
 class MainWindow(LabWindow):
