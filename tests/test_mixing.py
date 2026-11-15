@@ -11,6 +11,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from support.physics.mixing import (  # noqa: E402
+    PulseSHG,
     fwm_conjugate,
     propagate_sfg,
 )
@@ -64,6 +65,31 @@ class TestFourWaveMixing(unittest.TestCase):
 
     def test_no_pump_no_gain(self):
         self.assertAlmostEqual(self.gain(0.0, pump=0.0), 1.0, places=6)
+
+
+
+class TestPulseSHG(unittest.TestCase):
+    def run_case(self, walk, steps=120):
+        pulse = PulseSHG(walk=walk)
+        pulse.step(steps)
+        return pulse.efficiency(), pulse.shift()
+
+    def test_matched_pulse_converts(self):
+        efficiency, _ = self.run_case(0.0)
+        self.assertGreater(efficiency, 0.1)
+
+    def test_no_walk_means_no_time_shift(self):
+        _, shift = self.run_case(0.0)
+        self.assertAlmostEqual(shift, 0.0, places=6)
+
+    def test_walk_off_delays_the_harmonic(self):
+        _, shift = self.run_case(0.4)
+        self.assertLess(shift, -0.05)
+
+    def test_walk_off_costs_efficiency(self):
+        matched, _ = self.run_case(0.0)
+        walked, _ = self.run_case(0.8)
+        self.assertLess(walked, matched)
 
 if __name__ == "__main__":
     unittest.main()

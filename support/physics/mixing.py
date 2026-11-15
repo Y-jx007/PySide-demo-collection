@@ -197,3 +197,71 @@ def propagate_fwm(delta_k, length=2.0, samples=200, kappa=1.0, pump=0.6,
         z += dz
         history.append(np.abs(a4) ** 2)
     return a3, a4, np.array(history)
+
+class PulseSHG:
+    """SHG of a pulse: dispersion plus group-velocity walk-off.
+
+    A1_t = ... in the lab frame is tedious, so the pump frame is used and the
+    harmonic walks away from it:
+
+        dA1/dz = -i (b1/2) w^2 A1 + i kappa A2 A1* e^{-i dk z}
+        dA2/dz = -i (b2/2) w^2 A2 + i (kappa/2) A1^2 e^{+i dk z}
+                 + i delta w A2              (walk-off)
+
+    delta = 1/v_g(2w) - 1/v_g(w) separates the two pulses in time, which is
+    what limits the bandwidth of a real frequency-doubling crystal.
+    """
+
+    def __init__(self, points=256, window=12.0, length=1.0, steps=120,
+                 kappa=1.0, delta_k=0.0, walk=0.0, beta1=0.05, beta2=0.10):
+        self.n = int(points)
+        self.window = float(window)
+        self.dt = self.window / self.n
+        self.length = float(length)
+        self.steps = int(steps)
+        self.kappa = float(kappa)
+        self.delta_k = float(delta_k)
+        self.walk = float(walk)
+        self.beta1 = float(beta1)
+        self.beta2 = float(beta2)
+        self.dz = self.length / self.steps
+        self.t = (np.arange(self.n) - self.n // 2) * self.dt
+        self.omega = 2.0 * np.pi * np.fft.fftfreq(self.n, d=self.dt)
+        self.reset()
+
+    def reset(self, width=1.2, amplitude=1.0):
+        self.a1 = amplitude * np.exp(-self.t ** 2 / (2.0 * width ** 2))
+        self.a2 = np.zeros(self.n, dtype=np.complex128)
+        self.z = 0.0
+
+    def _dispersion(self, beta):
+        return np.exp(-0.5j * beta * self.omega ** 2 * self.dz)
+
+    def step(self, count=1):
+        lin1 = self._dispersion(self.beta1)
+        lin2 = self._dispersion(self.beta2) * np.exp(1j * self.walk * self.omega * self.dz)
+        for _ in range(int(count)):
+            phase = np.exp(-1j * self.delta_k * (self.z + 0.5 * self.dz))
+            src1 = 1j * self.kappa * self.a2 * np.conj(self.a1) * np.conj(phase)
+            src2 = 0.5j * self.kappa * self.a1 * self.a1 * phase
+            half = 0.5 * self.dz
+            self.a1 = self.a1 + half * src1
+            self.a2 = self.a2 + half * src2
+            self.a1 = np.fft.ifft(np.fft.fft(self.a1) * lin1)
+            self.a2 = np.fft.ifft(np.fft.fft(self.a2) * lin2)
+            phase = np.exp(-1j * self.delta_k * (self.z + self.dz))
+            src1 = 1j * self.kappa * self.a2 * np.conj(self.a1) * np.conj(phase)
+            src2 = 0.5j * self.kappa * self.a1 * self.a1 * phase
+            self.a1 = self.a1 + half * src1
+            self.a2 = self.a2 + half * src2
+            self.z += self.dz
+        return self.a2
+
+    def efficiency(self):
+        return float(np.sum(np.abs(self.a2) ** 2) / max(np.sum(np.abs(self.a1) ** 2), 1e-30))
+
+    def shift(self):
+        """Mean time offset of the harmonic relative to the pump (walk-off)."""
+        i2 = np.abs(self.a2) ** 2
+        total = float(np.sum(i2))
+        return float(np.sum(i2 * self.t) / total) if total > 0 else 0.0
