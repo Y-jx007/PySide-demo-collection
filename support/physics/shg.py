@@ -159,14 +159,6 @@ class SHGMap:
     def peak_efficiency(self):
         return float(np.max(self.efficiency()))
 
-    def beam_strip(self, strip=48):
-        """The beam itself: a soft band whose colour is the mixed wavelength."""
-        colours = self.beam_colours().astype(float)
-        profile = np.exp(-((np.arange(strip) - strip / 2.0) / (0.34 * strip)) ** 2)
-        alpha = (0.92 * profile)[:, None, None]
-        paper = np.full((strip, colours.shape[0], 3), 255.0)
-        return (paper * (1.0 - alpha) + colours[None, :, :] * alpha).astype(np.uint8)
-
     def render(self, palette=PALETTE, floor_db=30.0):
         """dB image of the efficiency map.
 
@@ -182,16 +174,19 @@ class SHGMap:
         db = 10.0 * np.log10(np.clip(field / reference, 1e-12, 1.0))
         norm = np.clip((db + floor_db) / floor_db, 0.0, 1.0)
         index = (norm * 255.0).astype(np.uint8)
-        # 用光的颜色而不是墨青：弱处红（还是基频），强处绿（已转成倍频）
+        # 用光的颜色而不是墨青：弱处红（还是基频），强处紫（已转成倍频）
         return beam_lut()[index]
 
-    def beam_colours(self):
-        """One RGB per z sample: the beam colour along the crystal at dk = 0."""
+    def conversions(self):
+        """Converted energy fraction 2*eta along z at dk = 0 (0 to 1)."""
         eta = np.clip(self.map[self.mismatches // 2], 0.0, 1.0)
-        pump_share = np.clip(1.0 - 2.0 * eta, 0.0, 1.0)
-        pump = np.asarray(PUMP_RGB, dtype=float)
-        harmonic = np.asarray(SHG_RGB, dtype=float)
-        colour = (pump_share[:, None] * pump
-                  + (1.0 - pump_share)[:, None] * harmonic)
-        peak = np.maximum(colour.max(axis=1, keepdims=True), 1.0)
-        return np.clip(colour / peak * 235.0, 0, 255).astype(np.uint8)
+        return np.clip(2.0 * eta, 0.0, 1.0)
+
+    def beam_colours(self):
+        """One RGB per z sample: the wavelength colour of the beam at dk = 0.
+
+        Uses the same spectrum ramp as the map, so the strip and the diagram
+        always agree; the position on the ramp is the converted energy share.
+        """
+        index = (self.conversions() * 255.0).astype(np.uint8)
+        return beam_lut()[index]

@@ -22,7 +22,7 @@ from common.qt_base import (
     QVBoxLayout, QWidget, Qt, run_app,
 )
 from common.field_canvas import ArrayCanvas
-from support.physics.shg import SHGMap
+from support.physics.shg import SHGMap, beam_lut
 
 EQUATION_HTML = (
     '<div style="font-size:12px; color:#1b1b1b;">dA₁/dz = iκ·A₂A₁*&thinsp;e<sup>−iΔkz</sup></div>'
@@ -100,7 +100,7 @@ class BeamStrip(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(64)
+        self.setFixedHeight(40)
         self.model = None
         self.setToolTip(
             "同一条光在晶体里的颜色：入口 800 nm（红），出口 400 nm（紫），"
@@ -121,24 +121,33 @@ class BeamStrip(QWidget):
         if model is None:
             painter.end()
             return
-        strip = model.beam_strip(strip=48)
-        height, width, _ = strip.shape
-        image = QImage(strip.data, width, height, 3 * width,
+        # 整条色标固定展示完整光谱（图例），再用游标标出当前转换率
+        table = np.ascontiguousarray(beam_lut()[None, :, :])
+        width = table.shape[1]
+        image = QImage(table.data, width, 1, 3 * width,
                        QImage.Format_RGB888).copy()
-        band = QRectF(4.0, 4.0, rect.width() - 8.0, 40.0)
+        band = QRectF(4.0, 4.0, rect.width() - 8.0, 13.0)
         painter.drawImage(band, image)
         painter.setPen(QPen(QColor(214, 214, 214), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(band)
+        converted = float(model.conversions()[-1])
+        marker = band.left() + band.width() * min(max(converted, 0.0), 1.0)
+        painter.setPen(QPen(QColor(255, 255, 255, 220), 2.6))
+        painter.drawLine(QPointF(marker, band.top() - 1.0),
+                         QPointF(marker, band.bottom() + 1.0))
+        painter.setPen(QPen(QColor(40, 40, 40, 200), 1.2))
+        painter.drawLine(QPointF(marker, band.top() - 1.0),
+                         QPointF(marker, band.bottom() + 1.0))
         font = painter.font()
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        painter.drawText(QRectF(4, 46, 80, 14), Qt.AlignLeft, "800 nm")
-        painter.drawText(QRectF(rect.width() - 84, 46, 80, 14),
+        painter.drawText(QRectF(4, 19, 80, 14), Qt.AlignLeft, "800 nm")
+        painter.drawText(QRectF(rect.width() - 84, 19, 80, 14),
                          Qt.AlignRight, "400 nm")
-        painter.drawText(QRectF(4, 46, rect.width() - 8, 14),
-                         Qt.AlignCenter, "z →")
+        painter.drawText(QRectF(4, 19, rect.width() - 8, 14), Qt.AlignCenter,
+                         "已转换 %.0f%%" % (converted * 100.0))
         painter.end()
 
 

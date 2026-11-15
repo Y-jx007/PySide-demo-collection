@@ -84,8 +84,9 @@ class TestMap(unittest.TestCase):
         self.assertEqual(colours.shape, (60, 3))
         self.assertGreater(int(colours[0, 0]), int(colours[0, 2]))
         self.assertGreater(int(colours[-1, 2]), int(colours[-1, 1]))
-        strip = model.beam_strip(strip=12)
-        self.assertEqual(strip.shape, (12, 60, 3))
+        conversions = model.conversions()
+        self.assertEqual(conversions.shape, (60,))
+        self.assertGreater(float(conversions[-1]), float(conversions[0]))
 
     def test_symmetry_switch_zeroes_the_map(self):
         model = SHGMap(mismatches=21, samples=40, length=1.0, kappa=1.0, span=8.0)
