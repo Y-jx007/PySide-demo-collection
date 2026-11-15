@@ -28,7 +28,7 @@ PALETTES = {
     ),
 }
 
-PRESETS = ("单束", "涡旋", "双束", "噪声海")
+PRESETS = ("单束", "涡旋", "双束", "四波混频", "噪声海")
 
 # 两种非线性模型：共振介质的可饱和响应，与真实玻璃里的 χ⁽⁵⁾ 修正。
 # 注意“阶”数的是场：χ⁽³⁾ 给 n₂I（∝I，Kerr），χ⁽⁵⁾ 给 n₄I²（∝I²）；
@@ -148,6 +148,16 @@ class NLSE:
             right = amp * np.exp(-((self.X - 5.0) ** 2 + self.Y ** 2) / (2 * width ** 2))
             field = (left * np.exp(1j * kick * self.X)
                      + right * np.exp(-1j * kick * self.X))
+        elif preset == "四波混频":
+            # 两束对向泵浦（±k）在介质里写出一张光栅，弱探测束（+0.35k）
+            # 被这张光栅散射成共轭波（−0.35k）——相位共轭的入口。
+            width = 1.7
+            pump = amp * np.exp(-((self.X + 4.6) ** 2 + self.Y ** 2) / (2 * width ** 2))
+            probe = 0.3 * amp * np.exp(-((self.X + 4.6) ** 2 + self.Y ** 2)
+                                       / (2 * width ** 2))
+            field = (pump * np.exp(1j * 0.9 * self.Y)
+                     + pump * np.exp(-1j * 0.9 * self.Y)
+                     + probe * np.exp(1j * 0.32 * self.Y))
         elif preset == "噪声海":
             disc = np.exp(-r2 / (2.0 * 11.0 ** 2))
             field = amp * disc * (1.0 + 0.0j)

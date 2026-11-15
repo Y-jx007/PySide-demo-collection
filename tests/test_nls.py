@@ -17,7 +17,7 @@ from support.physics.nls import (  # noqa: E402
 
 class TestPresets(unittest.TestCase):
     def test_preset_names_are_stable(self):
-        self.assertEqual(PRESETS, ("单束", "涡旋", "双束", "噪声海"))
+        self.assertEqual(PRESETS, ("单束", "涡旋", "双束", "四波混频", "噪声海"))
 
     def test_unknown_preset_is_rejected(self):
         sim = NLSE(size=48)
@@ -198,6 +198,23 @@ class TestPalette(unittest.TestCase):
         rgb = apply_palette(np.zeros((8, 8)))
         self.assertEqual(rgb.shape, (8, 8, 3))
         np.testing.assert_allclose(rgb[0, 0].astype(int), PALETTES[PALETTE][0][1], atol=1)
+
+
+class TestFourWaveMixing(unittest.TestCase):
+    def test_preset_seeds_two_pumps_and_a_probe(self):
+        sim = NLSE()
+        sim.reset("四波混频", 0.5, 0.0)
+        phase = np.angle(sim.psi[np.abs(sim.psi) > 1e-3])
+        # 三个波矢：±0.9（泵浦）与 +0.32（探测）
+        self.assertGreater(phase.size, 0)
+        self.assertEqual(sim.steps, 0)
+
+    def test_preset_stays_finite_for_a_while(self):
+        sim = NLSE()
+        sim.reset("四波混频", 0.5, 0.0)
+        sim.step(40)
+        self.assertTrue(np.all(np.isfinite(sim.psi)))
+        self.assertLess(float(np.abs(sim.psi).max()), 10.0)
 
 
 class TestTwoPhoton(unittest.TestCase):
