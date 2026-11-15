@@ -39,20 +39,25 @@ MODELS = ("饱和", "高阶 Kerr")
 _LUTS = {}
 
 
-def palette_lut(palette=PALETTE):
-    """256-entry RGB lookup table for a palette (built once per palette)."""
-    table = _LUTS.get(palette)
+def palette_lut(palette=PALETTE, gamma=1.0):
+    """256-entry RGB lookup table for a palette (built once per palette).
+
+    `gamma` bakes a display curve into the table, so callers can map a
+    normalised field with one multiply instead of an elementwise power.
+    """
+    key = (palette, round(float(gamma), 4))
+    table = _LUTS.get(key)
     if table is None:
         stops = PALETTES.get(palette, PALETTES[PALETTE])
         positions = np.array([p for p, _ in stops], dtype=float)
         colours = np.array([c for _, c in stops], dtype=float) / 255.0
-        ramp = np.linspace(0.0, 1.0, 256)
+        ramp = np.linspace(0.0, 1.0, 256) ** max(float(gamma), 1e-3)
         table = np.stack(
             [np.interp(ramp, positions, colours[:, channel]) for channel in range(3)],
             axis=1,
         )
         table = np.clip(table * 255.0, 0, 255).astype(np.uint8)
-        _LUTS[palette] = table
+        _LUTS[key] = table
     return table
 
 
