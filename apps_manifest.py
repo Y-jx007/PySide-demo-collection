@@ -99,6 +99,13 @@ APPS = [
     },
     # ---------------- Physics ----------------
     {
+        "title": "SHG",
+        "description": "倍频与相位匹配：Δk 扫出的 Maker 条纹、周期极化与对称性",
+        "path": "Physics/SHG.py",
+        "friendly": "倍频相位匹配",
+        "category": "Physics",
+    },
+    {
         "title": "SPM",
         "description": "时间域 NLSE：自相位调制展宽与孤子呼吸、分裂",
         "path": "Physics/SPM.py",
