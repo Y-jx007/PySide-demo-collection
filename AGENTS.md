@@ -18,6 +18,8 @@
 - 不要在 `assets/style.qss` 里自定义 `QCheckBox::indicator`：勾选态会变成没有对勾的色块，
   看起来像框消失了。复选框一律用 Qt 默认样式，`tests/test_ui_guidelines.py` 会检查。
 - 画布纯白、无边框、无内缩、无左上角 HUD；图像铺满画布。
+- 单目标 3D 应用用**轨道相机**：相机固定半径、始终看向目标；左键水平拖动改 yaw、垂直拖动改高度，灵敏度参考 Connection 的 0.45°/px；不要做固定视点 free-look。详见 `docs/UI_GUIDELINES.md` §10。
+- 3D 拖动预览可以降分辨率，但不要为了性能把积分步数降出伪暗环（Lensing 600 px 至少 200 步）。
 - 封面 520×520，只截画布图像/有效内容，不包含窗口或面板空白。
 - 新增应用同步更新 `apps_manifest.py`、`runtime/launcher_layout.json`、README 和缩略图。
 - `Unpolished` 是**实验田**：依赖额外数据/设备、接口或界面仍在改的应用放这里，分类标记与说明统一由

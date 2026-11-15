@@ -54,6 +54,17 @@ class TestUIGuidelines(unittest.TestCase):
         readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
         self.assertIn("docs/UI_GUIDELINES.md", readme)
 
+    def test_3d_orbit_camera_rule_is_documented(self):
+        path = os.path.join(ROOT, "docs", "UI_GUIDELINES.md")
+        with open(path, encoding="utf-8") as handle:
+            guidelines = handle.read()
+        self.assertIn("3D 轨道相机", guidelines)
+        self.assertIn("0.45", guidelines)
+        self.assertIn("free-look", guidelines)
+        with open(os.path.join(ROOT, "AGENTS.md"), encoding="utf-8") as handle:
+            agents = handle.read()
+        self.assertIn("轨道相机", agents)
+
 
 class TestCheckBoxStyle(unittest.TestCase):
     def test_stylesheet_leaves_checkboxes_to_qt(self):

@@ -39,18 +39,21 @@ APP_TITLE = "Lensing · 史瓦西光线追踪"
 _WINDOW_BG = "background-color: #ffffff"
 
 QUALITY = (
-    ("快速", 360, 160),
+    ("快速", 360, 200),
     ("标准", 600, 260),
     ("精细", 840, 300),
 )
 
-# Full-resolution preview while the camera is moving.  The 600 px canvas is
-# drawn 1:1; no 420/600 smooth rescale is paid on the UI thread.
+# Full-resolution preview while the camera/disk is moving.  The 600 px
+# canvas is drawn 1:1; no 420/600 smooth rescale is paid on the UI thread.
+# Keep the integration steps at the full standard count: near-critical rays
+# need the extra windings, otherwise the photon ring gains a false dark
+# annulus while the mouse button is held down.
 DRAG_SIZE = 600
-DRAG_STEPS = 160
+DRAG_STEPS = 260
 DRAG_INTERVAL_MS = 8
 ANIM_SIZE = 600
-ANIM_STEPS = 240
+ANIM_STEPS = 260
 
 PRESETS = {
     "吸积盘": dict(
