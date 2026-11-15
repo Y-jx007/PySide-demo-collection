@@ -55,3 +55,33 @@ class CascadedBeam:
         centre = data.shape[1] // 2
         aligned = data - data[:, centre][:, None]
         return np.unwrap(aligned, axis=1)
+
+class TwinBeamField:
+    """Two speckled beams: the idler copies the signal up to a shrinking error."""
+
+    def __init__(self, points=96, gain=4.0, seed=7, smoothing=3):
+        self.n = int(points)
+        self.gain = float(gain)
+        self.seed = int(seed)
+        self.smoothing = int(smoothing)
+
+    def _speckle(self, rng):
+        raw = rng.normal(size=(self.n, self.n)) + 1j * rng.normal(size=(self.n, self.n))
+        k = self.smoothing
+        kernel = np.ones((k, k)) / (k * k)
+        from numpy.fft import fft2, ifft2
+        padded = np.pad(np.real(raw), k, mode="wrap")
+        smoke = np.zeros((self.n, self.n))
+        for i in range(self.n):
+            for j in range(self.n):
+                smoke[i, j] = (padded[i:i + k, j:j + k] * kernel).sum()
+        return np.abs(raw) ** 2 * (0.5 + 2.0 * smoke)
+
+    def images(self):
+        rng = np.random.default_rng(self.seed)
+        signal = self._speckle(rng) * self.gain
+        # 独立噪声按 1/sqrt(gain) 衰减：增益越高，两臂越像
+        error = self._speckle(rng) * np.sqrt(self.gain)
+        idler = signal + (error - error.mean())
+        difference = signal - idler
+        return signal, idler, difference

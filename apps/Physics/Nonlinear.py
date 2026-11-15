@@ -26,7 +26,7 @@ from common.qt_base import (
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import MODELS, NLSE, PALETTE, PRESETS, palette_lut
 from support.physics.mixing import PulseSHG, SFGMap, cascaded_phase_shift
-from support.physics.beam2d import CascadedBeam
+from support.physics.beam2d import CascadedBeam, TwinBeamField
 from support.physics.quantum import photon_difference_variance, shot_noise_variance, squeezing_db, twin_beams
 from support.physics.shg import SHGMap, beam_lut
 from support.physics.spm import TemporalNLSE
@@ -510,6 +510,17 @@ class OpticsCanvas(ArrayCanvas):
         if self.mode == "时间孤子":
             self.set_array(self.time.render_waterfall())
         elif self.mode == "调频":
+            if self.process == "孪生光束":
+                field_s, field_i, field_d = TwinBeamField(
+                    gain=self.quantum_gain, seed=7
+                ).images()
+                stack = np.vstack([field_s, field_i, field_d])
+                reference = float(np.abs(stack).max()) or 1.0
+                art = palette_lut(PALETTE, gamma=0.8)[
+                    (np.clip(np.abs(stack) / reference, 0.0, 1.0) * 255).astype(np.uint8)
+                ]
+                self.set_array(np.ascontiguousarray(art))
+                return
             if self.process == "级联 χ²":
                 # 二维光场：基频的相位随 x、z 累积（级联克尔透镜）
                 beam = self.beam
