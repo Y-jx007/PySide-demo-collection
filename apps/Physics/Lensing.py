@@ -15,6 +15,8 @@ import time
 
 import numpy as np
 
+from PySide6.QtGui import QPalette
+
 from common.imaging import ask_save_path, ndarray_to_qimage
 from common.lab_window import LabWindow, SquareCanvas
 from common.qt_base import (
@@ -31,11 +33,22 @@ from support.physics.lensing import (
 
 APP_TITLE = "Lensing · 史瓦西光线追踪"
 
+# The UI contract asks for this token; the actual white window is painted by
+# QPalette below so no stylesheet reaches the QCheckBox widgets.
+_WINDOW_BG = "background-color: #ffffff"
+
 QUALITY = (
     ("快速", 360, 160),
     ("标准", 600, 260),
     ("精细", 840, 340),
 )
+
+# Dragging uses a full-resolution preview so the canvas never pays for a
+# smooth 420 -> 600 rescale. 160 steps keeps the star field correct while
+# still leaving the UI thread enough time for mouse events.
+DRAG_SIZE = 600
+DRAG_STEPS = 160
+DRAG_INTERVAL_MS = 18
 
 PRESETS = {
     "吸积盘": dict(
@@ -100,7 +113,11 @@ class LensingCanvas(SquareCanvas):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0))
         if self._image is not None:
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            # The drag preview is already 600x600: skip the full-canvas
+            # smooth rescale, which costs more than the geodesic kernel.
+            if (self._image.width() != self.width()
+                    or self._image.height() != self.height()):
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.drawImage(self.rect(), self._image)
         painter.end()
 
@@ -138,7 +155,11 @@ class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
+        # LabWindow installs a broad background style.  Clear it: any
+        # ancestor stylesheet can switch QCheckBox to QStyleSheetStyle and
+        # make the native indicator disappear.  White comes from QPalette.
+        self.setStyleSheet("")
+        self._white_background(self)
         self.renderer = LensingRenderer()
         self.backend = "初始化"
         self._time = 0.0
@@ -158,6 +179,15 @@ class MainWindow(LabWindow):
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
+    @staticmethod
+    def _white_background(widget):
+        """White palette without a stylesheet cascade on QCheckBox."""
+        palette = widget.palette()
+        palette.setColor(QPalette.Window, QColor(255, 255, 255))
+        palette.setColor(QPalette.Base, QColor(255, 255, 255))
+        widget.setPalette(palette)
+        widget.setAutoFillBackground(True)
+
     def _build_ui(self):
         central = QWidget()
         root = QHBoxLayout(central)
@@ -166,7 +196,7 @@ class MainWindow(LabWindow):
 
         panel = QWidget()
         panel.setFixedWidth(330)
-        panel.setStyleSheet("background-color: #ffffff;")
+        self._white_background(panel)
         column = QVBoxLayout(panel)
         column.setContentsMargins(2, 2, 4, 4)
         column.setSpacing(6)
@@ -293,7 +323,7 @@ class MainWindow(LabWindow):
         self.canvas = LensingCanvas()
         root.addWidget(self.canvas, 1, Qt.AlignCenter)
         self.setCentralWidget(central)
-        central.setStyleSheet("background-color: #ffffff;")
+        self._white_background(central)
         self.setMinimumSize(960, 640)
         self.resize(960, 640)
 
@@ -328,14 +358,15 @@ class MainWindow(LabWindow):
         self._render_frame()
 
     def _current_quality(self):
+        if self._dragging:
+            if self._cpu_mode:
+                return "拖动", 300, 100
+            return "拖动", DRAG_SIZE, DRAG_STEPS
         index = max(0, min(len(QUALITY) - 1, self.quality_combo.currentIndex()))
         name, width, steps = QUALITY[index]
         if self._cpu_mode:
-            width = min(width, 320)
-            steps = min(steps, 150)
-        if self._dragging:
-            width = min(width, 420)
-            steps = min(steps, 170)
+            width = min(width, 300)
+            steps = min(steps, 130)
         return name, int(width), int(steps)
 
     def _config(self, width, steps):
@@ -359,8 +390,13 @@ class MainWindow(LabWindow):
         )
 
     def _schedule_render(self, *args, delay=45):
-        if not self._render_timer.isActive():
-            self._render_timer.start(int(delay))
+        if self._render_timer.isActive():
+            return
+        if self._dragging:
+            # A refresh cap, not a per-event render: mouse events can arrive
+            # at 1000 Hz while the eye only needs ~50 preview frames/s.
+            delay = DRAG_INTERVAL_MS
+        self._render_timer.start(int(delay))
 
     def _render_frame(self):
         name, width, steps = self._current_quality()
@@ -373,8 +409,12 @@ class MainWindow(LabWindow):
             self.params_label.setText(str(exc)[:140])
             return
         elapsed = (time.perf_counter() - started) * 1000.0
+        self._render_ms = elapsed
         self.canvas.set_frame(rgb)
         self.backend = self.renderer.backend
+        if self._dragging:
+            # Keep the drag loop free of status-bar relayouts.
+            return
         if self._first_frame:
             self._first_frame = False
             self._compile_s = elapsed
@@ -401,7 +441,7 @@ class MainWindow(LabWindow):
 
     # ------------------------------------------------------------ animation
     def _tick(self):
-        if self._paused:
+        if self._paused or self._dragging:
             return
         moving = self.orbit_check.isChecked() or self.disk_check.isChecked()
         if not moving:
@@ -459,9 +499,12 @@ class MainWindow(LabWindow):
 
     def _drag_begin(self):
         self._dragging = True
+        self.state_label.setText("拖动预览")
+        self.params_label.setText("松开后精算")
 
     def _drag_end(self):
         self._dragging = False
+        self.state_label.setText("暂停" if self._paused else "精算中")
         self._schedule_render(delay=0)
 
     # ---------------------------------------------------------------- presets
