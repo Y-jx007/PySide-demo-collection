@@ -498,10 +498,10 @@ class OpticsCanvas(ArrayCanvas):
             self.set_array(self.time.render_waterfall())
         elif self.mode == "调频":
             if self.process == "级联 χ²":
-                kappas = np.linspace(10.0, 60.0, 64)
+                kappas = np.linspace(10.0, 60.0, 16)
                 phases = np.array([abs(cascaded_phase_shift(
                         kappa=self.window.crystal_kappa_slider.value() / 100.0,
-                    detune=float(dk))[0]) for dk in kappas])
+                    detune=float(dk), samples=120)[0]) for dk in kappas])
                 height = 256
                 art = np.full((height, kappas.size, 3), 250, dtype=np.uint8)
                 peak = max(float(phases.max()), 1e-9)
@@ -518,10 +518,10 @@ class OpticsCanvas(ArrayCanvas):
                 idler = n_i[picks][:60]
                 difference = (n_s - n_i)[picks][:60]
                 bands = []
+                shared = max(float(np.max(np.abs(signal))), 1e-9)
                 for values in (signal, idler, difference):
-                    peak = max(float(np.max(np.abs(values))), 1e-9)
                     strip = np.zeros((60, values.size, 3), dtype=float)
-                    frac = np.clip(np.abs(values) / peak, 0.0, 1.0)[None, :, None]
+                    frac = np.clip(np.abs(values) / shared, 0.0, 1.0)[None, :, None]
                     strip[:] = 252.0 + (np.array([24.0, 96.0, 150.0]) - 252.0) * frac
                     bands.append(strip.astype(np.uint8))
                 art = np.vstack(bands)
