@@ -9,14 +9,16 @@ two beams collide, and a wide noisy disc sprouts a lattice of filaments through
 modulational instability.  Left click drops another beam into the running field.
 """
 import time
+
+import numpy as np
 from common.lab_window import LabWindow
 from common.qt_base import (
-    LabeledSlider, QCheckBox, QComboBox, QFileDialog, QGroupBox,
-    QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy, QTimer,
-    QVBoxLayout, QWidget, Qt, run_app,
+    LabeledSlider, QCheckBox, QColor, QComboBox, QFileDialog, QGroupBox,
+    QHBoxLayout, QLabel, QMessageBox, QPainter, QPen, QPointF, QPushButton,
+    QRectF, QSizePolicy, QTimer, QVBoxLayout, QWidget, Qt, run_app,
 )
 from common.field_canvas import ArrayCanvas
-from support.physics.nls import NLSE, PALETTE, PRESETS
+from support.physics.nls import MODELS, NLSE, PALETTE, PRESETS
 
 
 def nb(text):
@@ -58,6 +60,111 @@ EQUATION_TIP = (
 )
 
 
+class ResponsePlot(QWidget):
+    """面板里的小图：响应因子与两能级布居随光强的变化。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(104)
+        self.sim = None
+        self.peak = 0.0
+        self.setToolTip(
+            "横轴是光强，纵轴是响应因子与能级布居：\n"
+            "· ΔN/N = 1/(1+I/Iₛ)：还能响应的比例；\n"
+            "· N₁/N、N₂/N：基态与激发态的占比，强光下趋于均分（漂白）；\n"
+            "· 竖线是当前峰值强度所在的位置。"
+        )
+
+    def update_state(self, sim, peak):
+        self.sim = sim
+        self.peak = float(peak)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.fillRect(rect, QColor(255, 255, 255))
+        painter.setPen(QPen(QColor(214, 214, 214), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect)
+        sim = self.sim
+        if sim is None:
+            painter.end()
+            return
+
+        left, top, right, bottom = 28.0, 10.0, 8.0, 20.0
+        plot = QRectF(left, top, max(10.0, rect.width() - left - right),
+                      max(10.0, rect.height() - top - bottom))
+        saturable = sim.model == "饱和"
+        x_max = 2.0 * sim.saturation if saturable else max(1.0 / max(sim.kappa, 1e-6), 1.0)
+        if saturable:
+            x = np.linspace(0.0, x_max, 160)
+        else:
+            x = np.linspace(0.0, x_max, 160)
+
+        def sx(value):
+            return plot.left() + plot.width() * min(max(value / x_max, 0.0), 1.0)
+
+        def sy(value):
+            return plot.bottom() - plot.height() * min(max(value, 0.0), 1.0)
+
+        grid = QColor(238, 238, 238)
+        painter.setPen(QPen(grid, 1))
+        for fraction in (0.25, 0.5, 0.75):
+            y = sy(fraction)
+            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+        painter.setPen(QPen(QColor(190, 190, 190), 1))
+        painter.drawLine(QPointF(plot.left(), plot.bottom()),
+                         QPointF(plot.right(), plot.bottom()))
+        painter.drawLine(QPointF(plot.left(), plot.top()),
+                         QPointF(plot.left(), plot.bottom()))
+
+        # 响应因子
+        curve = sim.response(x)
+        painter.setPen(QPen(QColor(24, 96, 150), 1.8))
+        points = [QPointF(sx(xi), sy(yi)) for xi, yi in zip(x, curve)]
+        painter.drawPolyline(points)
+
+        # 两能级布居（只有饱和模型才有这个解释）
+        if saturable:
+            s = x / sim.saturation
+            n1 = (s + 2.0) / (2.0 * (1.0 + s))
+            n2 = s / (2.0 * (1.0 + s))
+            painter.setPen(QPen(QColor(150, 150, 150), 1.0, Qt.DashLine))
+            painter.drawPolyline([QPointF(sx(xi), sy(yi)) for xi, yi in zip(x, n1)])
+            painter.drawPolyline([QPointF(sx(xi), sy(yi)) for xi, yi in zip(x, n2)])
+
+        # 当前峰值位置的竖线
+        painter.setPen(QPen(QColor(200, 120, 40), 1.2, Qt.DashLine))
+        cursor = sx(self.peak)
+        painter.drawLine(QPointF(cursor, plot.top()), QPointF(cursor, plot.bottom()))
+        marker = float(sim.response(self.peak))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(200, 120, 40))
+        painter.drawEllipse(QPointF(cursor, sy(marker)), 3.0, 3.0)
+
+        font = painter.font()
+        font.setPointSizeF(7.5)
+        painter.setFont(font)
+        painter.setPen(QColor(110, 110, 110))
+        painter.drawText(QRectF(rect.left() + 4, rect.top() + 2, 24, 10),
+                         Qt.AlignLeft, "1.0")
+        painter.drawText(QRectF(rect.left() + 4, rect.bottom() - 24, 24, 10),
+                         Qt.AlignLeft, "0")
+        painter.drawText(QRectF(rect.left() + 26, rect.bottom() - 15, 120, 12),
+                         Qt.AlignLeft, "光强 I")
+        if saturable:
+            ratio = 1.0 / (1.0 + self.peak / sim.saturation)
+            painter.drawText(QRectF(rect.right() - 118, rect.bottom() - 15, 112, 12),
+                             Qt.AlignRight, "ΔN/N = %.2f" % ratio)
+        else:
+            ratio = max(1.0 - sim.kappa * self.peak, 0.0)
+            painter.drawText(QRectF(rect.right() - 118, rect.bottom() - 15, 112, 12),
+                             Qt.AlignRight, "1−κI = %.2f" % ratio)
+        painter.end()
+
+
 class SolitonCanvas(ArrayCanvas):
     """Field canvas: the app pushes one RGB frame per timer tick."""
 
@@ -70,9 +177,13 @@ class SolitonCanvas(ArrayCanvas):
         self.sim = NLSE()
         self.log_view = False
         self.palette = PALETTE
+        self.mode = "场"
 
     def render_frame(self):
-        self.set_array(self.sim.render(self.palette, log=self.log_view))
+        if self.mode == "动量谱":
+            self.set_array(self.sim.render_spectrum(floor_db=35.0))
+        else:
+            self.set_array(self.sim.render(self.palette, log=self.log_view))
 
     def world_point(self, pos):
         """Canvas position -> simulation coordinates (None when outside)."""
@@ -124,7 +235,7 @@ class MainWindow(LabWindow):
         panel.setFixedWidth(330)
         column = QVBoxLayout(panel)
         column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(6)
+        column.setSpacing(4)
 
         equation_box = QGroupBox("方程")
         equation_layout = QVBoxLayout(equation_box)
@@ -166,20 +277,38 @@ class MainWindow(LabWindow):
         )
         self.log_check.toggled.connect(self.on_log)
         run_layout.addWidget(self.log_check)
+        selects = QHBoxLayout()
+        selects.setSpacing(6)
+        self.view_combo = QComboBox()
+        self.view_combo.addItems(("场", "动量谱"))
+        self.view_combo.currentTextChanged.connect(self.on_view)
+        self.view_combo.setToolTip(
+            "动量谱是场的二维傅里叶谱（dB）：调制不稳定性选的波矢、"
+            "坍缩辐射的环、涡旋的环形谱都会直接显示出来。"
+        )
+        selects.addWidget(self.view_combo, 1)
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(MODELS)
+        self.model_combo.currentTextChanged.connect(self.on_model)
+        self.model_combo.setToolTip(
+            "饱和：共振介质的两能级响应 1/(1+I/Iₛ)；\n"
+            "高阶 Kerr：χ⁽⁵⁾ 修正 1−κI，这才是真实玻璃里停止坍缩的机制。"
+        )
+        selects.addWidget(self.model_combo, 1)
+        run_layout.addLayout(selects)
+        self.kappa_slider = LabeledSlider(
+            "κ", 1, 80, 20, formatter=lambda v: "%.3f" % (v / 1000.0)
+        )
+        self.kappa_slider.valueChanged.connect(self.on_kappa)
+        self.kappa_slider.setVisible(False)
+        run_layout.addWidget(self.kappa_slider)
         column.addWidget(run_box)
 
-        read_box = QGroupBox("读数")
-        read_layout = QVBoxLayout(read_box)
-        self.power_label = QLabel("功率 —")
-        self.peak_label = QLabel("峰值 —")
-        self.width_label = QLabel("束宽 —")
-        self.step_label = QLabel("步数 —")
-        self.hint_label = QLabel("左键点击：在该处再种一束光")
-        self.hint_label.setStyleSheet("color: #6b6b6b;")
-        for widget in (self.power_label, self.peak_label, self.width_label,
-                       self.step_label, self.hint_label):
-            read_layout.addWidget(widget)
-        column.addWidget(read_box)
+        micro_box = QGroupBox("微观响应")
+        micro_layout = QVBoxLayout(micro_box)
+        self.response_plot = ResponsePlot()
+        micro_layout.addWidget(self.response_plot)
+        column.addWidget(micro_box)
         column.addStretch(1)
 
         buttons = QHBoxLayout()
@@ -198,9 +327,14 @@ class MainWindow(LabWindow):
         root.addWidget(self.canvas, 1)
         self.setCentralWidget(central)
 
+        self.readout_label = QLabel("")
+        self.statusBar().addPermanentWidget(self.readout_label)
         self.fps_label = QLabel("")
+        self.fps_label.setStyleSheet("padding-left: 14px;")
         self.statusBar().addPermanentWidget(self.fps_label)
-        self.statusBar().showMessage("非线性薛定谔：自聚焦、涡旋破裂与光丝", 4000)
+        self.statusBar().showMessage(
+            "非线性薛定谔：自聚焦、涡旋破裂与光丝；左键点击可在该处再种一束光", 6000
+        )
 
     # ---------- 参数 ----------
     def amplitude(self):
@@ -218,6 +352,21 @@ class MainWindow(LabWindow):
     def on_log(self, checked):
         self.canvas.log_view = bool(checked)
         self.canvas.render_frame()
+
+    def on_view(self, name):
+        self.canvas.mode = name
+        self.canvas.render_frame()
+
+    def on_model(self, name):
+        sim = self.canvas.sim
+        sim.model = name
+        self.kappa_slider.setVisible(name == "高阶 Kerr")
+        sim.kappa = self.kappa_slider.value() / 1000.0
+        self.soft_reset()
+
+    def on_kappa(self, value):
+        self.canvas.sim.kappa = value / 1000.0
+        self.soft_reset()
 
     def soft_reset(self):
         """Restart from the same preset with the current sliders."""
@@ -253,10 +402,12 @@ class MainWindow(LabWindow):
 
     def update_readout(self):
         sim = self.canvas.sim
-        self.power_label.setText("功率 %.2f" % sim.power())
-        self.peak_label.setText("峰值 %.2f" % sim.peak())
-        self.width_label.setText("束宽 %.2f" % sim.width())
-        self.step_label.setText("步数 %d" % sim.steps)
+        peak = sim.peak()
+        self.readout_label.setText(
+            "功率 %.2f · 峰值 %.2f · 束宽 %.2f · 步数 %d"
+            % (sim.power(), peak, sim.width(), sim.steps)
+        )
+        self.response_plot.update_state(sim, peak)
 
     # ---------- 保存 ----------
     def save(self):

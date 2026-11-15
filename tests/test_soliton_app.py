@@ -75,8 +75,32 @@ class TestSolitonWindow(unittest.TestCase):
 
     def test_readout_shows_numbers(self):
         self.window.tick()
-        self.assertIn("功率", self.window.power_label.text())
-        self.assertIn("步数", self.window.step_label.text())
+        text = self.window.readout_label.text()
+        self.assertIn("功率", text)
+        self.assertIn("步数", text)
+
+    def test_view_switch_moves_the_canvas_between_field_and_spectrum(self):
+        self.window.tick()
+        field_image = self.window.canvas.image()
+        self.window.view_combo.setCurrentText("动量谱")
+        self.assertEqual(self.window.canvas.mode, "动量谱")
+        self.assertIsNot(self.window.canvas.image(), field_image)
+        self.window.view_combo.setCurrentText("场")
+        self.assertEqual(self.window.canvas.mode, "场")
+
+    def test_model_switch_exposes_the_kappa_slider(self):
+        # 窗口没 show()，用 isHidden() 判断显式隐藏状态
+        self.assertTrue(self.window.kappa_slider.isHidden())
+        self.window.model_combo.setCurrentText("高阶 Kerr")
+        self.assertEqual(self.window.canvas.sim.model, "高阶 Kerr")
+        self.assertFalse(self.window.kappa_slider.isHidden())
+        self.window.kappa_slider.setValue(50)
+        self.assertAlmostEqual(self.window.canvas.sim.kappa, 0.05, places=6)
+
+    def test_response_plot_follows_the_peak(self):
+        self.window.tick()
+        self.assertGreater(self.window.response_plot.peak, 0.0)
+        self.assertIs(self.window.response_plot.sim, self.window.canvas.sim)
 
 
 if __name__ == "__main__":

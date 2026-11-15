@@ -30,6 +30,9 @@ PALETTES = {
 
 PRESETS = ("单束", "涡旋", "双束", "噪声海")
 
+# 两种非线性模型：共振介质的可饱和响应，与真实玻璃里的高阶 Kerr（χ⁽⁵⁾）。
+MODELS = ("饱和", "高阶 Kerr")
+
 
 _LUTS = {}
 
@@ -88,7 +91,8 @@ def apply_palette(values, palette=PALETTE, log=False, gamma=0.7, percentile=99.5
 class NLSE:
     """Periodic box, complex field, split-step Fourier time stepping."""
 
-    def __init__(self, size=192, extent=32.0, dt=0.02, seed=7, saturation=60.0):
+    def __init__(self, size=192, extent=32.0, dt=0.02, seed=7, saturation=60.0,
+                 model="饱和", kappa=0.02):
         self.n = int(size)
         self.extent = float(extent)
         self.dx = self.extent / self.n
@@ -98,6 +102,9 @@ class NLSE:
         # 项会在网格尺度上炸开；带饱和项既保持物理图像，又让亮点停在可分辨
         # 的尺度上（对应非线性介质里的饱和效应）。
         self.saturation = float(saturation)
+        # χ⁽⁵⁾ 的系数：n(I) = n₂I (1 − κI)，κ 大到一定程度就从自聚焦转成自散焦。
+        self.model = model
+        self.kappa = float(kappa)
         self.x = (np.arange(self.n) - self.n // 2) * self.dx
         self.X, self.Y = np.meshgrid(self.x, self.x, indexing="xy")
         wave = 2.0 * np.pi * np.fft.fftfreq(self.n, d=self.dx)
@@ -152,6 +159,18 @@ class NLSE:
             self._dispersion_dt = self.dt
         return self._dispersion
 
+    def response(self, intensity):
+        """Effective nonlinear factor: 1 at weak light, smaller when saturated.
+
+        "饱和" is the two-level response 1/(1+I/Is); "高阶 Kerr" is the
+        χ⁽⁵⁾ correction 1-κI that real glasses show, which turns defocusing
+        once κI exceeds 1.
+        """
+        intensity = np.asarray(intensity, dtype=float)
+        if self.model == "高阶 Kerr":
+            return np.clip(1.0 - self.kappa * intensity, 0.0, 1.0)
+        return 1.0 / (1.0 + intensity / self.saturation)
+
     def step(self, count=1):
         """One Strang step: half of the cubic term, all of the dispersion.
 
@@ -162,14 +181,13 @@ class NLSE:
         psi = self.psi
         half = 0.5 * self.dt
         dispersion = self.dispersion_operator()
-        sat = self.saturation
         for _ in range(int(count)):
             intensity = np.abs(psi) ** 2
-            theta = half * intensity / (1.0 + intensity / sat)
+            theta = half * intensity * self.response(intensity)
             psi = psi * (np.cos(theta) + 1j * np.sin(theta))
             psi = np.fft.ifft2(np.fft.fft2(psi) * dispersion)
             intensity = np.abs(psi) ** 2
-            theta = half * intensity / (1.0 + intensity / sat)
+            theta = half * intensity * self.response(intensity)
             psi = psi * (np.cos(theta) + 1j * np.sin(theta))
         self.psi = psi
         self.steps += int(count)
@@ -202,3 +220,21 @@ class NLSE:
 
     def render(self, palette=PALETTE, log=True):
         return apply_palette(self.intensity(), palette=palette, log=log)
+
+    def spectrum(self, floor_db=40.0):
+        """|FFT|² in dB relative to the peak, as a float image in [0, 1].
+
+        Modulation instability shows up here as the discrete wavevectors it
+        selected; a collapsing beam shows a broad ring.
+        """
+        power = np.abs(np.fft.fftshift(np.fft.fft2(self.psi))) ** 2
+        reference = float(power.max())
+        if reference <= 0.0:
+            return np.zeros_like(power)
+        db = 10.0 * np.log10(np.clip(power / reference, 1e-12, 1.0))
+        return np.clip((db + floor_db) / floor_db, 0.0, 1.0)
+
+    def render_spectrum(self, palette=PALETTE, floor_db=40.0):
+        norm = self.spectrum(floor_db=floor_db)
+        index = np.clip(norm * 255.0, 0.0, 255.0).astype(np.uint8)
+        return palette_lut(palette)[index]

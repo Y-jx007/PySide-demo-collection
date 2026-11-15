@@ -67,6 +67,65 @@ class TestSplitStep(unittest.TestCase):
         self.assertLess(self.sim.peak(), 1e4)
 
 
+class TestModels(unittest.TestCase):
+    def test_response_is_one_at_weak_light(self):
+        sim = NLSE(size=64)
+        for model in ("饱和", "高阶 Kerr"):
+            sim.model = model
+            self.assertAlmostEqual(float(sim.response(0.0)), 1.0, places=9)
+
+    def test_saturable_response_falls_as_one_over_one_plus_s(self):
+        sim = NLSE(size=64)
+        sim.model = "饱和"
+        value = float(sim.response(np.array([sim.saturation]))[0])
+        self.assertAlmostEqual(value, 0.5, places=9)
+
+    def test_kerr5_response_shuts_off_beyond_one_over_kappa(self):
+        sim = NLSE(size=64)
+        sim.model = "高阶 Kerr"
+        sim.kappa = 0.02
+        self.assertAlmostEqual(float(sim.response(np.array([25.0]))[0]), 0.5, places=9)
+        self.assertEqual(float(sim.response(np.array([80.0]))[0]), 0.0)
+
+    def test_kerr5_defocuses_where_the_saturable_model_collapses(self):
+        sim = NLSE(size=96)
+        sim.model = "高阶 Kerr"
+        sim.kappa = 0.03
+        sim.reset("单束", 1.0, 0.0)
+        peak = sim.peak()
+        sim.step(300)
+        kerr5_peak = sim.peak()
+        sim.model = "饱和"
+        sim.reset("单束", 1.0, 0.0)
+        sim.step(300)
+        self.assertLess(kerr5_peak, 2.5 * peak)
+        self.assertGreater(sim.peak(), 2.5 * peak)
+
+
+class TestSpectrum(unittest.TestCase):
+    def test_spectrum_shape_and_dtype(self):
+        sim = NLSE(size=64)
+        spec = sim.render_spectrum()
+        self.assertEqual(spec.shape, (64, 64, 3))
+        self.assertEqual(spec.dtype, np.uint8)
+        norm = sim.spectrum()
+        self.assertGreaterEqual(float(norm.min()), 0.0)
+        self.assertLessEqual(float(norm.max()), 1.0)
+
+    def test_spectrum_of_a_standing_wave_has_two_peaks(self):
+        sim = NLSE(size=64, extent=32.0)
+        k = 2.0 * np.pi * 4 / sim.extent
+        sim.psi = (np.exp(1j * k * sim.X) + np.exp(-1j * k * sim.X)).astype(complex)
+        norm = sim.spectrum(floor_db=60.0)
+        # 能量集中在两行谱线上：中心行之外几乎全暗
+        centre = sim.n // 2
+        bright = np.argwhere(norm > 0.85)
+        self.assertGreater(len(bright), 0)
+        rows = set(int(row) for row, _ in bright)
+        self.assertLessEqual(len(rows), 4)
+        self.assertIn(centre, rows)
+
+
 class TestVortex(unittest.TestCase):
     def test_vortex_carries_a_hole_at_the_centre(self):
         sim = NLSE(size=96)
