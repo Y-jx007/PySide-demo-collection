@@ -1,372 +1,29 @@
-from common.field_canvas import ArrayCanvas
-from common.qt_base import (QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
-                            QPushButton, QSlider, QTimer, QVBoxLayout, QWidget, Qt, LabeledSlider, math, run_app,
-                            time)
-from common.taichi_base import (ti)
+# -*- coding: utf-8 -*-
+"""MPM 2D: MLS-MPM materials on a clean white lab canvas."""
+import random
+import time
 
-real = ti.f32
-dim = 2
+import numpy as np
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QGridLayout
 
-# ==================== 参数（本构照 taichi_elements engine/mpm_solver.py） ====================
-RES_DEFAULT = 128
-RES_OPTIONS = (128, 192, 256, 384)
-DENSITY_OPTIONS = (4, 8, 16, 24, 36, 48)
-RES_MAX = max(RES_OPTIONS)
-PADDING = 3
-GRAVITY_Y = -9.8
-SIZE = 1.0
+from common.lab_window import LabWindow, SquareCanvas
+from common.qt_base import (
+    LabeledSlider, QColor, QComboBox, QFileDialog, QGroupBox, QHBoxLayout,
+    QLabel, QMessageBox, QPainter, QPen, QPointF, QPushButton, QTimer, QVBoxLayout,
+    QWidget, Qt, run_app,
+)
+from support.physics.mpm2d import (
+    DENSITY_OPTIONS,
+    MATERIAL_ELASTIC,
+    MATERIAL_SAND,
+    MATERIAL_SNOW,
+    MATERIAL_WATER,
+    MPM2D,
+    RES_DEFAULT,
+    RES_OPTIONS,
+)
 
-MATERIAL_WATER = 0
-MATERIAL_ELASTIC = 1
-MATERIAL_SNOW = 2
-MATERIAL_SAND = 3
-MATERIAL_STATIONARY = 4
-
-SUPPORT_PLASTICITY = True
-WATER_DENSITY = 1.0
-RENDER_RES = 768
-MAX_PARTICLES = 600000
-MAX_SUBSTEPS = 40             # 单帧子步上限，避免局部爆炸时卡死
-
-
-@ti.data_oriented
-class MPM2D:
-    """2D MLS-MPM。网格分辨率与采样密度都是运行时参数，可随时重建。"""
-
-    def __init__(self, res=RES_DEFAULT, density=16, max_particles=MAX_PARTICLES,
-                 arch=None):
-        ti.reset()
-        ti.init(arch=arch if arch is not None else ti.gpu, default_fp=real, offline_cache=True)
-
-        self.max_particles = max_particles
-        self.padding = PADDING
-        self.gsize = RES_MAX + 2 * PADDING
-
-        n = max_particles
-        self.n_particles = ti.field(ti.i32, shape=())
-        self.x = ti.Vector.field(dim, real, n)
-        self.v = ti.Vector.field(dim, real, n)
-        self.F = ti.Matrix.field(dim, dim, real, n)
-        self.C = ti.Matrix.field(dim, dim, real, n)
-        self.Jp = ti.field(real, n)
-        self.material = ti.field(ti.i32, n)
-
-        self.grid_v = ti.Vector.field(dim, real, (self.gsize, self.gsize))
-        self.grid_m = ti.field(real, (self.gsize, self.gsize))
-
-        self.img = ti.Vector.field(3, ti.u8, (RENDER_RES, RENDER_RES))
-        self.blur_tmp = ti.Vector.field(3, ti.u8, (RENDER_RES, RENDER_RES))
-
-        self.par = ti.Vector.field(4, real, shape=())   # dx, inv_dx, p_vol, p_mass
-        self.res_cur = ti.field(ti.i32, shape=())
-
-        self.E = 1e6 * SIZE
-        self.nu = 0.2
-        self.mu_0 = self.E / (2 * (1 + self.nu))
-        self.lambda_0 = self.E * self.nu / ((1 + self.nu) * (1 - 2 * self.nu))
-        import math
-        sin_phi = math.sin(math.radians(45))
-        self.alpha = math.sqrt(2.0 / 3.0) * 2 * sin_phi / (3 - sin_phi)
-
-        self.rres = RENDER_RES
-        self.dt_scale = 1.0
-        self.allowed_cfl = 0.9
-        self.configure(res, density)
-        self._compile()
-        self._clear_grid_all()
-
-    def configure(self, res, density):
-        self.res = int(res)
-        self.density = int(density)
-        self.dx = SIZE / res
-        self.inv_dx = 1.0 / self.dx
-        self.default_dt = 2e-2 * self.dx / SIZE
-        self.p_vol = self.dx ** dim
-        self.p_rho = 1000.0
-        self.p_mass = self.p_vol * self.p_rho
-        self.par[None] = [self.dx, self.inv_dx, self.p_vol, self.p_mass]
-        self.res_cur[None] = self.res
-        self.n_particles[None] = 0
-
-    def _compile(self):
-        gsize = self.gsize
-        padding = self.padding
-
-        @ti.kernel
-        def p2g(dt: real):
-            par = self.par[None]
-            dx = par[0]
-            inv_dx = par[1]
-            p_vol = par[2]
-            p_mass = par[3]
-            mu_0 = self.mu_0
-            la_0 = self.lambda_0
-            for p in range(self.n_particles[None]):
-                base = ti.cast(ti.floor(self.x[p] * inv_dx - 0.5), ti.i32)
-                fx = self.x[p] * inv_dx - ti.cast(base, real)
-                w = [0.5 * (1.5 - fx) ** 2,
-                     0.75 - (fx - 1.0) ** 2,
-                     0.5 * (fx - 0.5) ** 2]
-                Fp = self.F[p]
-                if self.material[p] == MATERIAL_WATER:
-                    Fp = ti.Matrix([[1.0, 0.0], [0.0, 1.0]])
-                    Fp[0, 0] = self.Jp[p]
-                Fp = (ti.Matrix([[1.0, 0.0], [0.0, 1.0]]) + dt * self.C[p]) @ Fp
-
-                h = 1.0
-                if self.material[p] != MATERIAL_WATER:
-                    h = ti.exp(10.0 * (1.0 - self.Jp[p]))
-                if self.material[p] == MATERIAL_ELASTIC:
-                    h = 0.3
-                mu = mu_0 * h
-                la = la_0 * h
-                if self.material[p] == MATERIAL_WATER:
-                    mu = 0.0
-
-                U, sig, V = ti.svd(Fp)
-                J = 1.0
-                if self.material[p] != MATERIAL_SAND:
-                    for d in ti.static(range(dim)):
-                        new_sig = sig[d, d]
-                        if self.material[p] == MATERIAL_SNOW:
-                            new_sig = min(max(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3)
-                        self.Jp[p] *= sig[d, d] / new_sig
-                        sig[d, d] = new_sig
-                        J *= new_sig
-
-                if self.material[p] == MATERIAL_WATER:
-                    Fp = ti.Matrix([[1.0, 0.0], [0.0, 1.0]])
-                    Fp[0, 0] = J
-                    self.Jp[p] = J
-                elif self.material[p] == MATERIAL_SNOW:
-                    Fp = U @ sig @ V.transpose()
-
-                stress = ti.Matrix([[0.0, 0.0], [0.0, 0.0]])
-                if self.material[p] != MATERIAL_SAND:
-                    stress = 2 * mu * (Fp - U @ V.transpose()) @ Fp.transpose() \
-                        + ti.Matrix([[1.0, 0.0], [0.0, 1.0]]) * la * J * (J - 1)
-                self.F[p] = Fp
-
-                stress = (-dt * p_vol * 4 * inv_dx ** 2) * stress
-                mass = p_mass
-                if self.material[p] == MATERIAL_WATER:
-                    mass *= WATER_DENSITY
-                affine = stress + mass * self.C[p]
-
-                for i, j in ti.static(ti.ndrange(3, 3)):
-                    dpos = (ti.Vector([i, j]) - fx) * dx
-                    weight = w[i][0] * w[j][1]
-                    nb = base + ti.Vector([i, j]) + padding
-                    if 0 <= nb[0] < gsize and 0 <= nb[1] < gsize:
-                        ti.atomic_add(self.grid_v[nb],
-                                      weight * (mass * self.v[p] + affine @ dpos))
-                        ti.atomic_add(self.grid_m[nb], weight * mass)
-
-        @ti.kernel
-        def grid_op(dt: real):
-            res = self.res_cur[None]
-            ext = res + 2 * padding
-            for i, j in ti.ndrange(ext, ext):
-                if self.grid_m[i, j] > 0.0:
-                    self.grid_v[i, j] = (1.0 / self.grid_m[i, j]) * self.grid_v[i, j]
-                    self.grid_v[i, j] += dt * ti.Vector([0.0, GRAVITY_Y])
-                xi = i - padding
-                yj = j - padding
-                if xi < padding and self.grid_v[i, j][0] < 0.0:
-                    self.grid_v[i, j][0] = 0.0
-                if xi >= res - padding and self.grid_v[i, j][0] > 0.0:
-                    self.grid_v[i, j][0] = 0.0
-                if yj < padding and self.grid_v[i, j][1] < 0.0:
-                    self.grid_v[i, j][1] = 0.0
-                if yj >= res - padding and self.grid_v[i, j][1] > 0.0:
-                    self.grid_v[i, j][1] = 0.0
-
-        @ti.kernel
-        def g2p(dt: real):
-            par = self.par[None]
-            dx = par[0]
-            inv_dx = par[1]
-            res = self.res_cur[None]
-            for p in range(self.n_particles[None]):
-                base = ti.cast(ti.floor(self.x[p] * inv_dx - 0.5), ti.i32)
-                fx = self.x[p] * inv_dx - ti.cast(base, real)
-                w = [0.5 * (1.5 - fx) ** 2,
-                     0.75 - (fx - 1.0) ** 2,
-                     0.5 * (fx - 0.5) ** 2]
-                new_v = ti.Vector([0.0, 0.0])
-                new_C = ti.Matrix([[0.0, 0.0], [0.0, 0.0]])
-                for i, j in ti.static(ti.ndrange(3, 3)):
-                    dpos = ti.Vector([i, j]) - fx
-                    nb = base + ti.Vector([i, j]) + padding
-                    if 0 <= nb[0] < gsize and 0 <= nb[1] < gsize:
-                        g_v = self.grid_v[nb]
-                        m = self.grid_m[nb]
-                        if m > 0.0:
-                            g_v = (1.0 / m) * g_v + dt * ti.Vector([0.0, GRAVITY_Y])
-                            xi = nb[0] - padding
-                            yj = nb[1] - padding
-                            if xi < padding and g_v[0] < 0.0:
-                                g_v[0] = 0.0
-                            if xi >= res - padding and g_v[0] > 0.0:
-                                g_v[0] = 0.0
-                            if yj < padding and g_v[1] < 0.0:
-                                g_v[1] = 0.0
-                            if yj >= res - padding and g_v[1] > 0.0:
-                                g_v[1] = 0.0
-                        weight = w[i][0] * w[j][1]
-                        new_v += weight * g_v
-                        new_C += 4 * inv_dx * weight * g_v.outer_product(dpos)
-                if self.material[p] != MATERIAL_STATIONARY:
-                    self.v[p] = new_v
-                    self.C[p] = new_C
-                    self.x[p] += dt * self.v[p]
-            # 顺手清空网格，省掉一个独立的 clear kernel
-            ext = self.res_cur[None] + 2 * padding
-            for i, j in ti.ndrange(ext, ext):
-                self.grid_v[i, j] = ti.Vector([0.0, 0.0])
-                self.grid_m[i, j] = 0.0
-
-        @ti.kernel
-        def clear_grid_all():
-            for i, j in self.grid_v:
-                self.grid_v[i, j] = ti.Vector([0.0, 0.0])
-                self.grid_m[i, j] = 0.0
-
-        @ti.kernel
-        def max_velocity() -> real:
-            vm = 0.0
-            for p in range(self.n_particles[None]):
-                vm = ti.max(vm, ti.abs(self.v[p][0]))
-                vm = ti.max(vm, ti.abs(self.v[p][1]))
-            return vm
-
-        @ti.kernel
-        def render(radius: ti.i32):
-            rres = RENDER_RES
-            for i, j in self.img:
-                self.img[i, j] = ti.Vector([14, 17, 24], ti.u8)
-            for p in range(self.n_particles[None]):
-                px = self.x[p][0] * rres
-                py = (1.0 - self.x[p][1]) * rres
-                col = ti.Vector([235, 235, 240], ti.u8)
-                if self.material[p] == MATERIAL_WATER:
-                    col = ti.Vector([70, 140, 240], ti.u8)
-                elif self.material[p] == MATERIAL_ELASTIC:
-                    col = ti.Vector([240, 90, 70], ti.u8)
-                elif self.material[p] == MATERIAL_SNOW:
-                    col = ti.Vector([240, 248, 255], ti.u8)
-                elif self.material[p] == MATERIAL_SAND:
-                    col = ti.Vector([220, 190, 110], ti.u8)
-                ix = ti.cast(px, ti.i32)
-                iy = ti.cast(py, ti.i32)
-                for di in range(-radius, radius + 1):
-                    for dj in range(-radius, radius + 1):
-                        if di * di + dj * dj <= radius * radius + 1:
-                            ii = ix + di
-                            jj = iy + dj
-                            if 0 <= ii < rres and 0 <= jj < rres:
-                                self.img[jj, ii] = col
-
-        @ti.kernel
-        def dilate(level: ti.i32):
-            # 按需要填缝：level 0 = 不处理，1 = 十字 5 抽样，2 = 3x3
-            # 取最大值不会改变颜色（3x3 平均会把孤立点压成 4/9 亮度）
-            rres = RENDER_RES
-            for i, j in self.img:
-                c = self.img[i, j]
-                for di, dj in ti.static(ti.ndrange(-1, 2)):
-                    if level == 2 or di == 0 or dj == 0:
-                        ii = ti.min(ti.max(i + di, 0), rres - 1)
-                        jj = ti.min(ti.max(j + dj, 0), rres - 1)
-                        o = self.img[ii, jj]
-                        c = ti.Vector([ti.max(c[0], o[0]), ti.max(c[1], o[1]),
-                                       ti.max(c[2], o[2])], ti.u8)
-                self.blur_tmp[i, j] = c
-            for i, j in self.img:
-                self.img[i, j] = self.blur_tmp[i, j]
-
-        self._p2g = p2g
-        self._grid_op = grid_op
-        self._g2p = g2p
-        self._clear_grid_all = clear_grid_all
-        self._max_velocity = max_velocity
-        self._render = render
-        self._blur = dilate
-
-    @ti.kernel
-    def _seed_batch(self, count: ti.i32, new_material: ti.i32,
-                    lx: real, ly: real, ux: real, uy: real,
-                    vx: real, vy: real):
-        # 一次 atomic 拿一整段下标，Python 侧不回读，避免每倒一次就同步一次
-        base = ti.atomic_add(self.n_particles[None], count)
-        for k in range(count):
-            p = base + k
-            if p < self.max_particles:
-                rx = ti.random()
-                ry = ti.random()
-                self.x[p] = ti.Vector([lx + rx * (ux - lx), ly + ry * (uy - ly)])
-                self.v[p] = ti.Vector([vx, vy])
-                self.F[p] = ti.Matrix([[1.0, 0.0], [0.0, 1.0]])
-                self.C[p] = ti.Matrix([[0.0, 0.0], [0.0, 0.0]])
-                self.material[p] = new_material
-                if new_material == MATERIAL_SAND:
-                    self.Jp[p] = 0.0
-                else:
-                    self.Jp[p] = 1.0
-
-    def add_cube(self, lower, size, material, velocity=(0.0, 0.0),
-                 sample_density=None):
-        if sample_density is None:
-            sample_density = self.density
-        vol = size[0] * size[1]
-        num_new = int(sample_density * vol / self.dx ** dim + 1)
-        self._seed_batch(num_new, int(material),
-                         float(lower[0]), float(lower[1]),
-                         float(lower[0] + size[0]), float(lower[1] + size[1]),
-                         float(velocity[0]), float(velocity[1]))
-        return num_new
-
-    def step(self, frame_dt):
-        self._vmax_age = getattr(self, "_vmax_age", 99) + 1
-        if self._vmax_age >= 6:                      # 每 6 帧才回读一次，省掉每帧同步
-            self._vmax = float(self._max_velocity())
-            self._vmax_age = 0
-        vmax = getattr(self, "_vmax", 0.0)
-        cfl_dt = self.allowed_cfl * self.dx / (vmax + 1e-6)
-        dt = min(self.default_dt * self.dt_scale, cfl_dt)
-        # 子步数受上限约束，但 dt 绝不能再被放大（那样会越过 CFL 直接炸）
-        substeps = max(1, min(MAX_SUBSTEPS, int(frame_dt / dt) + 1))
-        dt = min(dt, frame_dt / substeps)
-        for _ in range(substeps):
-            self._p2g(dt)
-            self._g2p(dt)
-        self._sim_time = substeps * dt
-        return substeps
-
-    def particle_radius(self, grain=1.0):
-        """点半径按粒子间距自适应；grain 是颗粒度倍率。"""
-        spacing_px = (self.dx / max(1.0, (self.density ** 0.5))) * RENDER_RES
-        return max(0, int(round(spacing_px * 0.55 * grain)))
-
-    def draw(self, radius=None, grain=1.0):
-        if radius is None:
-            radius = self.particle_radius(grain)
-        self._render(radius)
-        # 点足够大时不填缝；点很小时用十字，中等用 3x3
-        if radius < 2:
-            self._blur(1)
-        return self.img.to_numpy()
-
-    def particle_info(self):
-        n = int(self.n_particles[None])
-        return {
-            "position": self.x.to_numpy()[:n],
-            "velocity": self.v.to_numpy()[:n],
-            "material": self.material.to_numpy()[:n],
-        }
-
-
-# ==================== 界面 ====================
 MATERIAL_IDS = {
     "固体": MATERIAL_ELASTIC,
     "雪": MATERIAL_SNOW,
@@ -375,70 +32,272 @@ MATERIAL_IDS = {
 }
 
 
-class MPMCanvas(ArrayCanvas):
-    def __init__(self, app):
-        super().__init__(minimum=(520, 520), background=QColor(10, 12, 18),
-                         border=QColor(90, 100, 120, 120))
+class MPMCanvas(SquareCanvas):
+    def __init__(self, app, parent=None):
+        super().__init__(parent)
         self.app = app
+        self._image = None
         self.dragging = False
+        self._attract_sign = 0
+        self._pointer = None
+        self.setCursor(Qt.CrossCursor)
+
+    def set_frame(self, rgb):
+        rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+        image = QImage(
+            rgb.data, rgb.shape[1], rgb.shape[0], 3 * rgb.shape[1],
+            QImage.Format_RGB888,
+        )
+        self._image = image.copy()
+        self.update()
 
     def _to_world(self, pos):
-        uv = self.map_normalized(pos)
-        if uv is None:
-            return 0.0, 0.0
-        return uv[0], 1.0 - uv[1]
+        x = pos.x() / max(1.0, float(self.width()))
+        y = 1.0 - pos.y() / max(1.0, float(self.height()))
+        return x, y
 
     def paintEvent(self, event):
-        # 仿真每步更新 app.frame；set_array 对同一个数组对象会跳过重复转换
-        self.set_array(self.app.frame)
-        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(255, 255, 255))
+        if self._image is not None:
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.drawImage(self.rect(), self._image)
+        if self._pointer is not None and self._attract_sign != 0:
+            color = QColor(44, 116, 214) if self._attract_sign > 0 else QColor(210, 74, 58)
+            painter.setPen(QPen(color, 1.5, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(self._pointer, 24.0, 24.0)
+        painter.end()
 
-    def mousePressEvent(self, e):
-        self.dragging = True
-        self.app.pour(*self._to_world(e.position()))
+    def mousePressEvent(self, event):
+        point = event.position()
+        x, y = self._to_world(point)
+        if event.button() == Qt.LeftButton:
+            if event.modifiers() & Qt.ShiftModifier:
+                self.dragging = True
+                self.app.pour(x, y)
+            else:
+                self._attract_sign = 1
+                self._pointer = point
+                self.app.set_attractor(x, y, 1.0)
+        elif event.button() == Qt.RightButton:
+            self._attract_sign = -1
+            self._pointer = point
+            self.app.set_attractor(x, y, -1.0)
+        else:
+            super().mousePressEvent(event)
+            return
+        self.update()
 
-    def mouseReleaseEvent(self, e):
-        self.dragging = False
+    def mouseMoveEvent(self, event):
+        point = event.position()
+        if self.dragging and event.buttons() & Qt.LeftButton:
+            self.app.pour(*self._to_world(point))
+        elif self._attract_sign != 0:
+            x, y = self._to_world(point)
+            self._pointer = point
+            self.app.set_attractor(x, y, 1.0 if self._attract_sign > 0 else -1.0)
+            self.update()
 
-    def mouseMoveEvent(self, e):
-        if self.dragging:
-            self.app.pour(*self._to_world(e.position()))
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.dragging:
+            self.dragging = False
+        if event.button() in (Qt.LeftButton, Qt.RightButton) and self._attract_sign != 0:
+            self._attract_sign = 0
+            self._pointer = None
+            self.app.clear_attractor()
+        self.update()
 
 
-class MPMApp(QMainWindow):
+class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MPM 2D · 固体 / 雪 / 液体")
-        self.setGeometry(110, 70, 1120, 800)
-
+        self.setWindowTitle("MPM 2D · 材料")
         self.sim = MPM2D()
         self.material = "固体"
         self.paused = False
         self.frame = None
-        self.frame_dt = 1.0 / 240.0
+        self.frame_dt = 1.0 / 60.0
         self.fps = 0.0
         self._last_t = time.perf_counter()
         self._last_pour = 0.0
         self.grain = 1.0
+        self.brush = 45
         self._stat_tick = 0
         self.substeps = 0
-
-        self.build_scene()
+        self.canvas = MPMCanvas(self)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.init_ui()
-
-        self.timer = QTimer()
+        self.build_scene()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
+        self._last_t = time.perf_counter()
+
+    def init_ui(self):
+        central = QWidget()
+        root = QHBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+        panel = QWidget()
+        panel.setFixedWidth(330)
+        panel.setStyleSheet("background-color: #ffffff;")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(2, 2, 4, 4)
+        layout.setSpacing(6)
+
+        simulation = QGroupBox("模拟")
+        sl = QVBoxLayout(simulation)
+        sl.setContentsMargins(6, 6, 6, 6)
+        sl.setSpacing(5)
+        res_row = QHBoxLayout()
+        res_row.addWidget(QLabel("网格"))
+        self.res_box = QComboBox()
+        for value in RES_OPTIONS:
+            self.res_box.addItem(f"{value}²", value)
+        self.res_box.setCurrentIndex(RES_OPTIONS.index(RES_DEFAULT))
+        res_row.addWidget(self.res_box, 1)
+        sl.addLayout(res_row)
+        den_row = QHBoxLayout()
+        den_row.addWidget(QLabel("采样"))
+        self.den_box = QComboBox()
+        for value in DENSITY_OPTIONS:
+            self.den_box.addItem(f"{value} / 格", value)
+        self.den_box.setCurrentIndex(2)
+        den_row.addWidget(self.den_box, 1)
+        sl.addLayout(den_row)
+        self.grain_slider = LabeledSlider(
+            "颗粒度", 1, 800, 100, formatter=lambda v: f"{v / 100:.2f}",
+            label_width=56, value_width=44,
+        )
+        sl.addWidget(self.grain_slider)
+        self.dts_box = QComboBox()
+        for name, value in (("1×", 1.0), ("2×", 2.0), ("4×", 4.0)):
+            self.dts_box.addItem(name, value)
+        dts_row = QHBoxLayout()
+        dts_row.addWidget(QLabel("步长"))
+        dts_row.addWidget(self.dts_box, 1)
+        sl.addLayout(dts_row)
+        self.spd_box = QComboBox()
+        for name, value in (("0.5×", 1 / 120), ("1×", 1 / 60), ("2×", 1 / 30)):
+            self.spd_box.addItem(name, value)
+        self.spd_box.setCurrentIndex(1)
+        spd_row = QHBoxLayout()
+        spd_row.addWidget(QLabel("时间"))
+        spd_row.addWidget(self.spd_box, 1)
+        sl.addLayout(spd_row)
+        layout.addWidget(simulation)
+
+        materials = QGroupBox("材料")
+        ml = QGridLayout(materials)
+        ml.setContentsMargins(6, 6, 6, 6)
+        ml.setSpacing(4)
+        self.buttons = {}
+        for index, name in enumerate(("固体", "雪", "液体", "沙子")):
+            button = QPushButton(name)
+            button.setCheckable(True)
+            button.setChecked(name == "固体")
+            button.clicked.connect(lambda _=False, n=name: self.select(n))
+            self.buttons[name] = button
+            ml.addWidget(button, index // 2, index % 2)
+        layout.addWidget(materials)
+
+        brush = QGroupBox("画笔")
+        bl = QVBoxLayout(brush)
+        bl.setContentsMargins(6, 6, 6, 6)
+        bl.setSpacing(4)
+        self.brush_slider = LabeledSlider(
+            "大小", 5, 100, 45, formatter=lambda v: f"{v}",
+            label_width=44, value_width=40,
+        )
+        bl.addWidget(self.brush_slider)
+        controls = QHBoxLayout()
+        self.pause_btn = QPushButton("暂停")
+        self.reset_btn = QPushButton("重置")
+        self.save_btn = QPushButton("保存")
+        for button in (self.pause_btn, self.reset_btn, self.save_btn):
+            controls.addWidget(button)
+        bl.addLayout(controls)
+        note = QLabel(
+            "左键拖拽：吸引　右键拖拽：排斥\n"
+            "Shift + 左键：倾倒材料\n"
+            "WASD / 方向键：改变重力"
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#6b7280;")
+        bl.addWidget(note)
+        layout.addWidget(brush)
+        layout.addStretch(1)
+
+        root.addWidget(panel, 0)
+        self.canvas.setFixedSize(600, 600)
+        root.addWidget(self.canvas, 1, Qt.AlignCenter)
+        self.setCentralWidget(central)
+        central.setStyleSheet("background-color: #ffffff;")
+        self.canvas.setFocusPolicy(Qt.NoFocus)
+        self.setFocus()
+        self.setMinimumSize(960, 640)
+        self.resize(960, 640)
+
+        self.status = self.statusBar()
+        self.status.setSizeGripEnabled(False)
+        self.state_label = QLabel("运行中")
+        self.params_label = QLabel("N 0 · 0 子步 · 0 fps")
+        self.status.addWidget(self.state_label, 1)
+        self.status.addPermanentWidget(self.params_label)
+
+        self.res_box.currentIndexChanged.connect(self.on_res)
+        self.den_box.currentIndexChanged.connect(self.on_density)
+        self.grain_slider.valueChanged.connect(self.on_grain)
+        self.dts_box.currentIndexChanged.connect(
+            lambda index: setattr(self.sim, "dt_scale", self.dts_box.itemData(index))
+        )
+        self.spd_box.currentIndexChanged.connect(self.on_speed)
+        self.brush_slider.valueChanged.connect(
+            lambda value: setattr(self, "brush", value)
+        )
+        self.pause_btn.clicked.connect(self.toggle)
+        self.reset_btn.clicked.connect(self.reset)
+        self.save_btn.clicked.connect(self.save)
 
     def build_scene(self):
-        self.sim.configure(self.sim.res, self.sim.density)
-        self.sim.add_cube(lower=(0.18, 0.62), size=(0.14, 0.14),
-                          material=MATERIAL_ELASTIC)
-        self.sim.add_cube(lower=(0.42, 0.62), size=(0.14, 0.14),
-                          material=MATERIAL_SNOW)
-        self.sim.add_cube(lower=(0.30, 0.22), size=(0.40, 0.20),
-                          material=MATERIAL_WATER)
+        res = self.res_box.currentData() or self.sim.res
+        density = self.den_box.currentData() or self.sim.density
+        self.sim.configure(res, density)
+        self.sim.add_cube(
+            lower=(0.70, 0.06), size=(0.15, 0.15), material=MATERIAL_ELASTIC
+        )
+        self.sim.add_cube(
+            lower=(0.70, 0.28), size=(0.15, 0.15), material=MATERIAL_SNOW
+        )
+        self.sim.add_cube(
+            lower=(0.06, 0.05), size=(0.20, 0.32), material=MATERIAL_WATER
+        )
         self.frame = self.sim.draw(grain=self.grain)
+        self.canvas.set_frame(self.frame)
+        self.substeps = 0
+        self._update_status()
+
+    def on_res(self, index):
+        self.sim.configure(RES_OPTIONS[index], self.sim.density)
+        self.build_scene()
+
+    def on_density(self, index):
+        self.sim.configure(self.sim.res, DENSITY_OPTIONS[index])
+        self.build_scene()
+
+    def on_grain(self, value):
+        self.grain = value / 100.0
+        self.frame = self.sim.draw(grain=self.grain)
+        self.canvas.set_frame(self.frame)
+
+    def on_speed(self, index):
+        self.frame_dt = self.spd_box.itemData(index)
+
+    def select(self, name):
+        self.material = name
+        for key, button in self.buttons.items():
+            button.setChecked(key == name)
 
     def pour(self, x, y):
         now = time.perf_counter()
@@ -447,178 +306,81 @@ class MPMApp(QMainWindow):
         self._last_pour = now
         if not (0.05 < x < 0.95 and 0.05 < y < 0.95):
             return
-        r = max(0.008, self.brush / 100.0 * 0.045)
-        self.sim.add_cube(lower=(x - r, y - r), size=(2 * r, 2 * r),
-                          material=MATERIAL_IDS[self.material],
-                          velocity=(0.0, 0.0))
+        radius = max(0.008, self.brush / 100.0 * 0.045)
+        self.sim.add_cube(
+            lower=(x - radius, y - radius),
+            size=(2 * radius, 2 * radius),
+            material=MATERIAL_IDS[self.material],
+        )
+
+    def set_attractor(self, x, y, strength):
+        self.sim.set_attractor(x, y, strength)
+
+    def clear_attractor(self):
+        self.sim.set_attractor()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key_W, Qt.Key_Up):
+            self.sim.set_gravity(0.0, 9.8)
+            self.state_label.setText("重力 ↑")
+        elif key in (Qt.Key_S, Qt.Key_Down):
+            self.sim.set_gravity(0.0, -9.8)
+            self.state_label.setText("重力 ↓")
+        elif key in (Qt.Key_A, Qt.Key_Left):
+            self.sim.set_gravity(-9.8, 0.0)
+            self.state_label.setText("重力 ←")
+        elif key in (Qt.Key_D, Qt.Key_Right):
+            self.sim.set_gravity(9.8, 0.0)
+            self.state_label.setText("重力 →")
+        elif key == Qt.Key_R:
+            self.reset()
+        else:
+            super().keyPressEvent(event)
+            return
+        event.accept()
 
     def tick(self):
         if not self.paused:
             self.substeps = self.sim.step(self.frame_dt)
             self.frame = self.sim.draw(grain=self.grain)
-            self.canvas.update()
+            self.canvas.set_frame(self.frame)
             now = time.perf_counter()
-            dt = now - self._last_t
+            interval = now - self._last_t
             self._last_t = now
-            self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(dt, 1e-6))
-        self._stat_tick += 1
-        if self._stat_tick % 8 == 0:
-            self.lbl_stat.setText(
-                "网格 %d² · 采样 %d/格 · 粒子 %d · %d 子步/帧 · %.0f fps" % (
-                    self.sim.res, self.sim.density, int(self.sim.n_particles[None]),
-                    self.substeps, self.fps))
+            self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(interval, 1e-6))
+            self._update_status()
 
-    def init_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(10)
+    def _update_status(self):
+        self.params_label.setText(
+            f"N {int(self.sim.n_particles[None])} · "
+            f"{self.substeps} 子步 · {self.fps:.0f} fps"
+        )
 
-        panel = QWidget()
-        panel.setFixedWidth(252)
-        pv = QVBoxLayout(panel)
-        pv.setSpacing(8)
-        pv.setContentsMargins(0, 0, 0, 0)
-
-        title = QLabel("MPM 2D 材料")
-        f = title.font()
-        f.setPointSize(13)
-        f.setBold(True)
-        title.setFont(f)
-        pv.addWidget(title)
-        sub = QLabel("MLS-MPM / APIC，本构照 taichi_elements" + chr(10)
-                     + "拖拽倾倒 · 分辨率和采样可调")
-        sub.setStyleSheet("color: #7a7a80;")
-        sf = sub.font()
-        sf.setPointSize(8)
-        sub.setFont(sf)
-        pv.addWidget(sub)
-
-        self.canvas = MPMCanvas(self)
-
-        g0 = QGroupBox("精度")
-        f0 = QFormLayout(g0)
-        f0.setSpacing(6)
-        f0.setContentsMargins(8, 8, 8, 8)
-        self.res_box = QComboBox()
-        for r in RES_OPTIONS:
-            self.res_box.addItem("%d²" % r, r)
-        self.res_box.setCurrentIndex(RES_OPTIONS.index(RES_DEFAULT))
-        self.res_box.currentIndexChanged.connect(self.on_res)
-        f0.addRow("网格", self.res_box)
-        self.den_box = QComboBox()
-        for d in DENSITY_OPTIONS:
-            self.den_box.addItem("%d / 格" % d, d)
-        self.den_box.setCurrentIndex(2)
-        self.den_box.currentIndexChanged.connect(self.on_density)
-        f0.addRow("采样", self.den_box)
-        self.grain = 1.0
-        self.grain_slider = QSlider(Qt.Horizontal)
-        self.grain_slider.setRange(1, 800)
-        self.grain_slider.setValue(100)
-        self.grain_slider.valueChanged.connect(self.on_grain)
-        f0.addRow("颗粒度", self.grain_slider)
-        self.dts_box = QComboBox()
-        for name, val in (("1× (参考)", 1.0), ("2×", 2.0), ("4×", 4.0)):
-            self.dts_box.addItem(name, val)
-        self.dts_box.setCurrentIndex(0)
-        self.dts_box.currentIndexChanged.connect(
-            lambda i: setattr(self.sim, "dt_scale", self.dts_box.itemData(i)))
-        f0.addRow("步长", self.dts_box)
-        self.spd_box = QComboBox()
-        for name, val in (("0.5×", 1 / 480), ("1×", 1 / 240), ("2×", 1 / 120)):
-            self.spd_box.addItem(name, val)
-        self.spd_box.setCurrentIndex(1)
-        self.spd_box.currentIndexChanged.connect(self.on_speed)
-        f0.addRow("时间步", self.spd_box)
-        pv.addWidget(g0)
-
-        g1 = QGroupBox("材料")
-        v1 = QVBoxLayout(g1)
-        v1.setSpacing(6)
-        v1.setContentsMargins(8, 8, 8, 8)
-        self.btns = {}
-        for name in ("固体", "雪", "液体", "沙子"):
-            b = QPushButton(name)
-            b.setCheckable(True)
-            b.setChecked(name == "固体")
-            b.clicked.connect(lambda _=False, n=name: self.select(n))
-            self.btns[name] = b
-            v1.addWidget(b)
-        pv.addWidget(g1)
-
-        g2 = QGroupBox("画笔")
-        v2 = QVBoxLayout(g2)
-        v2.setSpacing(6)
-        v2.setContentsMargins(8, 8, 8, 8)
-        self.brush = 45
-        brush_slider = LabeledSlider("画笔", 5, 100, 45)
-        brush_slider.valueChanged.connect(lambda v: setattr(self, "brush", v))
-        v2.addWidget(brush_slider)
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        b_reset = QPushButton("重置场景")
-        b_reset.clicked.connect(self.reset)
-        row.addWidget(b_reset)
-        self.btn_pause = QPushButton("暂停")
-        self.btn_pause.clicked.connect(self.toggle)
-        row.addWidget(self.btn_pause)
-        v2.addLayout(row)
-        pv.addWidget(g2)
-        pv.addStretch()
-
-        root.addWidget(panel)
-        right = QWidget()
-        rv = QVBoxLayout(right)
-        rv.setSpacing(0)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.addWidget(self.canvas, 1)
-        root.addWidget(right, 1)
-
-        self.lbl_stat = QLabel("")
-        self.statusBar().addWidget(self.lbl_stat, 1)
-
-    # ---------- 选项 ----------
-    def on_res(self, idx):
-        self.sim.configure(RES_OPTIONS[idx], self.sim.density)
-        self.build_scene()
-        self.canvas.update()
-
-    def on_density(self, idx):
-        self.sim.configure(self.sim.res, DENSITY_OPTIONS[idx])
-        self.build_scene()
-        self.canvas.update()
-
-    def on_grain(self, v):
-        self.grain = v / 100.0
-        self.frame = self.sim.draw(grain=self.grain)
-        self.canvas.update()
-
-    def on_speed(self, idx):
-        self.frame_dt = self.spd_box.itemData(idx)
-
-    def select(self, name):
-        self.material = name
-        for k, b in self.btns.items():
-            b.setChecked(k == name)
+    def toggle(self):
+        self.paused = not self.paused
+        self.pause_btn.setText("继续" if self.paused else "暂停")
+        self.state_label.setText("暂停" if self.paused else "运行中")
 
     def reset(self):
         self.build_scene()
         self.canvas.update()
 
-    def toggle(self):
-        self.paused = not self.paused
-        self.btn_pause.setText("继续" if self.paused else "暂停")
+    def save(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存 MPM 2D", "mpm2d.png", "PNG (*.png)"
+        )
+        if not path:
+            return
+        if self.canvas.save_image(path):
+            self.state_label.setText("已保存")
+        else:
+            QMessageBox.warning(self, "保存失败", "无法写入所选路径。")
 
     def closeEvent(self, event):
         self.timer.stop()
-        try:
-            ti.reset()
-        except Exception:
-            pass
-        super().closeEvent(event)
+        event.accept()
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_app(MPMApp))
+    raise SystemExit(run_app(MainWindow))
