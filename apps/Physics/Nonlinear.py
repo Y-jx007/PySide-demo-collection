@@ -25,7 +25,7 @@ from common.qt_base import (
 )
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import MODELS, NLSE, PALETTE, PRESETS, palette_lut
-from support.physics.mixing import SFGMap
+from support.physics.mixing import PulseSHG, SFGMap
 from support.physics.shg import SHGMap, beam_lut
 from support.physics.spm import TemporalNLSE
 
@@ -480,6 +480,7 @@ class OpticsCanvas(ArrayCanvas):
         self.time = TemporalNLSE()
         self.doubling = SHGMap()
         self.sfg = SFGMap()
+        self.pulse = PulseSHG()
         self.process = "倍频"
         self.log_view = False
         self.space_view = "场"
@@ -488,6 +489,12 @@ class OpticsCanvas(ArrayCanvas):
         if self.mode == "时间孤子":
             self.set_array(self.time.render_waterfall())
         elif self.mode == "调频":
+            if self.process == "脉冲倍频":
+                field = self.pulse.map()
+                reference = float(field.max()) or 1.0
+                norm = np.clip(field / reference, 0.0, 1.0)
+                self.set_array(palette_lut(PALETTE, gamma=0.8)[(norm * 255).astype(np.uint8)])
+                return
             model = self.doubling if self.process == "倍频" else self.sfg
             self.set_array(np.ascontiguousarray(np.flipud(model.render())))
         elif self.space_view == "动量谱":
@@ -740,7 +747,7 @@ class MainWindow(LabWindow):
         crystal_box = QGroupBox("晶体")
         crystal_layout = QVBoxLayout(crystal_box)
         self.process_combo = QComboBox()
-        self.process_combo.addItems(("倍频", "和频", "差频", "四波混频"))
+        self.process_combo.addItems(("倍频", "和频", "差频", "四波混频", "脉冲倍频"))
         self.process_combo.currentTextChanged.connect(self.on_process)
         self.process_combo.setToolTip(
             "倍频：ω+ω→2ω；和频：ω₁+ω₂→ω₃（两个输入都消耗，就是 OPA 的正向过程）。"
@@ -756,6 +763,10 @@ class MainWindow(LabWindow):
         )
         self.crystal_kappa_slider.valueChanged.connect(self.refresh_doubling)
         crystal_layout.addWidget(self.crystal_kappa_slider)
+        self.walk_slider = LabeledSlider(
+            "走离 δ", 0, 80, 20, formatter=lambda v: "%.2f" % (v / 100.0))
+        self.walk_slider.valueChanged.connect(self.refresh_doubling)
+        crystal_layout.addWidget(self.walk_slider)
         self.seed_slider = LabeledSlider(
             "输入 a₂", 10, 100, 60, formatter=lambda v: "%.2f" % (v / 100.0))
         self.seed_slider.valueChanged.connect(self.refresh_doubling)
@@ -911,6 +922,9 @@ class MainWindow(LabWindow):
             symmetric=self.symmetric_check.isChecked(),
             poling=self.poling(),
         )
+        self.canvas.pulse.walk = self.walk_slider.value() / 100.0
+        self.canvas.pulse.reset()
+        self.canvas.pulse.step(self.canvas.pulse.steps)
         sfg = self.canvas.sfg
         sfg.branch = self.process_combo.currentText()
         sfg.configure(length=self.length_slider.value() / 100.0,

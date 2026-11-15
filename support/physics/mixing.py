@@ -233,6 +233,7 @@ class PulseSHG:
         self.a1 = amplitude * np.exp(-self.t ** 2 / (2.0 * width ** 2))
         self.a2 = np.zeros(self.n, dtype=np.complex128)
         self.z = 0.0
+        self.history = [np.abs(self.a2) ** 2]
 
     def _dispersion(self, beta):
         return np.exp(-0.5j * beta * self.omega ** 2 * self.dz)
@@ -255,7 +256,12 @@ class PulseSHG:
             self.a1 = self.a1 + half * src1
             self.a2 = self.a2 + half * src2
             self.z += self.dz
+            self.history.append(np.abs(self.a2) ** 2)
         return self.a2
+
+    def map(self):
+        """|A2(t)|^2 at every step: rows are z, columns are time."""
+        return np.array(self.history)
 
     def efficiency(self):
         return float(np.sum(np.abs(self.a2) ** 2) / max(np.sum(np.abs(self.a1) ** 2), 1e-30))
