@@ -34,7 +34,12 @@ EQUATION_HTML = (
     '<div style="font-size:10px; color:#4a4a4a; margin-top:3px;">'
     "衍射想摊开，自聚焦想收紧：低于阈值散开，超过则坍缩。</div>"
     '<div style="font-size:11px; color:#1b1b1b; margin-top:5px;">'
-    "饱和 " + nb("|ψ|²/(1 + |ψ|²/I") + "<sub>s</sub>)：强光时 Δn 封顶，坍缩停在有限尺度。</div>"
+    "饱和 " + nb("|ψ|² → |ψ|²/(1 + |ψ|²/I") + "<sub>s</sub>)</div>"
+    '<div style="font-size:10px; color:#5c5c5c; margin-top:2px;">'
+    "布居差 ΔN = 1/(1 + I/I<sub>s</sub>)：泵浦 ∝ I 与自发弛豫竞争的结果；"
+    "非线性响应 ∝ I·ΔN，所以 |ψ|² 要乘上这个因子。</div>"
+    '<div style="font-size:10px; color:#5c5c5c; margin-top:2px;">'
+    "弱光回到 Kerr，强光下介质被漂白、响应封顶，坍缩停在有限尺度。</div>"
 )
 
 EQUATION_TIP = (
