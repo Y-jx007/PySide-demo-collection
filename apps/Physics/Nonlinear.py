@@ -508,6 +508,31 @@ class OpticsCanvas(ArrayCanvas):
         else:
             self.set_array(self.space.render(PALETTE, log=self.log_view))
 
+    def axis_labels(self):
+        """画布上的轴标注：横轴名在右下，纵轴名在左上。"""
+        if self.mode == "空间自聚焦":
+            return "x →", "y ↑"
+        if self.mode == "时间孤子":
+            return "t（延迟）→", "z ↑"
+        if self.process == "脉冲倍频":
+            return "z →", "t ↓"
+        return "z →", "Δk ↑"
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        horizontal, vertical = self.axis_labels()
+        painter = QPainter(self)
+        font = painter.font()
+        font.setPointSizeF(8.0)
+        painter.setFont(font)
+        painter.setPen(QColor(120, 120, 120))
+        rect = self.rect()
+        painter.drawText(rect.adjusted(0, 0, -10, -6), Qt.AlignRight | Qt.AlignBottom,
+                         horizontal)
+        painter.drawText(rect.adjusted(10, 6, 0, 0), Qt.AlignLeft | Qt.AlignTop,
+                         vertical)
+        painter.end()
+
     def world_point(self, pos):
         mapped = self.map_pos(pos)
         if mapped is None:
