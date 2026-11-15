@@ -515,16 +515,15 @@ class OpticsCanvas(ArrayCanvas):
                     gain=self.quantum_gain, seed=7
                 ).images()
                 lut = palette_lut(PALETTE, gamma=0.85)
+                # 三条带共用“信号带”的 99 分位标尺。若各带各自归一化，
+                # 差值的幅度差会被抵消，三条带看起来一模一样（原来那个 bug）。
+                reference = float(np.percentile(np.abs(field_s), 99.0)) or 1.0
                 bands = []
                 for band in (field_s, field_i, field_d):
-                    # 每一层按自己的 99 分位归一化：散斑是重尾分布，按最大值
-                    # 会把 99% 的像素压到色阶最浅的一档（上一版就是这个问题）
-                    reference = float(np.percentile(np.abs(band), 99.0)) or 1.0
                     index = (np.clip(np.abs(band) / reference, 0.0, 1.0) * 255)
                     image = lut[index.astype(np.uint8)]
-                    separator = np.full((3, image.shape[1], 3), 255, dtype=np.uint8)
                     bands.append(image)
-                    bands.append(separator)
+                    bands.append(np.full((3, image.shape[1], 3), 255, dtype=np.uint8))
                 self.set_array(np.ascontiguousarray(np.vstack(bands[:-1])))
                 return
             if self.process == "级联 χ²":
