@@ -77,15 +77,17 @@ class TestMap(unittest.TestCase):
         strongest = rgb[np.unravel_index(np.argmax(model.map), model.map.shape)]
         self.assertGreater(int(weakest.astype(int).sum()),
                            int(strongest.astype(int).sum()))
-        self.assertGreaterEqual(int(strongest[2]), int(strongest[0]))
-        self.assertGreaterEqual(int(weakest[2]), int(weakest[0]))
+        # 深端是墨青（蓝 > 红）；浅端是纸色（偏暖，红略大），所以只查深端
+        self.assertGreater(int(strongest[2]), int(strongest[0]))
 
     def test_beam_colours_run_from_pump_to_harmonic(self):
         model = SHGMap(mismatches=41, samples=60, length=2.0, kappa=1.0, span=8.0)
         colours = model.beam_colours()
         self.assertEqual(colours.shape, (60, 3))
-        self.assertGreater(int(colours[0, 0]), int(colours[0, 2]))
-        self.assertGreater(int(colours[-1, 2]), int(colours[-1, 1]))
+        # 和地图同一套墨青色阶：起点浅、终点深
+        self.assertGreater(int(colours[0].astype(int).sum()),
+                           int(colours[-1].astype(int).sum()))
+        self.assertGreaterEqual(int(colours[-1, 2]), int(colours[-1, 0]))
         conversions = model.conversions()
         self.assertEqual(conversions.shape, (60,))
         self.assertGreater(float(conversions[-1]), float(conversions[0]))

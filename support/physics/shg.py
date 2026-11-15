@@ -24,73 +24,16 @@ import numpy as np
 
 from support.physics.nls import PALETTE, PALETTES, palette_lut
 
-# 波长取在可见光两端：800 nm（红）二次谐波到 400 nm（紫）。
-# 这是 Ti:sapphire 倍频到紫外的经典组合，两端在肉眼里都还算“有色”。
+# 三个模式共用同一套墨青色阶（support.physics.nls.PALETTES[PALETTE]），
+# 浅 = 基频（800 nm），深 = 倍频（400 nm）。倍频成图与左侧色带都用它，
+# 所以色带就是这张图的颜色钥匙。
 PUMP_NM = 800
 SHG_NM = 400
 
-# 可见光谱的近似色标：从红端走到紫端，中间经过橙黄绿青蓝。
-# 注意这是“波长色标”，不是两束光叠加的真实颜色（真实是红+紫的品红）。
-SPECTRUM_STOPS = (
-    (0.00, (168, 22, 18)),     # 800 nm 红
-    (0.14, (214, 46, 24)),
-    (0.28, (240, 104, 20)),    # 橙
-    (0.40, (246, 196, 36)),    # 黄
-    (0.54, (108, 206, 74)),    # 绿
-    (0.66, (58, 186, 178)),    # 青
-    (0.78, (54, 118, 214)),    # 蓝
-    (0.90, (78, 62, 186)),
-    (1.00, (128, 52, 158)),    # 400 nm 紫
-)
-
-PUMP_RGB = SPECTRUM_STOPS[0][1]
-SHG_RGB = SPECTRUM_STOPS[-1][1]
-
-_BEAM_LUT = None
-
 
 def beam_lut():
-    """256-entry visible-spectrum ramp from the pump colour to its harmonic."""
-    global _BEAM_LUT
-    if _BEAM_LUT is None:
-        positions = np.array([stop for stop, _ in SPECTRUM_STOPS])
-        colours = np.array([c for _, c in SPECTRUM_STOPS], dtype=float)
-        ramp = np.linspace(0.0, 1.0, 256)
-        table = np.stack(
-            [np.interp(ramp, positions, colours[:, channel]) for channel in range(3)],
-            axis=1,
-        )
-        _BEAM_LUT = np.clip(table, 0, 255).astype(np.uint8)
-    return _BEAM_LUT
-
-
-_MIX_LUT = None
-
-
-# 图像用的两个“波长色”改成墨青家族：浅（基频）→ 深（倍频）。
-# 仍然是“两束光叠加”的加法混色，只是把两个端点换成了和项目一致的色调。
-RAMP_LIGHT = (208, 224, 226)
-RAMP_DARK = (12, 32, 44)
-
-_MIX_LUT = None
-
-
-def mix_lut():
-    """256-entry additive mix of the two palette tones (light -> deep ink).
-
-    It is the same operation as mixing the two wavelengths -- a weighted sum
-    of two colours -- but the endpoints are the project ink instead of red
-    and violet, so the diagram sits in the same palette as the rest of the
-    app.  beam_lut() remains the wavelength scale used by the legend strip.
-    """
-    global _MIX_LUT
-    if _MIX_LUT is None:
-        ramp = np.linspace(0.0, 1.0, 256)[:, None]
-        light = np.asarray(RAMP_LIGHT, dtype=float)[None, :]
-        dark = np.asarray(RAMP_DARK, dtype=float)[None, :]
-        table = (1.0 - ramp) * light + ramp * dark
-        _MIX_LUT = np.clip(table, 0, 255).astype(np.uint8)
-    return _MIX_LUT
+    """Ink ramp shared with the other two modes (light -> deep)."""
+    return palette_lut(PALETTE, gamma=1.0)
 
 
 def _derivative(a1, a2, kappa, detune):
@@ -203,8 +146,8 @@ class SHGMap:
         db = 10.0 * np.log10(np.clip(field / reference, 1e-12, 1.0))
         norm = np.clip((db + floor_db) / floor_db, 0.0, 1.0)
         index = (norm * 255.0).astype(np.uint8)
-        # 真实叠加色：红（基频）→ 品红 → 紫（倍频），而不是光谱色标
-        return mix_lut()[index]
+        # 和另外两个模式同一套墨青色阶：越深 = 倍频功率越强
+        return beam_lut()[index]
 
     def conversions(self):
         """Converted energy fraction 2*eta along z at dk = 0 (0 to 1)."""
@@ -212,10 +155,10 @@ class SHGMap:
         return np.clip(2.0 * eta, 0.0, 1.0)
 
     def beam_colours(self):
-        """One RGB per z sample: the wavelength colour of the beam at dk = 0.
+        """One RGB per z sample along the crystal at dk = 0.
 
-        Uses the same spectrum ramp as the map, so the strip and the diagram
-        always agree; the position on the ramp is the converted energy share.
+        Same ink ramp as the map, indexed by the converted energy share, so
+        the strip in the panel is literally the legend of the diagram.
         """
         index = (self.conversions() * 255.0).astype(np.uint8)
         return beam_lut()[index]
