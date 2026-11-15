@@ -12,6 +12,7 @@ if ROOT not in sys.path:
 
 from support.physics.mixing import (  # noqa: E402
     PulseSHG,
+    cascaded_phase_shift,
     fwm_conjugate,
     propagate_sfg,
 )
@@ -90,6 +91,23 @@ class TestPulseSHG(unittest.TestCase):
         matched, _ = self.run_case(0.0)
         walked, _ = self.run_case(0.8)
         self.assertLess(walked, matched)
+
+
+
+class TestCascadedChi2(unittest.TestCase):
+    def shift(self, detune):
+        phase, _ = cascaded_phase_shift(detune=detune)
+        return abs(phase)
+
+    def test_badly_matched_chi2_leaves_a_kerr_phase(self):
+        self.assertGreater(self.shift(20.0), 1e-3)
+
+    def test_phase_falls_off_like_one_over_dk(self):
+        self.assertAlmostEqual(self.shift(20.0) / self.shift(80.0), 4.0, delta=0.35)
+
+    def test_no_coupling_no_phase(self):
+        phase, _ = cascaded_phase_shift(detune=40.0, kappa=0.0)
+        self.assertAlmostEqual(phase, 0.0, places=12)
 
 if __name__ == "__main__":
     unittest.main()

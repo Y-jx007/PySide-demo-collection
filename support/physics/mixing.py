@@ -12,6 +12,8 @@ the same kappa and the invariants are n1 + n3 and n2 + n3:
 """
 import numpy as np
 
+from support.physics.shg import propagate
+
 
 def _rhs(a1, a2, a3, kappa, detune, z):
     up = 1j * kappa * np.exp(1j * detune * z)
@@ -212,7 +214,7 @@ class PulseSHG:
     what limits the bandwidth of a real frequency-doubling crystal.
     """
 
-    def __init__(self, points=256, window=12.0, length=1.0, steps=120,
+    def __init__(self, points=256, window=8.0, length=1.0, steps=120,
                  kappa=1.0, delta_k=0.0, walk=0.0, beta1=0.05, beta2=0.10):
         self.n = int(points)
         self.window = float(window)
@@ -271,3 +273,16 @@ class PulseSHG:
         i2 = np.abs(self.a2) ** 2
         total = float(np.sum(i2))
         return float(np.sum(i2 * self.t) / total) if total > 0 else 0.0
+
+def cascaded_phase_shift(kappa=1.0, detune=40.0, length=2.0, pump=1.0,
+                         samples=400):
+    """Effective chi-3 from a badly phase-matched chi-2: the pump gets a phase.
+
+    For large dk the harmonic never builds up, but it still acts back on the
+    fundamental, leaving a Kerr-like phase shift dphi = -(kappa^2/dk) * I * L.
+    This is the second face of the multi-mode story: the same crystal is chi-2
+    locally and chi-3 effectively.
+    """
+    a1, a2, _ = propagate(np.array([float(detune)]), length=length,
+                          samples=samples, kappa=kappa, amplitude=pump)
+    return float(-np.angle(a1[0])), float(np.abs(a2[0]) ** 2)
