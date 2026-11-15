@@ -33,6 +33,17 @@ from support.physics.spm import TemporalNLSE
 MODES = ("空间自聚焦", "时间孤子", "调频")
 
 MIX_HTML = {
+    "孪生光束": (
+        '<div style="font-size:12px; color:#1b1b1b;">aₛ(out) = aₛ cosh r + aᵢ† sinh r</div>'
+        '<div style="font-size:12px; color:#1b1b1b;">aᵢ(out) = aᵢ cosh r + aₛ† sinh r</div>'
+        '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
+        "泵浦未耗尽：每产生一对光子，两臂各加一个 → 差值噪声被压到真空底。</div>"
+    ),
+    "级联 χ²": (
+        '<div style="font-size:12px; color:#1b1b1b;">Δφ ≈ −(κ²/Δk)·I·L&thinsp;&thinsp;(|Δk| ≫ κ√I)</div>'
+        '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
+        "倍频长不起来，却仍回踢基频：失配的 χ⁽²⁾ 等效成 χ⁽³⁾，符号随 Δk 翻转。</div>"
+    ),
     "脉冲倍频": (
         '<div style="font-size:12px; color:#1b1b1b;">∂A₁/∂z = iκA₂A₁*e<sup>−iΔkz</sup> − i(β₁/2)∂²A₁/∂t²</div>'
         '<div style="font-size:12px; color:#1b1b1b;">∂A₂/∂z = i(κ/2)A₁²e<sup>+iΔkz</sup> − i(β₂/2)∂²A₂/∂t² + δ∂A₂/∂t</div>'
@@ -498,16 +509,22 @@ class OpticsCanvas(ArrayCanvas):
             self.set_array(self.time.render_waterfall())
         elif self.mode == "调频":
             if self.process == "级联 χ²":
-                kappas = np.linspace(10.0, 60.0, 16)
-                phases = np.array([abs(cascaded_phase_shift(
-                        kappa=self.window.crystal_kappa_slider.value() / 100.0,
-                    detune=float(dk), samples=120)[0]) for dk in kappas])
-                height = 256
-                art = np.full((height, kappas.size, 3), 250, dtype=np.uint8)
-                peak = max(float(phases.max()), 1e-9)
-                rows = height - 1 - (phases / peak * (height - 20)).astype(int)
-                for column, row in enumerate(rows):
-                    art[row:, column] = (24, 96, 150)
+                # 基频相位随 Δk 的变化：一条细曲线，不是填充山
+                fan = np.linspace(10.0, 60.0, 26)
+                phases = np.array([cascaded_phase_shift(
+                    kappa=self.window.crystal_kappa_slider.value() / 100.0,
+                    detune=float(dk), samples=120)[0] for dk in fan])
+                height, width = 320, 320
+                art = np.full((height, width, 3), 252, dtype=np.uint8)
+                peak = max(float(np.abs(phases).max()), 1e-9)
+                rows = (height / 2 - phases / peak * (height / 2 - 24)).astype(int)
+                for column in range(width - 1):
+                    left = int(column * fan.size / width)
+                    x = int(column * width / fan.size)
+                    y0, y1 = rows[min(left, fan.size - 1)], rows[min(left + 1, fan.size - 1)]
+                    lo, hi = min(y0, y1), max(y0, y1)
+                    art[lo:hi + 2, column] = (24, 96, 150)
+                art[height // 2, :] = (210, 210, 210)
                 self.set_array(np.ascontiguousarray(art))
                 return
             if self.process == "孪生光束":
