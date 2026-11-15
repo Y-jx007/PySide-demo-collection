@@ -43,3 +43,53 @@ def propagate_sfg(delta_k, length=2.0, samples=400, kappa=1.0,
         z += dz
         history.append(np.abs(a3) ** 2)
     return a1, a2, a3, np.array(history)
+
+class SFGMap:
+    """n3(z) for a fan of mismatches: the same diagram, for sum frequency."""
+
+    def __init__(self, mismatches=241, samples=360, length=2.0, kappa=1.0,
+                 span=20.0, seed2=0.6):
+        self.mismatches = int(mismatches)
+        self.samples = int(samples)
+        self.length = float(length)
+        self.kappa = float(kappa)
+        self.span = float(span)
+        self.seed2 = float(seed2)
+        self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
+        self.configure()
+
+    def configure(self, length=None, kappa=None, span=None):
+        if length is not None:
+            self.length = float(length)
+        if kappa is not None:
+            self.kappa = float(kappa)
+        if span is not None:
+            self.span = float(span)
+            self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
+        a1, a2, a3, history = propagate_sfg(
+            self.delta_k, length=self.length, samples=self.samples,
+            kappa=self.kappa, seed2=self.seed2,
+        )
+        self.map = history.T                      # (dk, z), like SHGMap
+        self._exit = np.abs(a3) ** 2
+        return self.map
+
+    def efficiency(self):
+        """Signal photon flux at the exit face, one value per mismatch."""
+        return self._exit
+
+    def peak(self):
+        return float(np.max(self._exit))
+
+    def peak_efficiency(self):
+        return self.peak()
+
+    def render(self, floor_db=30.0):
+        from support.physics.nls import PALETTE, palette_lut
+        field = np.clip(self.map, 0.0, None)
+        reference = float(field.max())
+        if reference <= 0.0:
+            return np.full(self.map.shape + (3,), 250, dtype=np.uint8)
+        db = 10.0 * np.log10(np.clip(field / reference, 1e-12, 1.0))
+        norm = np.clip((db + floor_db) / floor_db, 0.0, 1.0)
+        return palette_lut(PALETTE, gamma=1.0)[(norm * 255.0).astype(np.uint8)]

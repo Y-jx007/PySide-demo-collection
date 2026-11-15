@@ -25,6 +25,7 @@ from common.qt_base import (
 )
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import MODELS, NLSE, PALETTE, PRESETS, palette_lut
+from support.physics.mixing import SFGMap
 from support.physics.shg import SHGMap, beam_lut
 from support.physics.spm import TemporalNLSE
 
@@ -445,6 +446,8 @@ class OpticsCanvas(ArrayCanvas):
         self.space = NLSE()
         self.time = TemporalNLSE()
         self.doubling = SHGMap()
+        self.sfg = SFGMap()
+        self.process = "倍频"
         self.log_view = False
         self.space_view = "场"
 
@@ -452,7 +455,8 @@ class OpticsCanvas(ArrayCanvas):
         if self.mode == "时间孤子":
             self.set_array(self.time.render_waterfall())
         elif self.mode == "倍频":
-            self.set_array(np.ascontiguousarray(np.flipud(self.doubling.render())))
+            model = self.sfg if self.process == "和频" else self.doubling
+            self.set_array(np.ascontiguousarray(np.flipud(model.render())))
         elif self.space_view == "动量谱":
             self.set_array(self.space.render_spectrum(floor_db=35.0))
         else:
@@ -687,6 +691,13 @@ class MainWindow(LabWindow):
 
         crystal_box = QGroupBox("晶体")
         crystal_layout = QVBoxLayout(crystal_box)
+        self.process_combo = QComboBox()
+        self.process_combo.addItems(("倍频", "和频"))
+        self.process_combo.currentTextChanged.connect(self.on_process)
+        self.process_combo.setToolTip(
+            "倍频：ω+ω→2ω；和频：ω₁+ω₂→ω₃（两个输入都消耗，就是 OPA 的正向过程）。"
+        )
+        crystal_layout.addWidget(self.process_combo)
         self.length_slider = LabeledSlider(
             "长度 L", 50, 300, 200, formatter=lambda v: "%.2f" % (v / 100.0)
         )
@@ -786,6 +797,12 @@ class MainWindow(LabWindow):
         self.canvas.space.kappa = value / 1000.0
         self.reset_space()
 
+    def on_process(self, name):
+        self.canvas.process = name
+        self.qpm_check.setEnabled(name == "倍频")
+        self.qpm_check.setToolTip("" if name == "倍频" else "和频时用两个输入直接匹配，不涉及周期极化")
+        self.refresh_doubling()
+
     def on_qpm(self, checked):
         self.poling_slider.setEnabled(bool(checked))
         self.refresh_doubling()
@@ -819,9 +836,14 @@ class MainWindow(LabWindow):
             symmetric=self.symmetric_check.isChecked(),
             poling=self.poling(),
         )
+        sfg = self.canvas.sfg
+        sfg.configure(length=self.length_slider.value() / 100.0,
+                      kappa=0.0 if self.symmetric_check.isChecked()
+                      else self.crystal_kappa_slider.value() / 100.0)
         if self.mode == "倍频":
             self.canvas.render_frame()
-            self.fringe_plot.update_model(model)
+            active = self.canvas.sfg if self.canvas.process == "和频" else model
+            self.fringe_plot.update_model(active)
             self.beam_strip.update_model(model)
             self.momentum_sketch.update_state(
                 self.qpm_check.isChecked(), self.poling() or 0.0
@@ -881,12 +903,19 @@ class MainWindow(LabWindow):
             )
             self.spectrum_plot.update_state(sim)
         else:
-            model = self.canvas.doubling
-            self.readout_label.setText(
-                "L %.2f · κ %.2f · 峰值效率 %.1f%% · Δk ±%.0f"
-                % (model.length, model.kappa, model.peak_efficiency() * 100.0,
-                   model.span)
-            )
+            if self.canvas.process == "和频":
+                sfg = self.canvas.sfg
+                self.readout_label.setText(
+                    "和频 · L %.2f · κ %.2f · 峰值 n₃ %.2f · Δk ±%.0f"
+                    % (sfg.length, sfg.kappa, sfg.peak(), sfg.span)
+                )
+            else:
+                model = self.canvas.doubling
+                self.readout_label.setText(
+                    "L %.2f · κ %.2f · 峰值效率 %.1f%% · Δk ±%.0f"
+                    % (model.length, model.kappa, model.peak_efficiency() * 100.0,
+                       model.span)
+                )
 
     # ---------- 保存 ----------
     def save(self):
