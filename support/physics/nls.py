@@ -30,7 +30,9 @@ PALETTES = {
 
 PRESETS = ("单束", "涡旋", "双束", "噪声海")
 
-# 两种非线性模型：共振介质的可饱和响应，与真实玻璃里的高阶 Kerr（χ⁽⁵⁾）。
+# 两种非线性模型：共振介质的可饱和响应，与真实玻璃里的 χ⁽⁵⁾ 修正。
+# 注意“阶”数的是场：χ⁽³⁾ 给 n₂I（∝I，Kerr），χ⁽⁵⁾ 给 n₄I²（∝I²）；
+# 写成一阶一阶相加就是 n₂I + n₄I² = n₂I (1 − κI)，κ = −n₄/n₂。
 MODELS = ("饱和", "高阶 Kerr")
 
 
@@ -102,7 +104,9 @@ class NLSE:
         # 项会在网格尺度上炸开；带饱和项既保持物理图像，又让亮点停在可分辨
         # 的尺度上（对应非线性介质里的饱和效应）。
         self.saturation = float(saturation)
-        # χ⁽⁵⁾ 的系数：n(I) = n₂I (1 − κI)，κ 大到一定程度就从自聚焦转成自散焦。
+        # κ = −n₄/n₂：把 n₂I + n₄I² 因式分解成 n₂I(1 − κI)，
+        # 好处是响应因子 1−κI 直接可见，零点落在 I = 1/κ。
+        # 注意 κ 是“每单位强度”的量，所以 I 用的是裸强度（不做归一化）。
         self.model = model
         self.kappa = float(kappa)
         self.x = (np.arange(self.n) - self.n // 2) * self.dx
@@ -162,9 +166,10 @@ class NLSE:
     def response(self, intensity):
         """Effective nonlinear factor: 1 at weak light, smaller when saturated.
 
-        "饱和" is the two-level response 1/(1+I/Is); "高阶 Kerr" is the
-        χ⁽⁵⁾ correction 1-κI that real glasses show, which turns defocusing
-        once κI exceeds 1.
+        "饱和" is the two-level response 1/(1+I/Is).  "高阶 Kerr" keeps the
+        expansion one step further: n = n₂I + n₄I², i.e. χ⁽³⁾ plus the χ⁽⁵⁾
+        correction, factored as n₂I(1 − κI) with κ = −n₄/n₂.  Real glasses
+        turn defocusing once κI passes 1.
         """
         intensity = np.asarray(intensity, dtype=float)
         if self.model == "高阶 Kerr":

@@ -292,7 +292,8 @@ class MainWindow(LabWindow):
         self.model_combo.currentTextChanged.connect(self.on_model)
         self.model_combo.setToolTip(
             "饱和：共振介质的两能级响应 1/(1+I/Iₛ)；\n"
-            "高阶 Kerr：χ⁽⁵⁾ 修正 1−κI，这才是真实玻璃里停止坍缩的机制。"
+            "高阶 Kerr：n = n₂I + n₄I²（χ⁽³⁾ 再加 χ⁽⁵⁾ 修正），"
+            "因式分解成 n₂I(1−κI)，κ = −n₄/n₂；κI > 1 时转自散焦。"
         )
         selects.addWidget(self.model_combo, 1)
         run_layout.addLayout(selects)
