@@ -34,9 +34,7 @@
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
 | **Bremsstrahlung** | 变速圆周电子：真实推迟 Liénard-Wiechert 辐射场，按加速度平行/垂直分量显示轫致（红）与同步（蓝），远场 FFT 频谱加色叠加 |
 | **Mass Spring** | 质点-弹簧网络：重力、阻尼、固定点与鼠标交互，悬索桥 / 网 / 链 / 随机四种预设 |
-| **SHG** | 倍频与相位匹配：三波耦合方程扫过 Δk，画布就是相位匹配图（扇形 Maker 条纹），整幅按可见光谱染色：红=800 nm 基频、紫=400 nm 倍频，左侧色带标出波长；开周期极化把条纹折成共振，关对称性（χ⁽²⁾=0）整幅归零 |
-| **SPM** | 时间域 NLSE：自相位调制把谱对称展宽，孤子阶数 N 决定一切——N=1 形状与谱都不变、N=2 呼吸（周期 π/2）、N≥3 分裂后再成形；画布是按传播距离滚动的水落图 |
-| **Soliton** | 非线性薛定谔（分步傅里叶）：自聚焦与坍缩、涡旋环破裂成光丝、双束对撞、噪声海的调制不稳定性；可切到**动量谱**看被选择的波矢，面板里的**微观响应图**同步显示布居差 ΔN/N 与响应因子，非线性可选**饱和**或**高阶 Kerr（χ⁽⁵⁾）**；左键可在任意位置再种一束光 |
+| **Nonlinear** | 非线性光学三合一，一个下拉切换三种区域：**空间自聚焦**（Kerr 自聚焦、坍缩、涡旋破裂、调制不稳定性，可切动量谱与饱和/χ⁽⁵⁾ 模型）、**时间孤子**（自相位调制展宽、N=2 呼吸、N≥3 分裂的水落图）、**倍频**（χ⁽²⁾ 相位匹配图，整幅按可见光谱染色：红=800 nm、紫=400 nm，开周期极化折成共振，关对称性归零） |
 
 ### Fractals
 
@@ -160,7 +158,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 │   ├── Math/                # Arnold / Connection / Cplot / Fourier / Lloyd / Lorenz /
 │   │                        #   Quasicrystal / Stigmergy / Traveler
 │   ├── Physics/             # Beam / Bremsstrahlung / Ising / KAM / Mass-Spring / Maxwell /
-│   │                        #   Navier-Stokes / Noise / Schrödinger / SHG / Soliton / SPM / Turing
+│   │                        #   Navier-Stokes / Noise / Nonlinear / Schrödinger / Turing
 │   ├── Fractals/            # IFS / Lindenmayer / Logistic / Mandelbrot / Newton /
 │   │                        #   Quaternion Julia / Snowflake
 │   ├── Cellular Automata/   # Conway / Distill / Lenia / Particle Lenia
@@ -198,7 +196,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ## 公共组件（common/）
 
 各 app 原先都在自己文件里重写同一批样板代码，现已抽到 common/ 下。
-Math 9 个、Physics 11 个、Unpolished 6 个、Fractals 7 个、Cellular Automata 4 个应用都已改用统一的
+Math 9 个、Physics 9 个、Unpolished 6 个、Fractals 7 个、Cellular Automata 4 个应用都已改用统一的
 `run_app` 入口；Mass Spring 也改为 PySide 画布 + Taichi 内核，统一左侧 330px 分组面板 + 右侧 600px 白色画布 + 状态栏。
 画布层也统一了：matplotlib 画布（`MplCanvas`）覆盖 Fourier / Cplot / Noise / Lenia 核预览，
 numpy 图像画布（`ArrayCanvas`）覆盖 Erosion / Circulation / Conway / Snowflake。

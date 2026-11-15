@@ -99,24 +99,10 @@ APPS = [
     },
     # ---------------- Physics ----------------
     {
-        "title": "SHG",
-        "description": "倍频与相位匹配：Δk 扫出的 Maker 条纹、周期极化与对称性",
-        "path": "Physics/SHG.py",
-        "friendly": "倍频相位匹配",
-        "category": "Physics",
-    },
-    {
-        "title": "SPM",
-        "description": "时间域 NLSE：自相位调制展宽与孤子呼吸、分裂",
-        "path": "Physics/SPM.py",
-        "friendly": "自相位调制与孤子",
-        "category": "Physics",
-    },
-    {
-        "title": "Soliton",
-        "description": "非线性薛定谔：自聚焦、坍缩、涡旋破裂与光丝",
-        "path": "Physics/Soliton.py",
-        "friendly": "非线性薛定谔",
+        "title": "Nonlinear",
+        "description": "非线性光学三合一：空间自聚焦 / 时间孤子 / 倍频与相位匹配",
+        "path": "Physics/Nonlinear.py",
+        "friendly": "非线性光学",
         "category": "Physics",
     },
     {
