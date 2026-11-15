@@ -200,5 +200,24 @@ class TestPalette(unittest.TestCase):
         np.testing.assert_allclose(rgb[0, 0].astype(int), PALETTES[PALETTE][0][1], atol=1)
 
 
+class TestTwoPhoton(unittest.TestCase):
+    def simulate(self, amplitude, coefficient, steps=120):
+        sim = NLSE()
+        sim.reset("单束", amplitude, 0.0)
+        sim.two_photon = coefficient
+        sim.step(steps)
+        return sim.power()
+
+    def test_two_photon_absorption_removes_power(self):
+        plain = self.simulate(0.8, 0.0)
+        lossy = self.simulate(0.8, 0.05)
+        self.assertLess(lossy, plain)
+
+    def test_loss_grows_with_intensity(self):
+        weak = 1.0 - self.simulate(0.4, 0.05) / self.simulate(0.4, 0.0)
+        strong = 1.0 - self.simulate(0.8, 0.05) / self.simulate(0.8, 0.0)
+        self.assertGreater(strong, weak)
+
+
 if __name__ == "__main__":
     unittest.main()

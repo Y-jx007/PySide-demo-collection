@@ -103,7 +103,7 @@ class ResponsePlot(QWidget):
         if sim is None:
             painter.end()
             return
-        left, top, right, bottom = 28.0, 8.0, 8.0, 18.0
+        left, top, right, bottom = 24.0, 14.0, 8.0, 18.0
         plot = QRectF(left, top, max(10.0, rect.width() - left - right),
                       max(10.0, rect.height() - top - bottom))
         saturable = sim.model == "饱和"
@@ -145,15 +145,16 @@ class ResponsePlot(QWidget):
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        painter.drawText(QRectF(rect.left() + 4, rect.top() + 2, 22, 10),
+        # 纵轴刻度贴左，横轴标题居中放在轴下方，读数放右上角，互不重叠
+        painter.drawText(QRectF(2, plot.top() - 6, 24, 12),
                          Qt.AlignLeft, "1.0")
-        painter.drawText(QRectF(rect.left() + 4, rect.bottom() - 22, 22, 10),
+        painter.drawText(QRectF(2, plot.bottom() - 6, 24, 12),
                          Qt.AlignLeft, "0")
-        painter.drawText(QRectF(rect.left() + 26, rect.bottom() - 14, 90, 12),
-                         Qt.AlignLeft, "光强 I")
+        painter.drawText(QRectF(plot.left(), plot.bottom() + 2, plot.width() / 2, 12),
+                         Qt.AlignLeft, "光强 I →")
         ratio = (1.0 / (1.0 + self.peak / sim.saturation) if saturable
                  else max(1.0 - sim.kappa * self.peak, 0.0))
-        painter.drawText(QRectF(rect.right() - 118, rect.bottom() - 14, 112, 12),
+        painter.drawText(QRectF(plot.right() - 130, plot.bottom() + 2, 130, 12),
                          Qt.AlignRight, "响应 %.2f" % ratio)
         painter.end()
 
@@ -603,7 +604,8 @@ class MainWindow(LabWindow):
         self.model_combo.addItems(MODELS)
         self.model_combo.currentTextChanged.connect(self.on_model)
         self.model_combo.setToolTip(
-            "饱和：1/(1+I/Iₛ)；高阶 Kerr：n₂I + n₄I²，因子 1−κI。"
+            "饱和：1/(1+I/Iₛ)；高阶 Kerr：n₂I + n₄I²，因子 1−κI；"
+            "双光子吸收：折射之外还会吸收，dI/dt = −βI²，越亮耗得越快。"
         )
         selects.addWidget(self.model_combo, 1)
         run_layout.addLayout(selects)
@@ -780,6 +782,8 @@ class MainWindow(LabWindow):
         sim.model = name
         self.model_kappa_slider.setVisible(name == "高阶 Kerr")
         sim.kappa = self.model_kappa_slider.value() / 1000.0
+        # 双光子吸收：吸收型的 χ⁽³⁾，强度越高耗得越快（系数固定在模型里）
+        sim.two_photon = 0.05 if name == "双光子吸收" else 0.0
         self.reset_space()
 
     def on_model_kappa(self, value):

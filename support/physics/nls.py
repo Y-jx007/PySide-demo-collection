@@ -33,7 +33,7 @@ PRESETS = ("单束", "涡旋", "双束", "噪声海")
 # 两种非线性模型：共振介质的可饱和响应，与真实玻璃里的 χ⁽⁵⁾ 修正。
 # 注意“阶”数的是场：χ⁽³⁾ 给 n₂I（∝I，Kerr），χ⁽⁵⁾ 给 n₄I²（∝I²）；
 # 写成一阶一阶相加就是 n₂I + n₄I² = n₂I (1 − κI)，κ = −n₄/n₂。
-MODELS = ("饱和", "高阶 Kerr")
+MODELS = ("饱和", "高阶 Kerr", "双光子吸收")
 
 
 _LUTS = {}
@@ -99,7 +99,7 @@ class NLSE:
     """Periodic box, complex field, split-step Fourier time stepping."""
 
     def __init__(self, size=192, extent=32.0, dt=0.02, seed=7, saturation=60.0,
-                 model="饱和", kappa=0.02):
+                 model="饱和", kappa=0.02, two_photon=0.0):
         self.n = int(size)
         self.extent = float(extent)
         self.dx = self.extent / self.n
@@ -114,6 +114,8 @@ class NLSE:
         # 注意 κ 是“每单位强度”的量，所以 I 用的是裸强度（不做归一化）。
         self.model = model
         self.kappa = float(kappa)
+        # 双光子吸收系数（imaginary chi-3）：只在模型选到它时才生效
+        self.two_photon = float(two_photon)
         self.x = (np.arange(self.n) - self.n // 2) * self.dx
         self.X, self.Y = np.meshgrid(self.x, self.x, indexing="xy")
         wave = 2.0 * np.pi * np.fft.fftfreq(self.n, d=self.dx)
@@ -195,10 +197,15 @@ class NLSE:
             intensity = np.abs(psi) ** 2
             theta = half * intensity * self.response(intensity)
             psi = psi * (np.cos(theta) + 1j * np.sin(theta))
+            if self.two_photon:
+                # 双光子吸收：dI/dt = -beta I^2，即幅度的指数衰减率 beta I/2
+                psi = psi * np.exp(-0.5 * self.two_photon * half * intensity)
             psi = np.fft.ifft2(np.fft.fft2(psi) * dispersion)
             intensity = np.abs(psi) ** 2
             theta = half * intensity * self.response(intensity)
             psi = psi * (np.cos(theta) + 1j * np.sin(theta))
+            if self.two_photon:
+                psi = psi * np.exp(-0.5 * self.two_photon * half * intensity)
         self.psi = psi
         self.steps += int(count)
         return psi
