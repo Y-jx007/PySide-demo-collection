@@ -42,6 +42,35 @@ class TestSchwarzschildGeometry(unittest.TestCase):
             center = frame.ray(0.0, 0.0)
             self.assertAlmostEqual(float(np.linalg.norm(center)), 1.0, places=10)
 
+    def test_look_around_keeps_camera_fixed_and_follows_drag(self):
+        base = L.CameraFrame(46.0, 84.0, 0.0, 32.0)
+        view = L.CameraFrame(46.0, 84.0, 0.0, 32.0,
+                             view_yaw=10.0, view_pitch=5.0)
+        # The observer position is unchanged; only the look direction moves.
+        np.testing.assert_allclose(view.origin, base.origin, atol=1e-12)
+        self.assertGreater(float(np.linalg.norm(view.forward - base.forward)), 0.01)
+        for vec in (view.forward, view.right, view.up):
+            self.assertAlmostEqual(float(np.linalg.norm(vec)), 1.0, places=10)
+        self.assertAlmostEqual(float(np.dot(view.forward, view.right)), 0.0,
+                               places=10)
+        self.assertAlmostEqual(float(np.dot(view.forward, view.up)), 0.0,
+                               places=10)
+
+        # A star near the centre moves right for +yaw and down for +pitch:
+        # this is the direct-manipulation direction used by the mouse.
+        star = L._unit(base.forward + 0.06 * base.right + 0.04 * base.up)
+
+        def project(frame, direction):
+            return (
+                float(np.dot(direction, frame.right) / np.dot(direction, frame.forward)),
+                float(np.dot(direction, frame.up) / np.dot(direction, frame.forward)),
+            )
+
+        x0, y0 = project(base, star)
+        x1, y1 = project(view, star)
+        self.assertGreater(x1, x0)
+        self.assertLess(y1, y0)
+
     def test_initial_velocity_has_impact_parameter_b(self):
         frame = L.CameraFrame(36.0, 78.0, 0.0, 42.0)
         for x, y in ((0.0, 0.0), (0.4, -0.2), (-0.6, 0.5), (1.0, 0.0)):

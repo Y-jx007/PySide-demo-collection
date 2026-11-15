@@ -56,31 +56,31 @@ PRESETS = {
         distance=46, inclination=84, fov=32, disk_on=True,
         r_in=6, r_out=13, peak_temperature=5000, opacity=45,
         exposure=125, star_gain=150, disk_gain=16, doppler=True,
-        quality=1, orbit=True,
+        quality=1,
     ),
     "纯星场": dict(
         distance=36, inclination=65, fov=46, disk_on=False,
         r_in=6, r_out=13, peak_temperature=6500, opacity=70,
         exposure=155, star_gain=125, disk_gain=13, doppler=True,
-        quality=1, orbit=True,
+        quality=1,
     ),
     "正面": dict(
         distance=44, inclination=18, fov=34, disk_on=True,
         r_in=6, r_out=14, peak_temperature=6000, opacity=55,
         exposure=115, star_gain=140, disk_gain=18, doppler=True,
-        quality=1, orbit=True,
+        quality=1,
     ),
     "侧视": dict(
         distance=50, inclination=87, fov=28, disk_on=True,
         r_in=6, r_out=14, peak_temperature=5500, opacity=80,
         exposure=105, star_gain=140, disk_gain=12, doppler=True,
-        quality=1, orbit=True,
+        quality=1,
     ),
     "光子环": dict(
         distance=34, inclination=80, fov=24, disk_on=True,
         r_in=6, r_out=14, peak_temperature=8000, opacity=55,
         exposure=90, star_gain=120, disk_gain=22, doppler=True,
-        quality=1, orbit=True,
+        quality=1,
     ),
 }
 
@@ -88,7 +88,7 @@ PRESETS = {
 class LensingCanvas(SquareCanvas):
     """Fixed 600x600 black canvas; the rendered sky fills it exactly."""
 
-    orbitDragged = Signal(float, float)
+    viewDragged = Signal(float, float)
     zoomed = Signal(int)
     dragBegan = Signal()
     dragEnded = Signal()
@@ -99,7 +99,7 @@ class LensingCanvas(SquareCanvas):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFixedSize(600, 600)
         self.setCursor(Qt.OpenHandCursor)
-        self.setToolTip("左键拖动旋转，滚轮缩放。")
+        self.setToolTip("相机位置固定；左键拖动旋转空间，滚轮缩放。")
         self._image = None
         self._last_pos = None
 
@@ -141,7 +141,7 @@ class LensingCanvas(SquareCanvas):
         dx = point.x() - self._last_pos.x()
         dy = point.y() - self._last_pos.y()
         self._last_pos = point
-        self.orbitDragged.emit(float(dx), float(dy))
+        self.viewDragged.emit(float(dx), float(dy))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -167,8 +167,9 @@ class MainWindow(LabWindow):
         self.renderer = LensingRenderer(output_size=840)
         self.backend = "初始化"
         self._time = 0.0
-        self._azimuth = 0.0
         self._inclination = 84.0
+        self._view_yaw = 0.0
+        self._view_pitch = 0.0
         self._dragging = False
         self._applying = False
         self._first_frame = True
@@ -310,12 +311,7 @@ class MainWindow(LabWindow):
         self.doppler_check = QCheckBox("多普勒增亮")
         self.doppler_check.setChecked(True)
         self.doppler_check.toggled.connect(self._on_parameter)
-        self.orbit_check = QCheckBox("相机环绕")
-        self.orbit_check.setChecked(True)
-        self.orbit_check.setToolTip("手动拖动画面会自动关闭环绕，避免和鼠标抢方向。")
-        self.orbit_check.toggled.connect(self._on_parameter)
         display_layout.addWidget(self.doppler_check)
-        display_layout.addWidget(self.orbit_check)
         column.addWidget(display)
 
         control = QGroupBox("控制")
@@ -323,9 +319,12 @@ class MainWindow(LabWindow):
         control_layout.setContentsMargins(6, 6, 6, 6)
         control_layout.setSpacing(4)
         self.pause_btn = QPushButton("暂停")
+        self.center_btn = QPushButton("正视")
+        self.center_btn.setToolTip("回到对准黑洞的初始视线。")
         self.reset_btn = QPushButton("重置")
         self.save_btn = QPushButton("保存")
-        for button in (self.pause_btn, self.reset_btn, self.save_btn):
+        for button in (self.pause_btn, self.center_btn, self.reset_btn,
+                       self.save_btn):
             control_layout.addWidget(button, 1)
         column.addWidget(control)
         column.addStretch(1)
@@ -346,9 +345,10 @@ class MainWindow(LabWindow):
         self.status.addPermanentWidget(self.params_label)
 
         self.pause_btn.clicked.connect(self._toggle_pause)
+        self.center_btn.clicked.connect(self._center_view)
         self.reset_btn.clicked.connect(self._reset)
         self.save_btn.clicked.connect(self._save)
-        self.canvas.orbitDragged.connect(self._orbit)
+        self.canvas.viewDragged.connect(self._view_drag)
         self.canvas.zoomed.connect(self._zoom)
         self.canvas.dragBegan.connect(self._drag_begin)
         self.canvas.dragEnded.connect(self._drag_end)
@@ -379,12 +379,9 @@ class MainWindow(LabWindow):
         if self._cpu_mode:
             width = min(width, 300)
             steps = min(steps, 130)
-        # Fine mode is a still-image setting: while the camera or disk is
+        # Fine mode is a still-image setting: while the disk texture is
         # animating, render a 600 px preview so the UI stays responsive.
-        # Pausing (or turning off every animation) immediately upgrades it.
-        animating = (not self._paused) and (
-            self.orbit_check.isChecked() or self.disk_check.isChecked()
-        )
+        animating = (not self._paused) and self.disk_check.isChecked()
         if animating and width > ANIM_SIZE:
             return name + "预览", ANIM_SIZE, ANIM_STEPS
         return name, int(width), int(steps)
@@ -396,8 +393,10 @@ class MainWindow(LabWindow):
             width=width, height=width,
             distance=float(self.distance_slider.value()),
             inclination=float(self._inclination),
-            azimuth=float(self._azimuth),
+            azimuth=0.0,
             fov=float(self.fov_slider.value()),
+            view_yaw=float(self._view_yaw),
+            view_pitch=float(self._view_pitch),
             disk_on=bool(self.disk_check.isChecked()),
             r_in=r_in, r_out=r_out,
             peak_temperature=float(self.temp_slider.value()),
@@ -464,15 +463,12 @@ class MainWindow(LabWindow):
 
     # ------------------------------------------------------------ animation
     def _tick(self):
+        # The camera position is fixed; only the disk surface evolves.
         if self._paused or self._dragging:
             return
-        moving = self.orbit_check.isChecked() or self.disk_check.isChecked()
-        if not moving:
+        if not self.disk_check.isChecked():
             return
-        if not self._dragging and self.orbit_check.isChecked():
-            self._azimuth = (self._azimuth + 0.09) % 360.0
-        if self.disk_check.isChecked():
-            self._time += 0.26
+        self._time += 0.26
         self._schedule_render(delay=0)
 
     def _toggle_pause(self):
@@ -506,21 +502,21 @@ class MainWindow(LabWindow):
         self.doppler_check.setEnabled(active)
 
     # ------------------------------------------------------------- gestures
-    def _orbit(self, dx, dy):
-        # Direct manipulation: drag right moves the star field right.  The
-        # previous minus sign made horizontal drags fight the vertical axis.
-        self._azimuth = (self._azimuth + float(dx) * 0.28) % 360.0
-        # Keep inclination as a float while dragging; writing only the
-        # integer slider value every few pixels made the vertical tilt snap
-        # in 1° steps (the old "camera rotation is wrong" feel).
-        self._inclination = max(
-            0.0, min(88.0, self._inclination + float(dy) * 0.18)
+    def _view_drag(self, dx, dy):
+        # The observer stays at a fixed world position.  Dragging rotates the
+        # view direction (space moves past the camera), so the black hole can
+        # leave the centre instead of always being framed by an orbit.
+        # Positive yaw looks left (scene moves right); positive pitch looks
+        # up (scene moves down): direct manipulation on both axes.
+        self._view_yaw = (self._view_yaw + float(dx) * 0.28) % 360.0
+        self._view_pitch = max(
+            -85.0, min(85.0, self._view_pitch + float(dy) * 0.18)
         )
-        rounded = int(round(self._inclination))
-        if rounded != self.inclination_slider.value():
-            self.inclination_slider.blockSignals(True)
-            self.inclination_slider.setValue(rounded)
-            self.inclination_slider.blockSignals(False)
+        self._schedule_render(delay=0)
+
+    def _center_view(self):
+        self._view_yaw = 0.0
+        self._view_pitch = 0.0
         self._schedule_render(delay=0)
 
     def _zoom(self, steps):
@@ -533,12 +529,8 @@ class MainWindow(LabWindow):
 
     def _drag_begin(self):
         self._dragging = True
-        if self.orbit_check.isChecked():
-            # Manual control takes over; otherwise the camera keeps drifting
-            # under the user's hand as soon as the button is released.
-            self.orbit_check.setChecked(False)
         self.state_label.setText("拖动预览")
-        self.params_label.setText("松开后精算")
+        self.params_label.setText("相机固定 · 旋转空间")
 
     def _drag_end(self):
         self._dragging = False
@@ -565,10 +557,10 @@ class MainWindow(LabWindow):
             self.star_slider.setValue(int(preset["star_gain"]))
             self.disk_gain_slider.setValue(int(preset["disk_gain"]))
             self.doppler_check.setChecked(bool(preset["doppler"]))
-            self.orbit_check.setChecked(bool(preset["orbit"]))
             self.quality_combo.setCurrentIndex(int(preset["quality"]))
             self._time = 0.0
-            self._azimuth = 0.0
+            self._view_yaw = 0.0
+            self._view_pitch = 0.0
             self._disk_enabled = bool(preset["disk_on"])
             self._sync_disk_enabled()
         finally:
@@ -580,7 +572,8 @@ class MainWindow(LabWindow):
         self.pause_btn.setText("暂停")
         self.state_label.setText("运行中")
         self._time = 0.0
-        self._azimuth = 0.0
+        self._view_yaw = 0.0
+        self._view_pitch = 0.0
         current = self.preset_combo.currentText()
         target = "吸积盘"
         if current == target:
