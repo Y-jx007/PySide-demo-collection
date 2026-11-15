@@ -42,34 +42,43 @@ class TestSchwarzschildGeometry(unittest.TestCase):
             center = frame.ray(0.0, 0.0)
             self.assertAlmostEqual(float(np.linalg.norm(center)), 1.0, places=10)
 
-    def test_look_around_keeps_camera_fixed_and_follows_drag(self):
+    def test_orbit_camera_keeps_radius_and_looks_at_the_hole(self):
         base = L.CameraFrame(46.0, 84.0, 0.0, 32.0)
-        view = L.CameraFrame(46.0, 84.0, 0.0, 32.0,
-                             view_yaw=10.0, view_pitch=5.0)
-        # The observer position is unchanged; only the look direction moves.
-        np.testing.assert_allclose(view.origin, base.origin, atol=1e-12)
-        self.assertGreater(float(np.linalg.norm(view.forward - base.forward)), 0.01)
-        for vec in (view.forward, view.right, view.up):
-            self.assertAlmostEqual(float(np.linalg.norm(vec)), 1.0, places=10)
-        self.assertAlmostEqual(float(np.dot(view.forward, view.right)), 0.0,
-                               places=10)
-        self.assertAlmostEqual(float(np.dot(view.forward, view.up)), 0.0,
-                               places=10)
-
-        # A star near the centre moves right for +yaw and down for +pitch:
-        # this is the direct-manipulation direction used by the mouse.
-        star = L._unit(base.forward + 0.06 * base.right + 0.04 * base.up)
-
-        def project(frame, direction):
-            return (
-                float(np.dot(direction, frame.right) / np.dot(direction, frame.forward)),
-                float(np.dot(direction, frame.up) / np.dot(direction, frame.forward)),
+        moved = L.CameraFrame(46.0, 55.0, 70.0, 32.0)
+        for frame in (base, moved):
+            self.assertAlmostEqual(float(np.linalg.norm(frame.origin)),
+                                   frame.distance, places=10)
+            # forward points from the camera to the target at the origin
+            np.testing.assert_allclose(
+                frame.forward, -frame.origin / frame.distance, atol=1e-10
             )
+            for vec in (frame.forward, frame.right, frame.up):
+                self.assertAlmostEqual(float(np.linalg.norm(vec)), 1.0, places=10)
+            self.assertAlmostEqual(float(np.dot(frame.forward, frame.right)),
+                                   0.0, places=10)
+            self.assertAlmostEqual(float(np.dot(frame.forward, frame.up)),
+                                   0.0, places=10)
+        self.assertGreater(float(np.linalg.norm(moved.origin - base.origin)), 0.1)
 
-        x0, y0 = project(base, star)
-        x1, y1 = project(view, star)
-        self.assertGreater(x1, x0)
-        self.assertLess(y1, y0)
+    def test_orbit_camera_allows_below_the_disk(self):
+        frame = L.CameraFrame(46.0, 120.0, 0.0, 32.0)
+        self.assertLess(float(frame.origin[2]), 0.0)
+        np.testing.assert_allclose(
+            frame.forward, -frame.origin / frame.distance, atol=1e-10
+        )
+
+    def test_orbit_step_matches_connection_signs_and_clamps(self):
+        az, inc = L.orbit_step(10.0, 84.0, 10.0, 0.0)
+        self.assertAlmostEqual(az, 5.5, places=10)
+        self.assertAlmostEqual(inc, 84.0, places=10)
+        # Dragging down raises the camera (polar angle decreases).
+        az, inc = L.orbit_step(10.0, 84.0, 0.0, 10.0)
+        self.assertAlmostEqual(az, 10.0, places=10)
+        self.assertAlmostEqual(inc, 79.5, places=10)
+        az, inc = L.orbit_step(0.0, 84.0, 0.0, 1000.0)
+        self.assertAlmostEqual(inc, 1.0, places=10)
+        az, inc = L.orbit_step(0.0, 84.0, 0.0, -1000.0)
+        self.assertAlmostEqual(inc, 179.0, places=10)
 
     def test_initial_velocity_has_impact_parameter_b(self):
         frame = L.CameraFrame(36.0, 78.0, 0.0, 42.0)

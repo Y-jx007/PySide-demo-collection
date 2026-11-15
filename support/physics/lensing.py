@@ -76,17 +76,14 @@ class CameraFrame:
     """Local static-observer camera at a finite Schwarzschild radius."""
 
     __slots__ = ("origin", "forward", "right", "up", "tan_half",
-                 "distance", "inclination", "azimuth", "fov",
-                 "view_yaw", "view_pitch")
+                 "distance", "inclination", "azimuth", "fov")
 
     def __init__(self, distance=36.0, inclination=78.0, azimuth=0.0,
-                 fov=42.0, view_yaw=0.0, view_pitch=0.0):
+                 fov=42.0):
         self.distance = max(2.01, float(distance))
-        self.inclination = float(np.clip(inclination, 0.0, 89.0))
+        self.inclination = float(np.clip(inclination, 1.0, 179.0))
         self.azimuth = float(azimuth)
         self.fov = float(np.clip(fov, 2.0, 120.0))
-        self.view_yaw = float(view_yaw)
-        self.view_pitch = float(view_pitch)
         inc = math.radians(self.inclination)
         azi = math.radians(self.azimuth)
         self.origin = self.distance * np.array([
@@ -99,25 +96,9 @@ class CameraFrame:
         up_hint = z - float(np.dot(z, self.forward)) * self.forward
         if float(np.linalg.norm(up_hint)) < 1e-8:
             up_hint = np.array([0.0, 1.0, 0.0])
-        base_up = _unit(up_hint)
-        base_right = _unit(np.cross(self.forward, base_up))
-        base_up = _unit(np.cross(base_right, self.forward))
-
-        # The camera position stays fixed while the observer looks around.
-        # Positive yaw looks left (so a fixed star moves right); positive
-        # pitch looks up (so a fixed star moves down).  This is direct
-        # manipulation: the scene follows the drag.
-        yaw = math.radians(self.view_yaw)
-        cy, sy = math.cos(yaw), math.sin(yaw)
-        forward = cy * self.forward - sy * base_right
-        right = cy * base_right + sy * self.forward
-        up = base_up
-
-        pitch = math.radians(self.view_pitch)
-        cp, sp = math.cos(pitch), math.sin(pitch)
-        self.forward = _unit(cp * forward + sp * up)
-        self.up = _unit(cp * up - sp * forward)
-        self.right = _unit(right)
+        self.up = _unit(up_hint)
+        self.right = _unit(np.cross(self.forward, self.up))
+        self.up = _unit(np.cross(self.right, self.forward))
         self.tan_half = math.tan(0.5 * math.radians(self.fov))
 
     def ray(self, x, y):
@@ -134,6 +115,22 @@ class CameraFrame:
     def basis(self):
         return (self.origin.copy(), self.forward.copy(), self.right.copy(),
                 self.up.copy())
+
+
+def orbit_step(azimuth, inclination, dx, dy, sensitivity=0.45):
+    """Connection-style orbit drag: yaw with x, altitude with y.
+
+    The camera stays at a fixed radius and always looks at the origin; the
+    black hole therefore remains framed while the camera moves around it.
+    The two axes use Connection's camera-style directions: drag right moves
+    the camera around to the right, drag down raises it.
+    """
+    new_azimuth = (float(azimuth) - float(dx) * sensitivity) % 360.0
+    # inclination is the polar angle from +z (0..180).  Dragging down raises
+    # the camera, so the polar angle decreases; >90° goes below the disk.
+    new_inclination = float(inclination) - float(dy) * sensitivity
+    new_inclination = max(1.0, min(179.0, new_inclination))
+    return new_azimuth, new_inclination
 
 
 def initial_velocity(origin, direction, M=1.0):
@@ -852,9 +849,7 @@ class LensingRenderer:
         height = int(config.height)
         out = self._ensure_output(width, height)
         frame = CameraFrame(
-            config.distance, config.inclination, config.azimuth, config.fov,
-            getattr(config, "view_yaw", 0.0),
-            getattr(config, "view_pitch", 0.0),
+            config.distance, config.inclination, config.azimuth, config.fov
         )
         origin, forward, right, up = frame.basis()
         r_escape = float(config.r_escape)
@@ -901,7 +896,6 @@ class RenderConfig:
         "disk_on", "r_in", "r_out", "peak_temperature", "opacity",
         "doppler", "exposure", "star_gain", "disk_gain",
         "max_steps", "step_scale", "r_escape", "time",
-        "view_yaw", "view_pitch",
     )
 
     def __init__(self, width=600, height=600, distance=36.0,
@@ -909,8 +903,7 @@ class RenderConfig:
                  disk_on=True, r_in=6.0, r_out=22.0,
                  peak_temperature=9000.0, opacity=0.82, doppler=True,
                  exposure=1.0, star_gain=1.0, disk_gain=1.4,
-                 max_steps=220, step_scale=0.06, r_escape=0.0, time=0.0,
-                 view_yaw=0.0, view_pitch=0.0):
+                 max_steps=220, step_scale=0.06, r_escape=0.0, time=0.0):
         self.width = int(width)
         self.height = int(height)
         self.distance = float(distance)
@@ -930,5 +923,3 @@ class RenderConfig:
         self.step_scale = float(step_scale)
         self.r_escape = float(r_escape)
         self.time = float(time)
-        self.view_yaw = float(view_yaw)
-        self.view_pitch = float(view_pitch)

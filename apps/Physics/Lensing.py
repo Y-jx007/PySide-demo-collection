@@ -27,6 +27,7 @@ from common.qt_base import (
 from support.physics.lensing import (
     LensingRenderer,
     RenderConfig,
+    orbit_step,
     taichi_available,
     taichi_backend_name,
 )
@@ -88,7 +89,7 @@ PRESETS = {
 class LensingCanvas(SquareCanvas):
     """Fixed 600x600 black canvas; the rendered sky fills it exactly."""
 
-    viewDragged = Signal(float, float)
+    orbitDragged = Signal(float, float)
     zoomed = Signal(int)
     dragBegan = Signal()
     dragEnded = Signal()
@@ -99,7 +100,7 @@ class LensingCanvas(SquareCanvas):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFixedSize(600, 600)
         self.setCursor(Qt.OpenHandCursor)
-        self.setToolTip("相机位置固定；左键拖动旋转空间，滚轮缩放。")
+        self.setToolTip("左键拖动环绕相机，滚轮缩放。")
         self._image = None
         self._last_pos = None
 
@@ -141,7 +142,7 @@ class LensingCanvas(SquareCanvas):
         dx = point.x() - self._last_pos.x()
         dy = point.y() - self._last_pos.y()
         self._last_pos = point
-        self.viewDragged.emit(float(dx), float(dy))
+        self.orbitDragged.emit(float(dx), float(dy))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -167,9 +168,8 @@ class MainWindow(LabWindow):
         self.renderer = LensingRenderer(output_size=840)
         self.backend = "初始化"
         self._time = 0.0
+        self._azimuth = 0.0
         self._inclination = 84.0
-        self._view_yaw = 0.0
-        self._view_pitch = 0.0
         self._dragging = False
         self._applying = False
         self._first_frame = True
@@ -243,7 +243,7 @@ class MainWindow(LabWindow):
             label_width=52, value_width=44,
         )
         self.inclination_slider = LabeledSlider(
-            "倾角", 0, 88, 84, formatter=lambda v: f"{v}°",
+            "倾角", 1, 179, 84, formatter=lambda v: f"{v}°",
             label_width=52, value_width=44,
         )
         self.fov_slider = LabeledSlider(
@@ -319,12 +319,9 @@ class MainWindow(LabWindow):
         control_layout.setContentsMargins(6, 6, 6, 6)
         control_layout.setSpacing(4)
         self.pause_btn = QPushButton("暂停")
-        self.center_btn = QPushButton("正视")
-        self.center_btn.setToolTip("回到对准黑洞的初始视线。")
         self.reset_btn = QPushButton("重置")
         self.save_btn = QPushButton("保存")
-        for button in (self.pause_btn, self.center_btn, self.reset_btn,
-                       self.save_btn):
+        for button in (self.pause_btn, self.reset_btn, self.save_btn):
             control_layout.addWidget(button, 1)
         column.addWidget(control)
         column.addStretch(1)
@@ -345,10 +342,9 @@ class MainWindow(LabWindow):
         self.status.addPermanentWidget(self.params_label)
 
         self.pause_btn.clicked.connect(self._toggle_pause)
-        self.center_btn.clicked.connect(self._center_view)
         self.reset_btn.clicked.connect(self._reset)
         self.save_btn.clicked.connect(self._save)
-        self.canvas.viewDragged.connect(self._view_drag)
+        self.canvas.orbitDragged.connect(self._orbit_drag)
         self.canvas.zoomed.connect(self._zoom)
         self.canvas.dragBegan.connect(self._drag_begin)
         self.canvas.dragEnded.connect(self._drag_end)
@@ -393,10 +389,8 @@ class MainWindow(LabWindow):
             width=width, height=width,
             distance=float(self.distance_slider.value()),
             inclination=float(self._inclination),
-            azimuth=0.0,
+            azimuth=float(self._azimuth),
             fov=float(self.fov_slider.value()),
-            view_yaw=float(self._view_yaw),
-            view_pitch=float(self._view_pitch),
             disk_on=bool(self.disk_check.isChecked()),
             r_in=r_in, r_out=r_out,
             peak_temperature=float(self.temp_slider.value()),
@@ -502,21 +496,18 @@ class MainWindow(LabWindow):
         self.doppler_check.setEnabled(active)
 
     # ------------------------------------------------------------- gestures
-    def _view_drag(self, dx, dy):
-        # The observer stays at a fixed world position.  Dragging rotates the
-        # view direction (space moves past the camera), so the black hole can
-        # leave the centre instead of always being framed by an orbit.
-        # Positive yaw looks left (scene moves right); positive pitch looks
-        # up (scene moves down): direct manipulation on both axes.
-        self._view_yaw = (self._view_yaw + float(dx) * 0.28) % 360.0
-        self._view_pitch = max(
-            -85.0, min(85.0, self._view_pitch + float(dy) * 0.18)
+    def _orbit_drag(self, dx, dy):
+        # Connection-style orbit camera: the camera moves around the black
+        # hole and always looks at it, so the hole stays framed.  Horizontal
+        # drag is yaw; vertical drag is altitude (down raises the camera).
+        self._azimuth, self._inclination = orbit_step(
+            self._azimuth, self._inclination, float(dx), float(dy)
         )
-        self._schedule_render(delay=0)
-
-    def _center_view(self):
-        self._view_yaw = 0.0
-        self._view_pitch = 0.0
+        rounded = int(round(self._inclination))
+        if rounded != self.inclination_slider.value():
+            self.inclination_slider.blockSignals(True)
+            self.inclination_slider.setValue(rounded)
+            self.inclination_slider.blockSignals(False)
         self._schedule_render(delay=0)
 
     def _zoom(self, steps):
@@ -530,7 +521,7 @@ class MainWindow(LabWindow):
     def _drag_begin(self):
         self._dragging = True
         self.state_label.setText("拖动预览")
-        self.params_label.setText("相机固定 · 旋转空间")
+        self.params_label.setText("松开后精算")
 
     def _drag_end(self):
         self._dragging = False
@@ -559,8 +550,7 @@ class MainWindow(LabWindow):
             self.doppler_check.setChecked(bool(preset["doppler"]))
             self.quality_combo.setCurrentIndex(int(preset["quality"]))
             self._time = 0.0
-            self._view_yaw = 0.0
-            self._view_pitch = 0.0
+            self._azimuth = 0.0
             self._disk_enabled = bool(preset["disk_on"])
             self._sync_disk_enabled()
         finally:
@@ -572,8 +562,7 @@ class MainWindow(LabWindow):
         self.pause_btn.setText("暂停")
         self.state_label.setText("运行中")
         self._time = 0.0
-        self._view_yaw = 0.0
-        self._view_pitch = 0.0
+        self._azimuth = 0.0
         current = self.preset_combo.currentText()
         target = "吸积盘"
         if current == target:
