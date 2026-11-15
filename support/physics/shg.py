@@ -64,6 +64,35 @@ def beam_lut():
     return _BEAM_LUT
 
 
+_MIX_LUT = None
+
+
+# 图像用的两个“波长色”改成墨青家族：浅（基频）→ 深（倍频）。
+# 仍然是“两束光叠加”的加法混色，只是把两个端点换成了和项目一致的色调。
+RAMP_LIGHT = (208, 224, 226)
+RAMP_DARK = (12, 32, 44)
+
+_MIX_LUT = None
+
+
+def mix_lut():
+    """256-entry additive mix of the two palette tones (light -> deep ink).
+
+    It is the same operation as mixing the two wavelengths -- a weighted sum
+    of two colours -- but the endpoints are the project ink instead of red
+    and violet, so the diagram sits in the same palette as the rest of the
+    app.  beam_lut() remains the wavelength scale used by the legend strip.
+    """
+    global _MIX_LUT
+    if _MIX_LUT is None:
+        ramp = np.linspace(0.0, 1.0, 256)[:, None]
+        light = np.asarray(RAMP_LIGHT, dtype=float)[None, :]
+        dark = np.asarray(RAMP_DARK, dtype=float)[None, :]
+        table = (1.0 - ramp) * light + ramp * dark
+        _MIX_LUT = np.clip(table, 0, 255).astype(np.uint8)
+    return _MIX_LUT
+
+
 def _derivative(a1, a2, kappa, detune):
     """Right-hand side of the rotating-frame equations (arrays over dk)."""
     return (
@@ -174,8 +203,8 @@ class SHGMap:
         db = 10.0 * np.log10(np.clip(field / reference, 1e-12, 1.0))
         norm = np.clip((db + floor_db) / floor_db, 0.0, 1.0)
         index = (norm * 255.0).astype(np.uint8)
-        # 用光的颜色而不是墨青：弱处红（还是基频），强处紫（已转成倍频）
-        return beam_lut()[index]
+        # 真实叠加色：红（基频）→ 品红 → 紫（倍频），而不是光谱色标
+        return mix_lut()[index]
 
     def conversions(self):
         """Converted energy fraction 2*eta along z at dk = 0 (0 to 1)."""

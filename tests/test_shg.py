@@ -69,14 +69,16 @@ class TestMap(unittest.TestCase):
         self.assertEqual(rgb.shape, (41, 60, 3))
         self.assertEqual(rgb.dtype, np.uint8)
 
-    def test_render_uses_the_wavelength_colours(self):
+    def test_render_uses_the_palette_tones(self):
         model = SHGMap(mismatches=41, samples=60, length=2.0, kappa=1.0, span=8.0)
         rgb = model.render()
-        # 转换最弱处偏红（基频 800 nm），最强处偏紫（倍频 400 nm）
+        # 墨青色阶：转换最弱处浅、最强处深，且都偏蓝（B ≥ R）
         weakest = rgb[np.unravel_index(np.argmin(model.map), model.map.shape)]
         strongest = rgb[np.unravel_index(np.argmax(model.map), model.map.shape)]
-        self.assertGreater(int(weakest[0]), int(weakest[2]))
-        self.assertGreater(int(strongest[2]), int(strongest[0]))
+        self.assertGreater(int(weakest.astype(int).sum()),
+                           int(strongest.astype(int).sum()))
+        self.assertGreaterEqual(int(strongest[2]), int(strongest[0]))
+        self.assertGreaterEqual(int(weakest[2]), int(weakest[0]))
 
     def test_beam_colours_run_from_pump_to_harmonic(self):
         model = SHGMap(mismatches=41, samples=60, length=2.0, kappa=1.0, span=8.0)
