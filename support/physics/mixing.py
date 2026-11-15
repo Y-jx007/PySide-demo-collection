@@ -69,6 +69,14 @@ class SFGMap:
             self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
         if seed2 is not None:
             self.seed2 = float(seed2)
+        if self.branch == "四波混频":
+            _, a4, history = propagate_fwm(
+                self.delta_k, length=self.length, samples=self.samples,
+                kappa=self.kappa, pump=self.seed2,
+            )
+            self.map = history.T
+            self._exit = np.abs(a4) ** 2
+            return self.map
         if self.branch == "差频":
             a1, a2, a3, history = propagate_dfg(
                 self.delta_k, length=self.length, samples=self.samples,
@@ -167,3 +175,25 @@ def fwm_conjugate(delta_k, length=2.0, samples=200, kappa=1.0, pump=0.6,
         a4 = a4 + dz * (b4 + 2.0 * c4 + 2.0 * d4 + e4) / 6.0
         z += dz
     return np.abs(a4) / (seed * 1e-3)
+
+def propagate_fwm(delta_k, length=2.0, samples=200, kappa=1.0, pump=0.6,
+                  seed=1e-6):
+    """Same as fwm_conjugate but keeps |A4|^2 at every step (for the map)."""
+    detune = np.asarray(delta_k, dtype=float)
+    dz = length / float(samples)
+    a3 = np.full(detune.shape, complex(seed))
+    a4 = np.full(detune.shape, complex(seed * 1e-3))
+    history = [np.abs(a4) ** 2]
+    z = 0.0
+    for _ in range(int(samples)):
+        b3, b4 = _rhs_fwm(a3, a4, kappa, pump, detune, z)
+        c3, c4 = _rhs_fwm(a3 + 0.5 * dz * b3, a4 + 0.5 * dz * b4, kappa, pump,
+                          detune, z + 0.5 * dz)
+        d3, d4 = _rhs_fwm(a3 + 0.5 * dz * c3, a4 + 0.5 * dz * c4, kappa, pump,
+                          detune, z + 0.5 * dz)
+        e3, e4 = _rhs_fwm(a3 + dz * d3, a4 + dz * d4, kappa, pump, detune, z + dz)
+        a3 = a3 + dz * (b3 + 2.0 * c3 + 2.0 * d3 + e3) / 6.0
+        a4 = a4 + dz * (b4 + 2.0 * c4 + 2.0 * d4 + e4) / 6.0
+        z += dz
+        history.append(np.abs(a4) ** 2)
+    return a3, a4, np.array(history)

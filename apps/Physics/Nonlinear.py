@@ -720,7 +720,7 @@ class MainWindow(LabWindow):
         crystal_box = QGroupBox("晶体")
         crystal_layout = QVBoxLayout(crystal_box)
         self.process_combo = QComboBox()
-        self.process_combo.addItems(("倍频", "和频", "差频"))
+        self.process_combo.addItems(("倍频", "和频", "差频", "四波混频"))
         self.process_combo.currentTextChanged.connect(self.on_process)
         self.process_combo.setToolTip(
             "倍频：ω+ω→2ω；和频：ω₁+ω₂→ω₃（两个输入都消耗，就是 OPA 的正向过程）。"
@@ -837,6 +837,7 @@ class MainWindow(LabWindow):
         # 色带解释的是 800→400 nm 的倍频过程，和频/差频时隐藏免得误导
         self.beam_box.setVisible(True)
         labels = {
+            "四波混频": ("探测 ω₃", "共轭 ω₄", "增益"),
             "倍频": ("800 nm", "400 nm", "已转换"),
             "和频": ("800 nm", "266 nm", "n₃"),
             "差频": ("800 nm", "400 nm", "n₂"),
@@ -952,11 +953,17 @@ class MainWindow(LabWindow):
         else:
             if self.canvas.process != "倍频":
                 sfg = self.canvas.sfg
-                symbol = "n₃" if self.canvas.process == "和频" else "n₂"
+                if self.canvas.process == "四波混频":
+                    gain = float(np.sqrt(max(sfg.peak(), 0.0)) / 1e-9)
+                    symbol = "增益 %.0f×" % gain
+                elif self.canvas.process == "和频":
+                    symbol = "n₃ %.2f" % sfg.peak()
+                else:
+                    symbol = "n₂ %.2f" % sfg.peak()
                 self.readout_label.setText(
-                    "%s · L %.2f · κ %.2f · 峰值 %s %.2f · Δk ±%.0f"
+                    "%s · L %.2f · κ %.2f · %s · Δk ±%.0f"
                     % (self.canvas.process, sfg.length, sfg.kappa, symbol,
-                       sfg.peak(), sfg.span)
+                       sfg.span)
                 )
             else:
                 model = self.canvas.doubling
