@@ -26,6 +26,7 @@ from common.qt_base import (
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import MODELS, NLSE, PALETTE, PRESETS, palette_lut
 from support.physics.mixing import PulseSHG, SFGMap, cascaded_phase_shift
+from support.physics.beam2d import CascadedBeam
 from support.physics.quantum import photon_difference_variance, shot_noise_variance, squeezing_db, twin_beams
 from support.physics.shg import SHGMap, beam_lut
 from support.physics.spm import TemporalNLSE
@@ -499,6 +500,7 @@ class OpticsCanvas(ArrayCanvas):
         self.doubling = SHGMap()
         self.sfg = SFGMap()
         self.pulse = PulseSHG()
+        self.beam = CascadedBeam()
         self.quantum_gain = 4.0
         self.process = "倍频"
         self.log_view = False
@@ -509,29 +511,21 @@ class OpticsCanvas(ArrayCanvas):
             self.set_array(self.time.render_waterfall())
         elif self.mode == "调频":
             if self.process == "级联 χ²":
-                # 基频相位随 Δk 的变化：一条细曲线，不是填充山
-                fan = np.linspace(10.0, 60.0, 26)
-                phases = np.array([cascaded_phase_shift(
-                    kappa=self.window.crystal_kappa_slider.value() / 100.0,
-                    detune=float(dk), samples=120)[0] for dk in fan])
-                height, width = 320, 320
-                art = np.full((height, width, 3), 252, dtype=np.uint8)
-                peak = max(float(np.abs(phases).max()), 1e-9)
-                rows = (height / 2 - phases / peak * (height / 2 - 24)).astype(int)
-                for column in range(width - 1):
-                    left = int(column * fan.size / width)
-                    x = int(column * width / fan.size)
-                    y0, y1 = rows[min(left, fan.size - 1)], rows[min(left + 1, fan.size - 1)]
-                    lo, hi = min(y0, y1), max(y0, y1)
-                    art[lo:hi + 2, column] = (24, 96, 150)
-                art[height // 2, :] = (210, 210, 210)
-                self.set_array(np.ascontiguousarray(art))
+                # 二维光场：基频的相位随 x、z 累积（级联克尔透镜）
+                beam = self.beam
+                beam.length = self.window.length_slider.value() / 100.0
+                beam.dz = beam.length / beam.steps
+                beam.kappa = self.window.crystal_kappa_slider.value() / 100.0
+                beam.detune = 40.0
+                beam.reset()
+                beam.step(beam.steps)
+                field = np.abs(beam.phase_map())
+                reference = float(field.max()) or 1.0
+                norm = np.clip(field / reference, 0.0, 1.0)
+                self.set_array(np.ascontiguousarray(
+                    palette_lut(PALETTE, gamma=1.0)[(norm * 255).astype(np.uint8)]
+                ))
                 return
-            if self.process == "孪生光束":
-                n_s, n_i = twin_beams(self.quantum_gain, runs=1500)
-                # 上半：三次采样（信号 / 闲频 / 差值），看两臂是否同步涨落
-                picks = np.arange(0, 60 * 60, 60) % n_s.size
-                signal = n_s[picks][:60]
                 idler = n_i[picks][:60]
                 difference = (n_s - n_i)[picks][:60]
                 bands = []
@@ -578,7 +572,7 @@ class OpticsCanvas(ArrayCanvas):
         if self.process == "孪生光束":
             return "采样 →", "信号 / 闲频 / 差值 ↓"
         if self.process == "级联 χ²":
-            return "Δk →", "相位 |Δφ| ↑"
+            return "x →", "z ↑（相位）"
         if self.process == "脉冲倍频":
             return "z →", "t ↓"
         return "z →", "Δk ↑"
