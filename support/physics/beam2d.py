@@ -57,31 +57,23 @@ class CascadedBeam:
         return np.unwrap(aligned, axis=1)
 
 class TwinBeamField:
-    """Two speckled beams: the idler copies the signal up to a shrinking error."""
+    """两束光滑高斯光斑，逐帧亮度一起起伏——孪生光束的样子。"""
 
-    def __init__(self, points=96, gain=4.0, seed=7, smoothing=3):
+    def __init__(self, points=64, frames=90, gain=4.0, seed=7, width=0.9):
         self.n = int(points)
+        self.frames = int(frames)
         self.gain = float(gain)
         self.seed = int(seed)
-        self.smoothing = int(smoothing)
+        self.width = float(width)
+        self.x = np.linspace(-3.0, 3.0, self.n)
 
-    def _speckle(self, rng):
-        raw = rng.normal(size=(self.n, self.n)) + 1j * rng.normal(size=(self.n, self.n))
-        k = self.smoothing
-        kernel = np.ones((k, k)) / (k * k)
-        from numpy.fft import fft2, ifft2
-        padded = np.pad(np.real(raw), k, mode="wrap")
-        smoke = np.zeros((self.n, self.n))
-        for i in range(self.n):
-            for j in range(self.n):
-                smoke[i, j] = (padded[i:i + k, j:j + k] * kernel).sum()
-        return np.abs(raw) ** 2 * (0.5 + 2.0 * smoke)
-
-    def images(self):
+    def place(self):
+        """(x, 帧) 两张强度图：信号、闲频；差值由两者逐点相减。"""
         rng = np.random.default_rng(self.seed)
-        signal = self._speckle(rng) * self.gain
-        # 独立噪声按 1/sqrt(gain) 衰减：增益越高，两臂越像
-        error = self._speckle(rng) * np.sqrt(self.gain)
-        idler = signal + (error - error.mean())
-        difference = signal - idler
-        return signal, idler, difference
+        mode = np.exp(-self.x ** 2 / (2.0 * self.width ** 2))
+        # 每一帧一个强度值：信号大起伏，闲频 = 同一起伏 + 很小独立噪声
+        loud = rng.gamma(shape=2.0, scale=self.gain / 2.0, size=self.frames)
+        quiet = rng.normal(scale=np.sqrt(self.gain) * 0.5, size=self.frames)
+        signal = mode[:, None] * loud[None, :]
+        idler = mode[:, None] * (loud + quiet)[None, :]
+        return signal, idler, signal - idler

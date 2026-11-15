@@ -513,7 +513,7 @@ class OpticsCanvas(ArrayCanvas):
             if self.process == "孪生光束":
                 field_s, field_i, field_d = TwinBeamField(
                     gain=self.quantum_gain, seed=7
-                ).images()
+                ).place()
                 lut = palette_lut(PALETTE, gamma=0.85)
                 # 三条带共用“信号带”的 99 分位标尺。若各带各自归一化，
                 # 差值的幅度差会被抵消，三条带看起来一模一样（原来那个 bug）。
