@@ -10,7 +10,10 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from support.physics.mixing import propagate_sfg  # noqa: E402
+from support.physics.mixing import (  # noqa: E402
+    fwm_conjugate,
+    propagate_sfg,
+)
 
 
 class TestSumFrequency(unittest.TestCase):
@@ -42,6 +45,25 @@ class TestSumFrequency(unittest.TestCase):
         _, _, n3, _ = self.run_case(0.0, kappa=0.0)
         self.assertEqual(n3, 0.0)
 
+
+
+
+class TestFourWaveMixing(unittest.TestCase):
+    def gain(self, detune, pump=0.6, kappa=1.0, length=2.0):
+        return float(fwm_conjugate(np.array([float(detune)]), pump=pump,
+                                   kappa=kappa, length=length)[0])
+
+    def test_phase_matched_conjugate_is_amplified(self):
+        self.assertGreater(self.gain(0.0), 10.0)
+
+    def test_mismatch_suppresses_the_gain(self):
+        self.assertGreater(self.gain(0.0), 10.0 * self.gain(30.0))
+
+    def test_gain_grows_with_the_pump(self):
+        self.assertGreater(self.gain(0.0, pump=0.6), self.gain(0.0, pump=0.2))
+
+    def test_no_pump_no_gain(self):
+        self.assertAlmostEqual(self.gain(0.0, pump=0.0), 1.0, places=6)
 
 if __name__ == "__main__":
     unittest.main()

@@ -136,3 +136,34 @@ def propagate_dfg(delta_k, length=2.0, samples=400, kappa=1.0,
         z += dz
         history.append(np.abs(a2) ** 2)
     return a1, a2, a3, np.array(history)
+
+def _rhs_fwm(a3, a4, kappa, pump, detune, z):
+    """Two pumps (undepleted) plus probe a3 and conjugate a4.
+
+    dA3/dz = i kappa (|A1|^2 + |A2|^2) A3 + i kappa A1 A2 A4* e^{+i dk z}
+    dA4/dz = i kappa (|A1|^2 + |A2|^2) A4 + i kappa A1 A2 A3* e^{+i dk z}
+    """
+    shift = 1j * kappa * (2.0 * pump * pump)
+    coupling = 1j * kappa * pump * pump * np.exp(1j * detune * z)
+    return shift * a3 + coupling * np.conj(a4), shift * a4 + coupling * np.conj(a3)
+
+
+def fwm_conjugate(delta_k, length=2.0, samples=200, kappa=1.0, pump=0.6,
+                  seed=1e-6):
+    """Amplitude gain of the conjugate wave when only the probe is seeded."""
+    detune = np.asarray(delta_k, dtype=float)
+    dz = length / float(samples)
+    a3 = np.full(detune.shape, complex(seed))
+    a4 = np.full(detune.shape, complex(seed * 1e-3))
+    z = 0.0
+    for _ in range(int(samples)):
+        b3, b4 = _rhs_fwm(a3, a4, kappa, pump, detune, z)
+        c3, c4 = _rhs_fwm(a3 + 0.5 * dz * b3, a4 + 0.5 * dz * b4, kappa, pump,
+                          detune, z + 0.5 * dz)
+        d3, d4 = _rhs_fwm(a3 + 0.5 * dz * c3, a4 + 0.5 * dz * c4, kappa, pump,
+                          detune, z + 0.5 * dz)
+        e3, e4 = _rhs_fwm(a3 + dz * d3, a4 + dz * d4, kappa, pump, detune, z + dz)
+        a3 = a3 + dz * (b3 + 2.0 * c3 + 2.0 * d3 + e3) / 6.0
+        a4 = a4 + dz * (b4 + 2.0 * c4 + 2.0 * d4 + e4) / 6.0
+        z += dz
+    return np.abs(a4) / (seed * 1e-3)
