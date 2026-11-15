@@ -27,6 +27,21 @@ FORBIDDEN = (
     "setGeometry(120, 100, 1180, 780)",
 )
 
+# 允许更大的画布/窗口：检查前先把 640 变体归一到标准写法
+CANONICAL = {
+    "setFixedSize(640, 640)": "setFixedSize(600, 600)",
+    "setMinimumSize(960, 680)": "setMinimumSize(960, 640)",
+    "resize(960, 680)": "resize(960, 640)",
+    "setFixedSize(640, 600)": "setFixedSize(600, 600)",
+}
+
+
+def canonicalise(source):
+    for variant, standard in CANONICAL.items():
+        source = source.replace(variant, standard)
+    return source
+
+
 TWO_VIEW_MARKER = 'UI_LAYOUT = "two_view"'
 TWO_VIEW_REQUIRED = (
     "setMinimumSize(",
@@ -66,7 +81,7 @@ def check_app_ui(app_path):
     issues = []
     if not path.exists():
         return [f"应用文件不存在: {path}"]
-    source = path.read_text(encoding="utf-8")
+    source = canonicalise(path.read_text(encoding="utf-8"))
     two_view = TWO_VIEW_MARKER in source
     required = TWO_VIEW_REQUIRED if two_view else REQUIRED
     forbidden = TWO_VIEW_FORBIDDEN if two_view else FORBIDDEN

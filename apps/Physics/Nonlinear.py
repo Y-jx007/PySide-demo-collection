@@ -438,7 +438,7 @@ class OpticsCanvas(ArrayCanvas):
 
     def __init__(self, window, parent=None):
         super().__init__(aspect=1.0, minimum=(480, 480), parent=parent)
-        self.setFixedSize(600, 600)
+        self.setFixedSize(640, 640)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setCursor(Qt.CrossCursor)
         self.window = window
@@ -490,8 +490,8 @@ class MainWindow(LabWindow):
         self._frames = 0
         self._fps_clock = time.perf_counter()
         self.init_ui()
-        self.setMinimumSize(960, 640)
-        self.resize(960, 640)
+        self.setMinimumSize(960, 680)
+        self.resize(960, 680)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.setInterval(16)
