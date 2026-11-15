@@ -278,6 +278,9 @@ class BeamStrip(QWidget):
         super().__init__(parent)
         self.setFixedHeight(34)
         self.model = None
+        self.left_text = "800 nm"
+        self.right_text = "400 nm"
+        self.unit = "已转换"
         self.setToolTip(
             "与图像同一套墨青色阶的图例：浅端是 800 nm 基频，深端是 400 nm 倍频，"
             "游标标出当前转换率。"
@@ -316,11 +319,11 @@ class BeamStrip(QWidget):
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        painter.drawText(QRectF(4, 16, 80, 14), Qt.AlignLeft, "800 nm")
+        painter.drawText(QRectF(4, 16, 80, 14), Qt.AlignLeft, self.left_text)
         painter.drawText(QRectF(rect.width() - 84, 16, 80, 14),
-                         Qt.AlignRight, "400 nm")
+                         Qt.AlignRight, self.right_text)
         painter.drawText(QRectF(4, 16, rect.width() - 8, 14), Qt.AlignCenter,
-                         "已转换 %.0f%%" % (converted * 100.0))
+                         "%s %.0f%%" % (self.unit, converted * 100.0))
         painter.end()
 
 
@@ -507,8 +510,8 @@ class MainWindow(LabWindow):
         self._frames = 0
         self._fps_clock = time.perf_counter()
         self.init_ui()
-        self.setMinimumSize(1000, 680)
-        self.resize(1000, 680)
+        self.setMinimumSize(1000, 720)
+        self.resize(1000, 720)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.setInterval(16)
@@ -541,17 +544,13 @@ class MainWindow(LabWindow):
         self.stack.addWidget(self.build_doubling_page())
         column.addWidget(self.stack, 1)
 
-        buttons = QHBoxLayout()
-        self.pause_button = QPushButton("暂停")
+        self.pause_button = QPushButton("暂停", self)
         self.pause_button.clicked.connect(self.toggle_pause)
-        reset_button = QPushButton("重置")
+        reset_button = QPushButton("重置", self)
         reset_button.clicked.connect(self.reset)
-        save_button = QPushButton("保存")
+        save_button = QPushButton("保存", self)
         save_button.clicked.connect(self.save)
-        buttons.addWidget(self.pause_button)
-        buttons.addWidget(reset_button)
-        buttons.addWidget(save_button)
-        column.addLayout(buttons)
+        self.header_buttons = (self.pause_button, reset_button, save_button)
 
         root.addWidget(panel)
 
@@ -561,6 +560,10 @@ class MainWindow(LabWindow):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 8, 0)
         header.addWidget(self.mode_combo)
+        header.addSpacing(10)
+        for button in self.header_buttons:
+            button.setFixedWidth(74)
+            header.addWidget(button)
         header.addStretch(1)
         right.addLayout(header)
         right.addWidget(self.canvas, 1)
@@ -830,7 +833,15 @@ class MainWindow(LabWindow):
         self.canvas.process = name
         self.double_label.setText(MIX_HTML.get(name, DOUBLE_HTML))
         # 色带解释的是 800→400 nm 的倍频过程，和频/差频时隐藏免得误导
-        self.beam_box.setVisible(name == "倍频")
+        self.beam_box.setVisible(True)
+        labels = {
+            "倍频": ("800 nm", "400 nm", "已转换"),
+            "和频": ("800 nm", "266 nm", "n₃"),
+            "差频": ("800 nm", "400 nm", "n₂"),
+        }.get(name, ("800 nm", "400 nm", "已转换"))
+        self.beam_strip.left_text, self.beam_strip.right_text = labels[0], labels[1]
+        self.beam_strip.unit = labels[2]
+        self.beam_strip.update()
         self.qpm_check.setEnabled(name == "倍频")
         self.qpm_check.setToolTip("" if name == "倍频" else "和频/差频用两个输入直接匹配，不涉及周期极化")
         self.refresh_doubling()
