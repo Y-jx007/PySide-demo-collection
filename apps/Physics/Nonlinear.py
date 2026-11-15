@@ -25,7 +25,8 @@ from common.qt_base import (
 )
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import MODELS, NLSE, PALETTE, PRESETS, palette_lut
-from support.physics.mixing import PulseSHG, SFGMap
+from support.physics.mixing import PulseSHG, SFGMap, cascaded_phase_shift
+from support.physics.quantum import photon_difference_variance, shot_noise_variance, squeezing_db, twin_beams
 from support.physics.shg import SHGMap, beam_lut
 from support.physics.spm import TemporalNLSE
 
@@ -487,6 +488,7 @@ class OpticsCanvas(ArrayCanvas):
         self.doubling = SHGMap()
         self.sfg = SFGMap()
         self.pulse = PulseSHG()
+        self.quantum_gain = 4.0
         self.process = "倍频"
         self.log_view = False
         self.space_view = "场"
@@ -495,6 +497,29 @@ class OpticsCanvas(ArrayCanvas):
         if self.mode == "时间孤子":
             self.set_array(self.time.render_waterfall())
         elif self.mode == "调频":
+            if self.process == "级联 χ²":
+                kappas = np.linspace(10.0, 60.0, 64)
+                phases = np.array([abs(cascaded_phase_shift(
+                        kappa=self.window.crystal_kappa_slider.value() / 100.0,
+                    detune=float(dk))[0]) for dk in kappas])
+                height = 256
+                art = np.full((height, kappas.size, 3), 250, dtype=np.uint8)
+                peak = max(float(phases.max()), 1e-9)
+                rows = height - 1 - (phases / peak * (height - 20)).astype(int)
+                for column, row in enumerate(rows):
+                    art[row:, column] = (24, 96, 150)
+                self.set_array(np.ascontiguousarray(art))
+                return
+            if self.process == "量子压缩":
+                n_s, n_i = twin_beams(self.quantum_gain, runs=1500)
+                counts, _ = np.histogram(n_s - n_i, bins=96, range=(-6.0, 6.0))
+                height = 256
+                art = np.full((height, counts.size, 3), 250, dtype=np.uint8)
+                peak = max(int(counts.max()), 1)
+                for column, count in enumerate(counts):
+                    art[height - int(height * count / peak):, column] = (12, 32, 44)
+                self.set_array(np.ascontiguousarray(art))
+                return
             if self.process == "脉冲倍频":
                 field = self.pulse.map().T
                 reference = float(field.max()) or 1.0
@@ -514,6 +539,10 @@ class OpticsCanvas(ArrayCanvas):
             return "x →", "y ↑"
         if self.mode == "时间孤子":
             return "t（延迟）→", "z ↑"
+        if self.process == "量子压缩":
+            return "差值 nₛ − nᵢ →", "计数 ↑"
+        if self.process == "级联 χ²":
+            return "Δk →", "相位 |Δφ| ↑"
         if self.process == "脉冲倍频":
             return "z →", "t ↓"
         return "z →", "Δk ↑"
@@ -778,7 +807,8 @@ class MainWindow(LabWindow):
         crystal_box = QGroupBox("晶体")
         crystal_layout = QVBoxLayout(crystal_box)
         self.process_combo = QComboBox()
-        self.process_combo.addItems(("倍频", "和频", "差频", "四波混频", "脉冲倍频"))
+        self.process_combo.addItems(("倍频", "和频", "差频", "四波混频", "脉冲倍频",
+            "量子压缩", "级联 χ²"))
         self.process_combo.currentTextChanged.connect(self.on_process)
         self.process_combo.setToolTip(
             "倍频：ω+ω→2ω；和频：ω₁+ω₂→ω₃（两个输入都消耗，就是 OPA 的正向过程）。"
@@ -953,6 +983,7 @@ class MainWindow(LabWindow):
             symmetric=self.symmetric_check.isChecked(),
             poling=self.poling(),
         )
+        self.canvas.quantum_gain = 2.0 + 9.0 * self.crystal_kappa_slider.value() / 100.0
         pulse = self.canvas.pulse
         pulse.walk = self.walk_slider.value() / 100.0
         pulse.length = self.length_slider.value() / 100.0
@@ -1031,6 +1062,23 @@ class MainWindow(LabWindow):
         else:
             if self.canvas.process != "倍频":
                 sfg = self.canvas.sfg
+                if self.canvas.process == "级联 χ²":
+                    kappa = self.crystal_kappa_slider.value() / 100.0
+                    phase, _ = cascaded_phase_shift(kappa=kappa, detune=40.0)
+                    self.readout_label.setText(
+                        "级联 χ² · Δk 40 · 基频相位 %+.4f · 等效 n₂ ∝ −d²/Δk"
+                        % phase
+                    )
+                    return
+                if self.canvas.process == "量子压缩":
+                    gain = self.canvas.quantum_gain
+                    diff, _ = photon_difference_variance(gain, runs=1500)
+                    shot = shot_noise_variance(gain, runs=1500)
+                    self.readout_label.setText(
+                        "量子压缩 · 增益 %.1f · 压缩 %.1f dB · 差噪 %.2f / 散粒 %.2f"
+                        % (gain, squeezing_db(gain), diff, shot)
+                    )
+                    return
                 if self.canvas.process == "脉冲倍频":
                     pulse = self.canvas.pulse
                     self.readout_label.setText(
