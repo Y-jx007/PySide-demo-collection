@@ -25,13 +25,15 @@ class TemporalNLSE:
     """One transverse dimension is time; the marching direction is distance z."""
 
     def __init__(self, points=512, window=16.0, beta2=1.0, gamma=1.0,
-                 dz=0.02, rows=512):
+                 dz=0.02, rows=512, raman=0.0):
         self.n = int(points)
         self.window = float(window)
         self.dt = self.window / self.n
         self.beta2 = float(beta2)
         self.gamma = float(gamma)
         self.dz = float(dz)
+        # 拉曼响应：i tau_R A d|A|^2/dt，把频谱整体往红端推（孤子自频移）
+        self.raman = float(raman)
         self.rows = int(rows)
         self.t = (np.arange(self.n) - self.n // 2) * self.dt
         omega = 2.0 * np.pi * np.fft.fftfreq(self.n, d=self.dt)
@@ -63,6 +65,9 @@ class TemporalNLSE:
             intensity = np.abs(field) ** 2
             theta = half * intensity
             field = field * (np.cos(theta) + 1j * np.sin(theta))
+            if self.raman:
+                ramp = np.gradient(intensity, self.dt)
+                field = field + 1j * self.raman * self.dz * field * ramp
             field = np.fft.ifft(np.fft.fft(field) * self._dispersion)
             intensity = np.abs(field) ** 2
             theta = half * intensity

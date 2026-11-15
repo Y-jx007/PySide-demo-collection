@@ -94,5 +94,23 @@ class TestSpectrum(unittest.TestCase):
         self.assertAlmostEqual(float(db[centre]), 1.0, places=6)
 
 
+
+
+class TestRamanShift(unittest.TestCase):
+    def centroid(self, raman, steps=200):
+        sim = TemporalNLSE(raman=raman)
+        sim.reset(2.0, 1.0)
+        sim.step(steps)
+        spec = np.abs(np.fft.fft(sim.field)) ** 2
+        omega = np.fft.fftfreq(sim.n, d=sim.dt) * 2.0 * np.pi
+        return float(np.sum(omega * spec) / np.sum(spec))
+
+    def test_raman_shifts_the_spectrum_red(self):
+        self.assertAlmostEqual(self.centroid(0.0), 0.0, places=9)
+        self.assertLess(self.centroid(0.02), -1.0)
+
+    def test_shift_grows_with_the_raman_coefficient(self):
+        self.assertLess(self.centroid(0.05), self.centroid(0.02))
+
 if __name__ == "__main__":
     unittest.main()

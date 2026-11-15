@@ -236,6 +236,13 @@ class FringePlot(QWidget):
         self.model = model
         self.update()
 
+    def peak_text(self, model):
+        """倍频/和频/差频按百分比，四波混频按增益倍数（种子只有 1e-9）"""
+        peak = model.peak_efficiency()
+        if peak < 1e-6:
+            return "增益 %.0f×" % (float(np.sqrt(peak)) / 1e-9)
+        return "峰值 %.1f%%" % (peak * 100.0)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -267,7 +274,7 @@ class FringePlot(QWidget):
         painter.drawText(QRectF(plot.left(), rect.bottom() - 14, 120, 12),
                          Qt.AlignLeft, "−Δk ← 0 → +Δk")
         painter.drawText(QRectF(rect.right() - 120, rect.bottom() - 14, 114, 12),
-                         Qt.AlignRight, "峰值 %.1f%%" % (model.peak_efficiency() * 100.0))
+                         Qt.AlignRight, self.peak_text(model))
         painter.end()
 
 
