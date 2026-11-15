@@ -767,11 +767,16 @@ else:  # pragma: no cover
 class LensingRenderer:
     """GPU Schwarzschild ray tracer with a lazy Taichi initialisation."""
 
-    def __init__(self, star_size=_DEFAULT_STAR_SIZE, seed=7):
+    def __init__(self, star_size=_DEFAULT_STAR_SIZE, seed=7, output_size=None):
         self.star_size = (int(star_size[0]), int(star_size[1]))
         self.seed = int(seed)
-        self._out = None
-        self._out_shape = None
+        self._out_fields = {}
+        # A fixed output field means Taichi compiles one kernel variant for
+        # the lifespan of the process.  Without it, switching between a
+        # 600 px preview and an 840 px still costs a ~0.8 s recompile every
+        # time the field shape changes on this Windows/CUDA build.
+        self._fixed_output_size = int(output_size) if output_size else None
+        self._fixed_output_field = None
         self._star_field = None
         self._lut_field = None
         self._tex_field = None
@@ -806,11 +811,20 @@ class LensingRenderer:
         self._ready = True
 
     def _ensure_output(self, width, height):
+        if self._fixed_output_size:
+            size = max(self._fixed_output_size, int(width), int(height))
+            if self._fixed_output_field is None:
+                self._fixed_output_field = ti.Vector.field(
+                    3, ti.f32, shape=(size, size)
+                )
+            return self._fixed_output_field
+        # Fallback for generic users/tests: keep one field per size alive.
         shape = (int(height), int(width))
-        if self._out_shape != shape:
-            self._out = ti.Vector.field(3, ti.f32, shape=shape)
-            self._out_shape = shape
-        return self._out
+        out = self._out_fields.get(shape)
+        if out is None:
+            out = ti.Vector.field(3, ti.f32, shape=shape)
+            self._out_fields[shape] = out
+        return out
 
     def render(self, config):
         """Render config and return uint8 RGB (height, width, 3)."""
@@ -848,6 +862,8 @@ class LensingRenderer:
         )
         ti.sync()
         rgb = out.to_numpy()
+        if rgb.shape[0] != height or rgb.shape[1] != width:
+            rgb = rgb[:height, :width]
         return np.clip(rgb * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
 
     def warm_up(self, config):

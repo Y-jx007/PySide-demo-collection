@@ -40,15 +40,16 @@ _WINDOW_BG = "background-color: #ffffff"
 QUALITY = (
     ("快速", 360, 160),
     ("标准", 600, 260),
-    ("精细", 840, 340),
+    ("精细", 840, 300),
 )
 
-# Dragging uses a full-resolution preview so the canvas never pays for a
-# smooth 420 -> 600 rescale. 160 steps keeps the star field correct while
-# still leaving the UI thread enough time for mouse events.
+# Full-resolution preview while the camera is moving.  The 600 px canvas is
+# drawn 1:1; no 420/600 smooth rescale is paid on the UI thread.
 DRAG_SIZE = 600
 DRAG_STEPS = 160
 DRAG_INTERVAL_MS = 8
+ANIM_SIZE = 600
+ANIM_STEPS = 240
 
 PRESETS = {
     "吸积盘": dict(
@@ -79,7 +80,7 @@ PRESETS = {
         distance=34, inclination=80, fov=24, disk_on=True,
         r_in=6, r_out=14, peak_temperature=8000, opacity=55,
         exposure=90, star_gain=120, disk_gain=22, doppler=True,
-        quality=2, orbit=True,
+        quality=1, orbit=True,
     ),
 }
 
@@ -98,6 +99,7 @@ class LensingCanvas(SquareCanvas):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFixedSize(600, 600)
         self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("左键拖动旋转，滚轮缩放。")
         self._image = None
         self._last_pos = None
 
@@ -162,10 +164,11 @@ class MainWindow(LabWindow):
         # make the native indicator disappear.  White comes from QPalette.
         self.setStyleSheet("")
         self._white_background(self)
-        self.renderer = LensingRenderer()
+        self.renderer = LensingRenderer(output_size=840)
         self.backend = "初始化"
         self._time = 0.0
         self._azimuth = 0.0
+        self._inclination = 84.0
         self._dragging = False
         self._applying = False
         self._first_frame = True
@@ -176,7 +179,7 @@ class MainWindow(LabWindow):
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render_frame)
         self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(40)
+        self._anim_timer.setInterval(30)
         self._anim_timer.timeout.connect(self._tick)
         self._build_ui()
 
@@ -222,6 +225,9 @@ class MainWindow(LabWindow):
         self.quality_combo = QComboBox()
         self.quality_combo.addItems(tuple(item[0] for item in QUALITY))
         self.quality_combo.setCurrentIndex(1)
+        self.quality_combo.setToolTip(
+            "精细：静止/暂停时 840×840 精算；动画中自动降为 600×600 预览。"
+        )
         self.quality_combo.currentIndexChanged.connect(self._schedule_render)
         quality_row.addWidget(self.quality_combo, 1)
         scene_layout.addLayout(quality_row)
@@ -243,9 +249,11 @@ class MainWindow(LabWindow):
             "视场", 10, 70, 32, formatter=lambda v: f"{v}°",
             label_width=52, value_width=44,
         )
+        for slider in (self.distance_slider, self.fov_slider):
+            slider.valueChanged.connect(self._on_parameter)
+        self.inclination_slider.valueChanged.connect(self._on_inclination)
         for slider in (self.distance_slider, self.inclination_slider,
                        self.fov_slider):
-            slider.valueChanged.connect(self._on_parameter)
             observer_layout.addWidget(slider)
         column.addWidget(observer)
 
@@ -304,6 +312,7 @@ class MainWindow(LabWindow):
         self.doppler_check.toggled.connect(self._on_parameter)
         self.orbit_check = QCheckBox("相机环绕")
         self.orbit_check.setChecked(True)
+        self.orbit_check.setToolTip("手动拖动画面会自动关闭环绕，避免和鼠标抢方向。")
         self.orbit_check.toggled.connect(self._on_parameter)
         display_layout.addWidget(self.doppler_check)
         display_layout.addWidget(self.orbit_check)
@@ -346,6 +355,7 @@ class MainWindow(LabWindow):
 
         self._paused = False
         self._disk_enabled = True
+        self._inclination = float(self.inclination_slider.value())
         self._sync_disk_enabled()
         self._anim_timer.start()
         QTimer.singleShot(90, self._first_render)
@@ -369,6 +379,14 @@ class MainWindow(LabWindow):
         if self._cpu_mode:
             width = min(width, 300)
             steps = min(steps, 130)
+        # Fine mode is a still-image setting: while the camera or disk is
+        # animating, render a 600 px preview so the UI stays responsive.
+        # Pausing (or turning off every animation) immediately upgrades it.
+        animating = (not self._paused) and (
+            self.orbit_check.isChecked() or self.disk_check.isChecked()
+        )
+        if animating and width > ANIM_SIZE:
+            return name + "预览", ANIM_SIZE, ANIM_STEPS
         return name, int(width), int(steps)
 
     def _config(self, width, steps):
@@ -377,7 +395,7 @@ class MainWindow(LabWindow):
         return RenderConfig(
             width=width, height=width,
             distance=float(self.distance_slider.value()),
-            inclination=float(self.inclination_slider.value()),
+            inclination=float(self._inclination),
             azimuth=float(self._azimuth),
             fov=float(self.fov_slider.value()),
             disk_on=bool(self.disk_check.isChecked()),
@@ -439,7 +457,10 @@ class MainWindow(LabWindow):
             timing = f"编译 {self._compile_s / 1000.0:.1f} s"
         else:
             timing = f"{self._render_ms:.1f} ms"
-        self.params_label.setText(f"{mode} · {width}² · {steps} 步 · {timing}")
+        tag = "预览 · " if name and name.endswith("预览") else ""
+        self.params_label.setText(
+            f"{tag}{mode} · {width}² · {steps} 步 · {timing}"
+        )
 
     # ------------------------------------------------------------ animation
     def _tick(self):
@@ -449,9 +470,9 @@ class MainWindow(LabWindow):
         if not moving:
             return
         if not self._dragging and self.orbit_check.isChecked():
-            self._azimuth = (self._azimuth + 0.18) % 360.0
+            self._azimuth = (self._azimuth + 0.09) % 360.0
         if self.disk_check.isChecked():
-            self._time += 0.35
+            self._time += 0.26
         self._schedule_render(delay=0)
 
     def _toggle_pause(self):
@@ -460,6 +481,10 @@ class MainWindow(LabWindow):
         self.state_label.setText("暂停" if self._paused else "运行中")
         if not self._paused:
             self._schedule_render(delay=0)
+
+    def _on_inclination(self, value):
+        self._inclination = float(value)
+        self._on_parameter()
 
     def _on_parameter(self, *args):
         if self._applying:
@@ -482,12 +507,17 @@ class MainWindow(LabWindow):
 
     # ------------------------------------------------------------- gestures
     def _orbit(self, dx, dy):
-        self._azimuth = (self._azimuth - float(dx) * 0.45) % 360.0
-        value = int(round(float(self.inclination_slider.value()) + float(dy) * 0.35))
-        value = max(0, min(88, value))
-        if value != self.inclination_slider.value():
+        self._azimuth = (self._azimuth - float(dx) * 0.28) % 360.0
+        # Keep inclination as a float while dragging; writing only the
+        # integer slider value every few pixels made the vertical tilt snap
+        # in 1° steps (the old "camera rotation is wrong" feel).
+        self._inclination = max(
+            0.0, min(88.0, self._inclination + float(dy) * 0.18)
+        )
+        rounded = int(round(self._inclination))
+        if rounded != self.inclination_slider.value():
             self.inclination_slider.blockSignals(True)
-            self.inclination_slider.setValue(value)
+            self.inclination_slider.setValue(rounded)
             self.inclination_slider.blockSignals(False)
         self._schedule_render(delay=0)
 
@@ -501,6 +531,10 @@ class MainWindow(LabWindow):
 
     def _drag_begin(self):
         self._dragging = True
+        if self.orbit_check.isChecked():
+            # Manual control takes over; otherwise the camera keeps drifting
+            # under the user's hand as soon as the button is released.
+            self.orbit_check.setChecked(False)
         self.state_label.setText("拖动预览")
         self.params_label.setText("松开后精算")
 
@@ -517,6 +551,7 @@ class MainWindow(LabWindow):
         self._applying = True
         try:
             self.distance_slider.setValue(int(preset["distance"]))
+            self._inclination = float(preset["inclination"])
             self.inclination_slider.setValue(int(preset["inclination"]))
             self.fov_slider.setValue(int(preset["fov"]))
             self.disk_check.setChecked(bool(preset["disk_on"]))
