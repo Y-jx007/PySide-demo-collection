@@ -18,18 +18,23 @@ from common.qt_base import (
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import NLSE, PALETTE, PRESETS
 
+
+def nb(text):
+    """Word-join a formula so it never wraps in the middle (|psi|^2 stays whole)."""
+    return "\u2060".join(text)
+
+
+SQUARED_PSI = nb("|ψ|²")
+
 EQUATION_HTML = (
     '<div style="font-size:13px; color:#1b1b1b;">i&thinsp;∂ψ/∂t = −½∇²ψ − |ψ|²ψ</div>'
     '<div style="font-size:10px; color:#4a4a4a; margin-top:5px;">'
-    "非线性光学：强光抬高折射率（Kerr 效应），n = n₀ + n₂I，I ∝ |ψ|²，"
-    "亮处等效势更低——光束等于给自己磨了一枚透镜，越亮越聚。</div>"
+    "Kerr 效应：强光抬高介质折射率 n = n₀ + n₂I，而 I ∝ " + SQUARED_PSI +
+    "——亮处势更低，光束给自己磨一枚透镜。</div>"
     '<div style="font-size:10px; color:#4a4a4a; margin-top:3px;">'
-    "衍射想摊开、自聚焦想收紧：低于阈值散开，超过阈值坍缩；二维恰是临界维度。</div>"
+    "衍射想摊开，自聚焦想收紧：低于阈值散开，超过则坍缩。</div>"
     '<div style="font-size:11px; color:#1b1b1b; margin-top:5px;">'
-    "饱和：|ψ|² → |ψ|²/(1 + |ψ|²/I<sub>s</sub>)</div>"
-    '<div style="font-size:10px; color:#5c5c5c; margin-top:2px;">'
-    "两级介质的布居差 ∝ 1/(1+I/I<sub>s</sub>)，故 Δn ∝ I/(1+I/I<sub>s</sub>)："
-    "弱光回到 Kerr，强光封顶，坍缩停在有限尺度。</div>"
+    "饱和 " + nb("|ψ|²/(1 + |ψ|²/I") + "<sub>s</sub>)：强光时 Δn 封顶，坍缩停在有限尺度。</div>"
 )
 
 EQUATION_TIP = (
@@ -58,7 +63,7 @@ class SolitonCanvas(ArrayCanvas):
         self.setCursor(Qt.CrossCursor)
         self.window = window
         self.sim = NLSE()
-        self.log_view = True
+        self.log_view = False
         self.palette = PALETTE
 
     def render_frame(self):
@@ -149,8 +154,11 @@ class MainWindow(LabWindow):
         run_layout = QVBoxLayout(run_box)
         self.steps_slider = LabeledSlider("每帧步数", 1, 24, 3)
         run_layout.addWidget(self.steps_slider)
-        self.log_check = QCheckBox("对数强度")
-        self.log_check.setChecked(True)
+        self.log_check = QCheckBox("对数强度（−30 dB）")
+        self.log_check.setChecked(False)
+        self.log_check.setToolTip(
+            "线性档只看得到主瓣；对数档把 30 dB 内的辐射环一起压进色阶。"
+        )
         self.log_check.toggled.connect(self.on_log)
         run_layout.addWidget(self.log_check)
         column.addWidget(run_box)

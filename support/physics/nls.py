@@ -16,17 +16,15 @@ from __future__ import annotations
 
 import numpy as np
 
-# 只有一个色阶：激光本身的颜色（532 nm 的绿光），从纸白到深绿。
-# 强度越高越深，和 Connection 的纸感取色一致。
-PALETTE = "绿光"
+# 单一色阶：墨青，从纸白到近黑的深蓝，和 Connection 的取色一致。
+PALETTE = "墨青"
 PALETTES = {
     PALETTE: (
-        (0.00, (250, 250, 244)),
-        (0.16, (214, 236, 204)),
-        (0.40, (138, 205, 140)),
-        (0.66, (52, 158, 96)),
-        (0.86, (16, 104, 62)),
-        (1.00, (6, 46, 28)),
+        (0.00, (250, 248, 242)),
+        (0.18, (208, 224, 226)),
+        (0.42, (126, 178, 186)),
+        (0.68, (48, 112, 130)),
+        (1.00, (12, 32, 44)),
     ),
 }
 
@@ -53,17 +51,19 @@ def palette_lut(palette=PALETTE):
     return table
 
 
-def apply_palette(values, palette=PALETTE, log=False, gamma=0.7, percentile=99.5):
+def apply_palette(values, palette=PALETTE, log=False, gamma=0.7, percentile=99.5,
+                  floor_db=30.0):
     """Map a non-negative field to uint8 RGB through a paper-ish ramp.
 
     Scaling uses a high percentile rather than the maximum: a collapsing
     spike is orders of magnitude brighter than the filaments around it and
     would otherwise flatten everything else to paper white.
+
+    `log=True` switches to a fixed dB window (`floor_db` deep) instead of a
+    linear ramp, which is what makes faint radiation rings visible.
     """
     field = np.asarray(values, dtype=float)
     field = np.clip(field, 0.0, None)
-    if log:
-        field = np.log1p(field)
     if field.size == 0:
         return np.zeros(field.shape + (3,), dtype=np.uint8)
     # 参考量取高分位（抽样后再算，省掉一次全量排序）
@@ -74,7 +74,13 @@ def apply_palette(values, palette=PALETTE, log=False, gamma=0.7, percentile=99.5
     if reference <= 0.0:
         height, width = field.shape
         return np.full((height, width, 3), PALETTES[palette][0][1], dtype=np.uint8)
-    norm = np.clip(field / reference, 0.0, 1.0) ** gamma
+    if log:
+        # dB 窗口：把主瓣外的辐射环压进可见范围（默认 60 dB）
+        ratio = np.clip(field / reference, 1e-12, 1.0)
+        db = 10.0 * np.log10(ratio)
+        norm = np.clip((db + floor_db) / floor_db, 0.0, 1.0)
+    else:
+        norm = np.clip(field / reference, 0.0, 1.0) ** gamma
     index = np.clip(norm * 255.0, 0.0, 255.0).astype(np.uint8)
     return palette_lut(palette)[index]
 

@@ -124,6 +124,17 @@ class TestPalette(unittest.TestCase):
         # 绝大多数像素仍在色阶中段，而不是被单个尖峰压成白纸
         self.assertLess(float(rgb.mean()), 250.0)
 
+    def test_log_view_lifts_faint_structure(self):
+        # 一个很弱的像素在线性档几乎看不见，在 dB 档要被抬进色阶
+        field = np.zeros((64, 64))
+        field[32, 32] = 1.0
+        field[10, 10] = 3.0e-2          # −15 dB：线性档几乎白，dB 档落到中段
+        linear = apply_palette(field, log=False)
+        log = apply_palette(field, log=True)
+        self.assertGreater(int(linear[10, 10].mean()) - int(log[10, 10].mean()), 60)
+        # 峰值两端仍要区分：中心比外围深
+        self.assertLess(int(log[32, 32].mean()), int(log[10, 10].mean()))
+
     def test_empty_field_falls_back_to_paper(self):
         rgb = apply_palette(np.zeros((8, 8)))
         self.assertEqual(rgb.shape, (8, 8, 3))
