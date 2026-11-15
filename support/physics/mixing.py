@@ -80,7 +80,9 @@ class SFGMap:
                 kappa=self.kappa, seed2=self.seed2,
             )
         self.map = history.T                      # (dk, z), like SHGMap
-        self._exit = np.abs(a3) ** 2
+        # 和频看的是 ω₃，差频看的是闲频 ω₂（不能都画 a3，否则差频会显示
+        # 信号从 0.25 长到 1.25，看起来像"效率 175%"）
+        self._exit = np.abs(a2) ** 2 if self.branch == "差频" else np.abs(a3) ** 2
         return self.map
 
     def efficiency(self):
