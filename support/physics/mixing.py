@@ -59,7 +59,7 @@ class SFGMap:
         self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
         self.configure()
 
-    def configure(self, length=None, kappa=None, span=None):
+    def configure(self, length=None, kappa=None, span=None, seed2=None):
         if length is not None:
             self.length = float(length)
         if kappa is not None:
@@ -67,6 +67,8 @@ class SFGMap:
         if span is not None:
             self.span = float(span)
             self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
+        if seed2 is not None:
+            self.seed2 = float(seed2)
         if self.branch == "差频":
             a1, a2, a3, history = propagate_dfg(
                 self.delta_k, length=self.length, samples=self.samples,

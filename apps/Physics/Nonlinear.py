@@ -725,6 +725,10 @@ class MainWindow(LabWindow):
         )
         self.crystal_kappa_slider.valueChanged.connect(self.refresh_doubling)
         crystal_layout.addWidget(self.crystal_kappa_slider)
+        self.seed_slider = LabeledSlider(
+            "输入 a₂", 10, 100, 60, formatter=lambda v: "%.2f" % (v / 100.0))
+        self.seed_slider.valueChanged.connect(self.refresh_doubling)
+        crystal_layout.addWidget(self.seed_slider)
         self.symmetric_check = QCheckBox("中心对称介质（χ⁽²⁾ = 0）")
         self.symmetric_check.toggled.connect(self.refresh_doubling)
         self.symmetric_check.setToolTip("玻璃、水、气体都是中心对称的，不会倍频。")
@@ -861,6 +865,7 @@ class MainWindow(LabWindow):
         sfg = self.canvas.sfg
         sfg.branch = self.process_combo.currentText()
         sfg.configure(length=self.length_slider.value() / 100.0,
+                      seed2=self.seed_slider.value() / 100.0,
                       kappa=0.0 if self.symmetric_check.isChecked()
                       else self.crystal_kappa_slider.value() / 100.0)
         if self.mode == "倍频":
