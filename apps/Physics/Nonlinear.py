@@ -510,14 +510,17 @@ class OpticsCanvas(ArrayCanvas):
                     art[row:, column] = (24, 96, 150)
                 self.set_array(np.ascontiguousarray(art))
                 return
-            if self.process == "量子压缩":
+            if self.process == "孪生光束":
                 n_s, n_i = twin_beams(self.quantum_gain, runs=1500)
-                counts, _ = np.histogram(n_s - n_i, bins=96, range=(-6.0, 6.0))
-                height = 256
-                art = np.full((height, counts.size, 3), 250, dtype=np.uint8)
+                counts, _ = np.histogram(n_s - n_i, bins=40, range=(-6.0, 6.0))
+                height, slot, gap = 300, 16, 3
+                width = counts.size * slot
+                art = np.full((height, width, 3), 252, dtype=np.uint8)
                 peak = max(int(counts.max()), 1)
-                for column, count in enumerate(counts):
-                    art[height - int(height * count / peak):, column] = (12, 32, 44)
+                for index, count in enumerate(counts):
+                    top = height - int((height - 30) * count / peak)
+                    left = index * slot
+                    art[top:, left:left + slot - gap] = (24, 96, 150)
                 self.set_array(np.ascontiguousarray(art))
                 return
             if self.process == "脉冲倍频":
@@ -539,7 +542,7 @@ class OpticsCanvas(ArrayCanvas):
             return "x →", "y ↑"
         if self.mode == "时间孤子":
             return "t（延迟）→", "z ↑"
-        if self.process == "量子压缩":
+        if self.process == "孪生光束":
             return "差值 nₛ − nᵢ →", "计数 ↑"
         if self.process == "级联 χ²":
             return "Δk →", "相位 |Δφ| ↑"
@@ -808,9 +811,11 @@ class MainWindow(LabWindow):
         crystal_layout = QVBoxLayout(crystal_box)
         self.process_combo = QComboBox()
         self.process_combo.addItems(("倍频", "和频", "差频", "四波混频", "脉冲倍频",
-            "量子压缩", "级联 χ²"))
+            "孪生光束", "级联 χ²"))
         self.process_combo.currentTextChanged.connect(self.on_process)
         self.process_combo.setToolTip(
+            "孪生光束：经典振幅采样，两臂光子数强关联、差值噪声压在真空底；"
+            "真正的压缩需要算符方法。\n"
             "倍频：ω+ω→2ω；和频：ω₁+ω₂→ω₃（两个输入都消耗，就是 OPA 的正向过程）。"
         )
         crystal_layout.addWidget(self.process_combo)
@@ -1070,13 +1075,13 @@ class MainWindow(LabWindow):
                         % phase
                     )
                     return
-                if self.canvas.process == "量子压缩":
+                if self.canvas.process == "孪生光束":
                     gain = self.canvas.quantum_gain
-                    diff, _ = photon_difference_variance(gain, runs=1500)
+                    diff, mean = photon_difference_variance(gain, runs=1500)
                     shot = shot_noise_variance(gain, runs=1500)
                     self.readout_label.setText(
-                        "量子压缩 · 增益 %.1f · 压缩 %.1f dB · 差噪 %.2f / 散粒 %.2f"
-                        % (gain, squeezing_db(gain), diff, shot)
+                        "孪生光束 · 增益 %.1f · 每臂 %.1f 光子 · 差值噪声/散粒 %.3f"
+                        % (gain, mean, diff / shot)
                     )
                     return
                 if self.canvas.process == "脉冲倍频":
