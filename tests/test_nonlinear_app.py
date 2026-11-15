@@ -137,7 +137,7 @@ class TestNonlinearWindow(unittest.TestCase):
         self.assertEqual(self.window.canvas.process, "和频")
         self.assertFalse(self.window.qpm_check.isEnabled())
         self.assertIn("n₃", self.window.readout_label.text())
-        self.window.process_combo.setCurrentText("调频")
+        self.window.process_combo.setCurrentText("倍频")
         self.assertTrue(self.window.qpm_check.isEnabled())
 
     def test_each_mode_states_its_equation(self):
