@@ -21,3 +21,4 @@
 - `Unpolished` 是**实验田**：依赖额外数据/设备、接口或界面仍在改的应用放这里，分类标记与说明统一由
   `apps_manifest.CATEGORY_NOTES` 提供；实验田同样要过 `check_ui_style.py`，缩略图可不配。
 - 提交前运行 `python tools/check_ui_style.py <app路径>` 和 `python -m unittest discover -s tests`。
+- **提交可以，推送要等用户明确说**：做完改动默认只 commit，不 `git push`；用户说“推送/推上去”才推。
