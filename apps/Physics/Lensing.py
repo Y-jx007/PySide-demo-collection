@@ -24,24 +24,23 @@ from common.qt_base import (
     QHBoxLayout, QLabel, QMessageBox, QPainter, QPushButton,
     QSizePolicy, QTimer, QVBoxLayout, QWidget, Qt, Signal, run_app,
 )
+from support.physics.kerr import (
+    KerrConfig, KerrRenderer, kerr_horizon, kerr_isco,
+)
 from support.physics.lensing import (
-    LensingRenderer,
-    RenderConfig,
-    orbit_step,
-    taichi_available,
-    taichi_backend_name,
+    orbit_step, taichi_available, taichi_backend_name,
 )
 
-APP_TITLE = "Lensing · 史瓦西光线追踪"
+APP_TITLE = "Kerr · 旋转黑洞光线追踪"
 
 # The UI contract asks for this token; the actual white window is painted by
 # QPalette below so no stylesheet reaches the QCheckBox widgets.
 _WINDOW_BG = "background-color: #ffffff"
 
 QUALITY = (
-    ("快速", 360, 200),
-    ("标准", 600, 260),
-    ("精细", 840, 300),
+    ("快速", 360, 500),
+    ("标准", 600, 800),
+    ("精细", 840, 1000),
 )
 
 # Full-resolution preview while the camera/disk is moving.  The 600 px
@@ -50,41 +49,41 @@ QUALITY = (
 # need the extra windings, otherwise the photon ring gains a false dark
 # annulus while the mouse button is held down.
 DRAG_SIZE = 600
-DRAG_STEPS = 260
+DRAG_STEPS = 800
 DRAG_INTERVAL_MS = 8
 ANIM_SIZE = 600
-ANIM_STEPS = 260
+ANIM_STEPS = 800
 
 PRESETS = {
     "吸积盘": dict(
         distance=46, inclination=84, fov=32, disk_on=True,
         r_in=6, r_out=13, peak_temperature=5000, opacity=45,
-        exposure=125, star_gain=150, disk_gain=16, doppler=True,
-        quality=1,
+        exposure=130, star_gain=150, disk_gain=22, doppler=True,
+        spin=80, quality=1,
     ),
     "纯星场": dict(
         distance=36, inclination=65, fov=46, disk_on=False,
         r_in=6, r_out=13, peak_temperature=6500, opacity=70,
         exposure=155, star_gain=125, disk_gain=13, doppler=True,
-        quality=1,
+        spin=80, quality=1,
     ),
     "正面": dict(
         distance=44, inclination=18, fov=34, disk_on=True,
         r_in=6, r_out=14, peak_temperature=6000, opacity=55,
-        exposure=115, star_gain=140, disk_gain=18, doppler=True,
-        quality=1,
+        exposure=125, star_gain=140, disk_gain=24, doppler=True,
+        spin=90, quality=1,
     ),
     "侧视": dict(
         distance=50, inclination=87, fov=28, disk_on=True,
         r_in=6, r_out=14, peak_temperature=5500, opacity=80,
-        exposure=105, star_gain=140, disk_gain=12, doppler=True,
-        quality=1,
+        exposure=120, star_gain=140, disk_gain=20, doppler=True,
+        spin=70, quality=1,
     ),
     "光子环": dict(
         distance=34, inclination=80, fov=24, disk_on=True,
         r_in=6, r_out=14, peak_temperature=8000, opacity=55,
-        exposure=90, star_gain=120, disk_gain=22, doppler=True,
-        quality=1,
+        exposure=105, star_gain=0, disk_gain=26, doppler=True,
+        spin=95, quality=1,
     ),
 }
 
@@ -168,7 +167,7 @@ class MainWindow(LabWindow):
         # make the native indicator disappear.  White comes from QPalette.
         self.setStyleSheet("")
         self._white_background(self)
-        self.renderer = LensingRenderer(output_size=840)
+        self.renderer = KerrRenderer(output_size=840)
         self.backend = "初始化"
         self._time = 0.0
         self._azimuth = 0.0
@@ -237,6 +236,23 @@ class MainWindow(LabWindow):
         scene_layout.addLayout(quality_row)
         column.addWidget(scene)
 
+        blackhole = QGroupBox("黑洞")
+        blackhole_layout = QVBoxLayout(blackhole)
+        blackhole_layout.setContentsMargins(6, 6, 6, 6)
+        blackhole_layout.setSpacing(4)
+        self.spin_slider = LabeledSlider(
+            "自旋 a", 0, 99, 80,
+            formatter=lambda v: f"{v / 100:.2f}",
+            label_width=52, value_width=44,
+        )
+        self.spin_slider.setToolTip("Kerr 自旋 a/M；0 为史瓦西，0.99 为近极限黑洞。")
+        self.spin_slider.valueChanged.connect(self._on_spin)
+        blackhole_layout.addWidget(self.spin_slider)
+        self.spin_info = QLabel("")
+        self.spin_info.setStyleSheet("color: #6b7280; font-size: 9px;")
+        blackhole_layout.addWidget(self.spin_info)
+        column.addWidget(blackhole)
+
         observer = QGroupBox("观测者")
         observer_layout = QVBoxLayout(observer)
         observer_layout.setContentsMargins(6, 6, 6, 6)
@@ -287,7 +303,7 @@ class MainWindow(LabWindow):
             label_width=52, value_width=44,
         )
         self.disk_gain_slider = LabeledSlider(
-            "盘亮度", 3, 40, 16, formatter=lambda v: f"{v / 100:.2f}",
+            "盘亮度", 3, 40, 22, formatter=lambda v: f"{v / 100:.2f}",
             label_width=52, value_width=44,
         )
         for slider in (self.r_in_slider, self.r_out_slider, self.temp_slider,
@@ -301,7 +317,7 @@ class MainWindow(LabWindow):
         display_layout.setContentsMargins(6, 6, 6, 6)
         display_layout.setSpacing(5)
         self.exposure_slider = LabeledSlider(
-            "曝光", 20, 250, 125, formatter=lambda v: f"{v / 100:.2f}×",
+            "曝光", 20, 250, 130, formatter=lambda v: f"{v / 100:.2f}×",
             label_width=52, value_width=48,
         )
         self.star_slider = LabeledSlider(
@@ -355,6 +371,7 @@ class MainWindow(LabWindow):
         self._paused = False
         self._disk_enabled = True
         self._inclination = float(self.inclination_slider.value())
+        self._update_spin_info()
         self._sync_disk_enabled()
         self._anim_timer.start()
         QTimer.singleShot(90, self._first_render)
@@ -388,12 +405,13 @@ class MainWindow(LabWindow):
     def _config(self, width, steps):
         r_in = float(self.r_in_slider.value())
         r_out = max(r_in + 1.5, float(self.r_out_slider.value()))
-        return RenderConfig(
+        return KerrConfig(
             width=width, height=width,
             distance=float(self.distance_slider.value()),
             inclination=float(self._inclination),
             azimuth=float(self._azimuth),
             fov=float(self.fov_slider.value()),
+            spin=float(self.spin_slider.value()) / 100.0,
             disk_on=bool(self.disk_check.isChecked()),
             r_in=r_in, r_out=r_out,
             peak_temperature=float(self.temp_slider.value()),
@@ -402,7 +420,7 @@ class MainWindow(LabWindow):
             exposure=float(self.exposure_slider.value()) / 100.0,
             star_gain=float(self.star_slider.value()) / 100.0,
             disk_gain=float(self.disk_gain_slider.value()) / 100.0,
-            max_steps=steps, step_scale=0.06, time=float(self._time),
+            max_steps=steps, step_scale=0.02, time=float(self._time),
         )
 
     def _schedule_render(self, *args, delay=45):
@@ -454,8 +472,9 @@ class MainWindow(LabWindow):
         else:
             timing = f"{self._render_ms:.1f} ms"
         tag = "预览 · " if name and name.endswith("预览") else ""
+        spin = self.spin_slider.value() / 100.0
         self.params_label.setText(
-            f"{tag}{mode} · {width}² · {steps} 步 · {timing}"
+            f"{tag}a {spin:.2f} · {mode} · {width}² · {steps} 步 · {timing}"
         )
 
     # ------------------------------------------------------------ animation
@@ -478,6 +497,17 @@ class MainWindow(LabWindow):
     def _on_inclination(self, value):
         self._inclination = float(value)
         self._on_parameter()
+
+    def _on_spin(self, value):
+        self._update_spin_info()
+        if not self._applying:
+            self._schedule_render()
+
+    def _update_spin_info(self):
+        a = float(self.spin_slider.value()) / 100.0
+        self.spin_info.setText(
+            f"r+ {kerr_horizon(a):.2f} M · ISCO {kerr_isco(a):.2f} M · 顺行盘"
+        )
 
     def _on_parameter(self, *args):
         if self._applying:
@@ -552,6 +582,7 @@ class MainWindow(LabWindow):
             self.disk_gain_slider.setValue(int(preset["disk_gain"]))
             self.doppler_check.setChecked(bool(preset["doppler"]))
             self.quality_combo.setCurrentIndex(int(preset["quality"]))
+            self.spin_slider.setValue(int(preset["spin"]))
             self._time = 0.0
             self._azimuth = 0.0
             self._disk_enabled = bool(preset["disk_on"])

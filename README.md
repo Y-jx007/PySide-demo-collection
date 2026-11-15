@@ -33,7 +33,7 @@
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
 | **Bremsstrahlung** | 变速圆周电子：真实推迟 Liénard-Wiechert 辐射场，按加速度平行/垂直分量显示轫致（红）与同步（蓝），远场 FFT 频谱加色叠加 |
-| **Lensing** | 史瓦西光测地线逐像素 RK4（u″ + u = 3Mu²）：光子环、爱因斯坦环与透镜化星场；可开吸积盘，按 Keplerian 薄盘做 g⁴ 多普勒增亮与 Planck 色移 |
+| **Kerr Lensing** | Kerr 零测地线逐像素 RK4：**自旋 a/M 可调**、参考系拖曳、D 形阴影、光子环、透镜化星场；吸积盘按 Keplerian 薄盘做 g⁴ 多普勒增亮与 Planck 色移 |
 | **Mass Spring** | 质点-弹簧网络：重力、阻尼、固定点与鼠标交互，悬索桥 / 网 / 链 / 随机四种预设 |
 | **Nonlinear** | 非线性光学三合一，一个下拉切换：**空间自聚焦**（Kerr 自聚焦、坍缩、涡旋破裂、调制不稳定性；动量谱；饱和 / χ⁽⁵⁾ / 双光子吸收；两能级布居与振子 P(E) 双视图）、**时间孤子**（自相位调制展宽、N=2 呼吸、N≥3 分裂的水落图）、**倍频**（χ⁽²⁾ 三过程：倍频 / 和频 / 差频，相位匹配图用墨青色阶，周期极化折成共振）、**四波混频**（共轭增益 vs Δk）、时间域**拉曼自频移**、**饱和吸收**，以及脉冲倍频的群速度走离 |
 
@@ -243,40 +243,38 @@ if __name__ == "__main__":
 - **PNG 导出**：Fourier、Arnold、IFS、Lindenmayer、Qusicrystal 支持
 - **JIT 加速**：Numba 编译热点路径，NumPy 批量渲染
 
-### Lensing 的 Schwarzschild 光线追踪
+### Kerr 旋转黑洞光线追踪
 
-Lensing 不是把黑洞画成贴图，而是对画布上的每个像素反向积分一条零测地线。取 G = c = 1、M = 1，光子轨道满足
-
-~~~text
-u'' + u = 3 M u^2,        u = 1 / r
-~~~
-
-Taichi kernel 用经典 RK4 积分它的笛卡尔等价形式
+Kerr Lensing 不是把黑洞画成贴图，而是对画布上的每个像素反向积分一条 Kerr 零测地线。取 G = c = 1、M = 1，自旋 a = J/M 由界面滑杆在 0–0.99 间调节；a = 0 退化为史瓦西黑洞。Boyer–Lindquist 度规为
 
 ~~~text
-d^2 x / dlambda^2 = -3 M h^2 x / r^5,
-h = |x cross dx/dlambda|          (守恒)
+Sigma = r^2 + a^2 cos^2(theta)
+Delta = r^2 - 2r + a^2
+ds^2  = -(1 - 2r/Sigma) dt^2 - (4 a r sin^2(theta)/Sigma) dt dphi
+        + Sigma/Delta dr^2 + Sigma dtheta^2
+        + (r^2 + a^2 + 2a^2 r sin^2(theta)/Sigma) sin^2(theta) dphi^2
 ~~~
 
-因此对径向像素也不退化，还能直接在三维中求吸积盘面交点。相机放在有限半径的静态观测者处，像素方向先变换到局部正交标架，再以 b = L/E 为守恒量推进；当 b < 3√3 M 时射线落入视界，阴影边缘因此精确落在光子球对应的临界碰撞参数上。
-
-吸积盘是几何薄、Keplerian 转动的圆盘，温度用零力矩薄盘剖面
+外视界 r+ = 1 + sqrt(1-a^2)，顺行 ISCO 由 Bardeen–Press–Teukolsky 公式给出，界面会随自旋实时显示 r+ 与 ISCO。光子守恒量是 E = -p_t、L = p_phi 与 Carter 常数 Q，分离后的径向/极向势为
 
 ~~~text
-T(r) ∝ r^(-3/4) [1 - sqrt(r_in / r)]^(1/4)
+H = r^2 + a^2 - aL
+R(r) = H^2 - Delta [(L-a)^2 + Q]
+Theta(theta) = Q + a^2 cos^2(theta) - L^2 cot^2(theta)
 ~~~
 
-观测频移为
+Taichi kernel 用经典 RK4 在仿射参数 lambda 中同时积分 r、theta、phi、v_r、v_theta；相机是零角动量观测者（ZAMO）的局部正交标架，因此参考系拖曳与自旋造成的 D 形阴影都来自测地线本身。吸积盘是赤道面内的顺行 Keplerian 薄盘：
 
 ~~~text
-g = sqrt(1 - 2M/r_cam) / [ u^t (1 - Omega b_z) ]
-u^t = 1 / sqrt(1 - 3M/r_emit)
-Omega = sqrt(M / r_emit^3)
+Omega = 1 / (r^(3/2) + a)
+u^t   = (r^(3/2) + a) / [ r^(3/4) sqrt(r^(3/2) - 3 sqrt(r) + 2a) ]
+T(r)  ∝ r^(-3/4) [1 - sqrt(r_in/r)]^(1/4)
+g     = 1 / [ u^t (E_ph - Omega L_ph) ]
 ~~~
 
-强度按 g^4 增亮，颜色取 gT_emit 的 Planck 黑体色。背景星场是程序生成的线性 HDR 星空，经同一套测地线映射后自然出现爱因斯坦环、同心弧与光子环；关掉吸积盘即可看纯星场偏折。默认 600×600、260 步，在 CUDA 上约 8 ms/帧；视图、倾角、距离、内/外缘、温度、不透明度、曝光和盘亮度都可实时调节。
+E_ph、L_ph 取相机处物理光子方向（局部 -n）的守恒量，所以多普勒增亮、引力红移和参考系拖曳同时生效；强度按 g^4 增亮，颜色取 gT_emit 的 Planck 黑体色。关掉吸积盘就是纯 Kerr 星场：自旋会改变阴影轮廓、光子环与背景星场的透镜弧。
 
-鼠标拖动采用与 Connection 相同的轨道相机：相机绕黑洞旋转并始终看向它，所以黑洞保持在画面中心；水平拖动改变方位角，向下拖动抬高相机，倾角可转到盘面下方。距离/倾角滑杆设定轨道位置，滚轮改变视场。
+默认 600×600、800 步、步长约 0.02 M，在 CUDA 上约 15 ms/帧；自旋、距离、倾角、视场、盘内/外缘、温度、不透明度、曝光和盘亮度都可实时调节。鼠标拖动采用与 Connection 相同的轨道相机：相机绕黑洞旋转并始终看向它，所以黑洞保持在画面中心；水平拖动改变方位角，向下拖动抬高相机，倾角可转到盘面下方。滚轮改变视场。
 
 > 深色画布是必要的科学可视化例外：阴影、光子环和星场的对比度就是本页的展示对象；窗口、参数面板和控件仍遵循统一的白色实验室风格。
 

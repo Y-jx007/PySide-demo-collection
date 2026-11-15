@@ -149,10 +149,10 @@ APPS = [
         "category": "Physics",
     },
     {
-        "title": "Lensing",
-        "description": "史瓦西光测地线逐像素 RK4：光子环、爱因斯坦环与吸积盘多普勒增亮",
+        "title": "Kerr Lensing",
+        "description": "Kerr 零测地线逐像素 RK4：自旋可调、参考系拖曳、光子环与吸积盘多普勒增亮",
         "path": "Physics/Lensing.py",
-        "friendly": "史瓦西光线追踪",
+        "friendly": "Kerr旋转黑洞",
         "category": "Physics",
     },
     {
