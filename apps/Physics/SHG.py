@@ -94,15 +94,17 @@ class SHGCanvas(ArrayCanvas):
     """相位匹配图：横轴传播距离、竖轴失配。"""
 
     def __init__(self, window, parent=None):
-        super().__init__(aspect=1.0, minimum=(480, 480), parent=parent)
+        # 图是 (Δk 行, z 列)：宽高比约 1.5，别让画布拉扁它
+        super().__init__(aspect=1.5, minimum=(480, 320), parent=parent)
         self.setFixedSize(600, 600)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.window = window
         self.model = SHGMap()
 
     def render_frame(self):
-        # 转置成 (z, Δk)，让晶体长度沿水平方向
-        self.set_array(np.ascontiguousarray(self.model.render().transpose(1, 0, 2)))
+        # 行是 Δk、列是 z：光从左（入口）往右（出口）走；flipud 让 +Δk 朝上
+        image = np.ascontiguousarray(np.flipud(self.model.render()))
+        self.set_array(image)
 
 
 class MainWindow(LabWindow):

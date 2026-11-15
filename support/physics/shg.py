@@ -121,7 +121,12 @@ class SHGMap:
         return float(np.max(self.efficiency()))
 
     def render(self, palette=PALETTE, floor_db=30.0):
-        """dB image of the efficiency map: the fringes survive the display."""
+        """dB image of the efficiency map.
+
+        Rows are phase mismatch (from -span to +span) and columns are the
+        propagation distance, so a horizontal cut is one crystal and a
+        vertical cut is one exit face.
+        """
         field = np.clip(self.map, 0.0, None)
         reference = float(field.max())
         if reference <= 0.0:
