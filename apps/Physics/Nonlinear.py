@@ -52,8 +52,7 @@ DOUBLE_HTML = (
     '<div style="font-size:12px; color:#1b1b1b;">dA₁/dz = iκ·A₂A₁*&thinsp;e<sup>−iΔkz</sup></div>'
     '<div style="font-size:12px; color:#1b1b1b;">dA₂/dz = i(κ/2)·A₁²&thinsp;e<sup>+iΔkz</sup></div>'
     '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
-    "κ ∝ χ⁽²⁾ 只在非中心对称介质里；Δk 让能量来回倒（L_c = π/Δk），"
-    "周期极化每 Λ/2 翻转 κ 补上 Δk = 2π/Λ。</div>"
+    "κ ∝ χ⁽²⁾ 只在非中心对称介质里；下面这张小图就是 Δk 补平的过程。</div>"
 )
 
 TIPS = {
@@ -211,7 +210,7 @@ class FringePlot(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(70)
+        self.setFixedHeight(58)
         self.model = None
         self.setToolTip(
             "出射面的倍频效率随相位失配的变化（扫描看到的 Maker 曲线）。\n"
@@ -285,7 +284,7 @@ class BeamStrip(QWidget):
         table = np.ascontiguousarray(beam_lut()[None, :, :])
         width = table.shape[1]
         image = QImage(table.data, width, 1, 3 * width, QImage.Format_RGB888).copy()
-        band = QRectF(4.0, 4.0, rect.width() - 8.0, 13.0)
+        band = QRectF(4.0, 3.0, rect.width() - 8.0, 12.0)
         painter.drawImage(band, image)
         painter.setPen(QPen(QColor(214, 214, 214), 1))
         painter.setBrush(Qt.NoBrush)
@@ -302,10 +301,10 @@ class BeamStrip(QWidget):
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        painter.drawText(QRectF(4, 19, 80, 14), Qt.AlignLeft, "800 nm")
-        painter.drawText(QRectF(rect.width() - 84, 19, 80, 14),
+        painter.drawText(QRectF(4, 16, 80, 14), Qt.AlignLeft, "800 nm")
+        painter.drawText(QRectF(rect.width() - 84, 16, 80, 14),
                          Qt.AlignRight, "400 nm")
-        painter.drawText(QRectF(4, 19, rect.width() - 8, 14), Qt.AlignCenter,
+        painter.drawText(QRectF(4, 16, rect.width() - 8, 14), Qt.AlignCenter,
                          "已转换 %.0f%%" % (converted * 100.0))
         painter.end()
 
@@ -338,7 +337,7 @@ class OscillatorPlot(QWidget):
         painter.setPen(QPen(QColor(214, 214, 214), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(rect)
-        left, top, right, bottom = 24.0, 6.0, 8.0, 16.0
+        left, top, right, bottom = 20.0, 16.0, 8.0, 22.0
         plot = QRectF(left, top, max(10.0, rect.width() - left - right),
                       max(10.0, rect.height() - top - bottom))
         e = np.linspace(0.0, self.E_MAX, 120)
@@ -371,10 +370,10 @@ class OscillatorPlot(QWidget):
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        painter.drawText(QRectF(rect.left() + 4, rect.top() + 1, 20, 10),
-                         Qt.AlignLeft, "P")
-        painter.drawText(QRectF(rect.left() + 22, rect.bottom() - 13, 40, 12),
-                         Qt.AlignLeft, "E")
+        painter.drawText(QRectF(plot.left() + 2, plot.top() - 14, 40, 12),
+                         Qt.AlignLeft, "P ↑")
+        painter.drawText(QRectF(plot.right() - 40, plot.bottom() + 2, 38, 12),
+                         Qt.AlignRight, "E →")
         painter.drawText(QRectF(plot.left() + 2, plot.top() + 1, 120, 12),
                          Qt.AlignLeft, "实线 非简谐 / 虚线 线性")
         painter.end()
@@ -385,7 +384,7 @@ class MomentumSketch(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(46)
+        self.setFixedHeight(38)
         self.show_qpm = False
         self.period = 0.0
         self.setToolTip(
@@ -403,10 +402,10 @@ class MomentumSketch(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = QRectF(self.rect())
         painter.fillRect(rect, QColor(255, 255, 255))
-        x0 = 18.0
-        y1 = 14.0
-        y2 = 32.0
-        base = 118.0
+        x0 = 26.0
+        y1 = 12.0
+        y2 = 28.0
+        base = 120.0
         gap = 34.0
         ink = QColor(24, 96, 150)
         painter.setPen(QPen(ink, 1.6))
@@ -419,8 +418,8 @@ class MomentumSketch(QWidget):
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        painter.drawText(QRectF(x0, y1 - 14, 60, 12), Qt.AlignLeft, "2k₁")
-        painter.drawText(QRectF(x0, y2 + 2, 60, 12), Qt.AlignLeft, "k₂")
+        painter.drawText(QRectF(2, y1 - 6, 24, 12), Qt.AlignLeft, "2k₁")
+        painter.drawText(QRectF(2, y2 - 6, 24, 12), Qt.AlignLeft, "k₂")
         if self.show_qpm:
             painter.setPen(QPen(QColor(200, 120, 40), 1.6, Qt.DashLine))
             painter.drawLine(QPointF(x0 + base, y2), QPointF(x0 + base + gap, y2))
@@ -684,6 +683,8 @@ class MainWindow(LabWindow):
         self.double_label.setWordWrap(True)
         self.double_label.setToolTip(TIPS["倍频"])
         equation_layout.addWidget(self.double_label)
+        self.momentum_sketch = MomentumSketch()
+        equation_layout.addWidget(self.momentum_sketch)
         column.addWidget(equation_box)
 
         crystal_box = QGroupBox("晶体")
@@ -715,8 +716,6 @@ class MainWindow(LabWindow):
         self.poling_slider.setEnabled(False)
         self.poling_slider.valueChanged.connect(self.on_poling)
         qpm_layout.addWidget(self.poling_slider)
-        self.momentum_sketch = MomentumSketch()
-        qpm_layout.addWidget(self.momentum_sketch)
         column.addWidget(qpm_box)
 
         beam_box = QGroupBox("光束颜色")

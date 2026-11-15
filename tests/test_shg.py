@@ -106,6 +106,16 @@ class TestMap(unittest.TestCase):
                        span=4.0)
         self.assertGreater(model.peak_efficiency(), 0.99)
 
+    def test_turning_poling_off_restores_the_unpoled_map(self):
+        model = SHGMap(mismatches=21, samples=80, length=2.0, span=10.0)
+        plain = model.peak_efficiency()
+        model.configure(poling=3.0)
+        poled = model.peak_efficiency()
+        model.configure(poling=None)
+        self.assertAlmostEqual(model.peak_efficiency(), plain, places=12)
+        model.configure(poling=3.0)
+        self.assertAlmostEqual(model.peak_efficiency(), poled, places=12)
+
     def test_symmetry_switch_zeroes_the_map(self):
         model = SHGMap(mismatches=21, samples=40, length=1.0, kappa=1.0, span=8.0)
         self.assertGreater(model.peak_efficiency(), 0.0)

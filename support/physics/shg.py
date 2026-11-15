@@ -77,6 +77,9 @@ def propagate(delta_k, length=2.0, samples=400, kappa=1.0, amplitude=1.0,
     return a1, a2, np.array(history)
 
 
+_UNSET = object()
+
+
 class SHGMap:
     """|A2|^2(z) for a fan of phase mismatches: the phase-matching diagram."""
 
@@ -95,7 +98,7 @@ class SHGMap:
         self.compute()
 
     def configure(self, length=None, kappa=None, amplitude=None, span=None,
-                  poling=None, symmetric=None):
+                  poling=_UNSET, symmetric=None):
         if length is not None:
             self.length = float(length)
         if kappa is not None:
@@ -105,7 +108,9 @@ class SHGMap:
         if span is not None:
             self.span = float(span)
             self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
-        if poling is not None:
+        # poling 用哨兵区分「没传」和「传了 None（关掉）」：
+        # 关掉周期极化时必须真的清空，否则反复勾选会失效。
+        if poling is not _UNSET:
             self.poling = float(poling) if poling else None
         if symmetric is not None:
             self.symmetric = bool(symmetric)
