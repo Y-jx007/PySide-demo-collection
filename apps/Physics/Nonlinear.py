@@ -31,6 +31,23 @@ from support.physics.spm import TemporalNLSE
 
 MODES = ("空间自聚焦", "时间孤子", "倍频")
 
+MIX_HTML = {
+    "和频": (
+        '<div style="font-size:12px; color:#1b1b1b;">da₁/dz = iκ·a₃a₂*&thinsp;e<sup>+iΔkz</sup></div>'
+        '<div style="font-size:12px; color:#1b1b1b;">da₂/dz = iκ·a₃a₁*&thinsp;e<sup>+iΔkz</sup></div>'
+        '<div style="font-size:12px; color:#1b1b1b;">da₃/dz = iκ·a₁a₂&thinsp;e<sup>−iΔkz</sup></div>'
+        '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
+        "两束输入各出一个光子合成一个 ω₃：n₁+n₃、n₂+n₃ 守恒。</div>"
+    ),
+    "差频": (
+        '<div style="font-size:12px; color:#1b1b1b;">da₁/dz = iκ·a₂a₃&thinsp;e<sup>+iΔkz</sup></div>'
+        '<div style="font-size:12px; color:#1b1b1b;">da₂/dz = iκ·a₁a₃*&thinsp;e<sup>−iΔkz</sup></div>'
+        '<div style="font-size:12px; color:#1b1b1b;">da₃/dz = iκ·a₁a₂*&thinsp;e<sup>−iΔkz</sup></div>'
+        '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
+        "一个泵浦光子劈成闲频+信号：n₁+n₂、n₁+n₃ 守恒。</div>"
+    ),
+}
+
 SPACE_HTML = (
     '<div style="font-size:13px; color:#1b1b1b;">i&thinsp;∂ψ/∂t = −½∇²ψ − |ψ|²ψ</div>'
     '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
@@ -382,7 +399,7 @@ class MomentumSketch(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(32)
+        self.setFixedHeight(38)
         self.show_qpm = False
         self.period = 0.0
         self.setToolTip(
@@ -401,8 +418,8 @@ class MomentumSketch(QWidget):
         rect = QRectF(self.rect())
         painter.fillRect(rect, QColor(255, 255, 255))
         x0 = 26.0
-        y1 = 9.0
-        y2 = 24.0
+        y1 = 13.0
+        y2 = 28.0
         base = 120.0
         gap = 34.0
         ink = QColor(24, 96, 150)
@@ -490,8 +507,8 @@ class MainWindow(LabWindow):
         self._frames = 0
         self._fps_clock = time.perf_counter()
         self.init_ui()
-        self.setMinimumSize(960, 680)
-        self.resize(960, 680)
+        self.setMinimumSize(1000, 680)
+        self.resize(1000, 680)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.setInterval(16)
@@ -800,6 +817,7 @@ class MainWindow(LabWindow):
 
     def on_process(self, name):
         self.canvas.process = name
+        self.double_label.setText(MIX_HTML.get(name, DOUBLE_HTML))
         # 色带解释的是 800→400 nm 的倍频过程，和频时隐藏免得误导
         self.beam_box.setVisible(name == "倍频")
         self.qpm_check.setEnabled(name == "倍频")

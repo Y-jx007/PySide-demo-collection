@@ -32,6 +32,8 @@ CANONICAL = {
     "setFixedSize(640, 640)": "setFixedSize(600, 600)",
     "setMinimumSize(960, 680)": "setMinimumSize(960, 640)",
     "resize(960, 680)": "resize(960, 640)",
+    "setMinimumSize(1000, 680)": "setMinimumSize(960, 640)",
+    "resize(1000, 680)": "resize(960, 640)",
     "setFixedSize(640, 600)": "setFixedSize(600, 600)",
 }
 
