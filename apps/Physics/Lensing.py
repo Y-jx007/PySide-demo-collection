@@ -507,7 +507,9 @@ class MainWindow(LabWindow):
 
     # ------------------------------------------------------------- gestures
     def _orbit(self, dx, dy):
-        self._azimuth = (self._azimuth - float(dx) * 0.28) % 360.0
+        # Direct manipulation: drag right moves the star field right.  The
+        # previous minus sign made horizontal drags fight the vertical axis.
+        self._azimuth = (self._azimuth + float(dx) * 0.28) % 360.0
         # Keep inclination as a float while dragging; writing only the
         # integer slider value every few pixels made the vertical tilt snap
         # in 1° steps (the old "camera rotation is wrong" feel).
