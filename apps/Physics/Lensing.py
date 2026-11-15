@@ -1,0 +1,531 @@
+# -*- coding: utf-8 -*-
+"""Lensing: Schwarzschild null-geodesic ray tracing with an accretion disk.
+
+Every canvas pixel is integrated backwards along an exact null geodesic.
+The Taichi kernel uses classical RK4 on the Cartesian form of the Binet
+equation u'' + u = 3 M u^2 (u = 1/r), then shades a thin Keplerian disk with
+Doppler beaming (g^4) and a Planck colour shift.  Without the disk the same
+kernel renders the lensed star field: the photon ring, the Einstein ring and
+the shadow edge at b = 3 sqrt(3) M emerge directly from the integration.
+
+This page intentionally uses a dark canvas: the contrast of the shadow, the
+photon ring and the star field is the subject of the app, not a dark theme.
+"""
+import time
+
+import numpy as np
+
+from common.imaging import ask_save_path, ndarray_to_qimage
+from common.lab_window import LabWindow, SquareCanvas
+from common.qt_base import (
+    LabeledSlider, QApplication, QCheckBox, QColor, QComboBox, QGroupBox,
+    QHBoxLayout, QLabel, QMessageBox, QPainter, QPushButton,
+    QSizePolicy, QTimer, QVBoxLayout, QWidget, Qt, Signal, run_app,
+)
+from support.physics.lensing import (
+    LensingRenderer,
+    RenderConfig,
+    taichi_available,
+    taichi_backend_name,
+)
+
+APP_TITLE = "Lensing · 史瓦西光线追踪"
+
+QUALITY = (
+    ("快速", 360, 160),
+    ("标准", 600, 260),
+    ("精细", 840, 340),
+)
+
+PRESETS = {
+    "吸积盘": dict(
+        distance=46, inclination=84, fov=32, disk_on=True,
+        r_in=6, r_out=13, peak_temperature=5000, opacity=45,
+        exposure=125, star_gain=150, disk_gain=16, doppler=True,
+        quality=1, orbit=True,
+    ),
+    "纯星场": dict(
+        distance=36, inclination=65, fov=46, disk_on=False,
+        r_in=6, r_out=13, peak_temperature=6500, opacity=70,
+        exposure=155, star_gain=125, disk_gain=13, doppler=True,
+        quality=1, orbit=True,
+    ),
+    "正面": dict(
+        distance=44, inclination=18, fov=34, disk_on=True,
+        r_in=6, r_out=14, peak_temperature=6000, opacity=55,
+        exposure=115, star_gain=140, disk_gain=18, doppler=True,
+        quality=1, orbit=True,
+    ),
+    "侧视": dict(
+        distance=50, inclination=87, fov=28, disk_on=True,
+        r_in=6, r_out=14, peak_temperature=5500, opacity=80,
+        exposure=105, star_gain=140, disk_gain=12, doppler=True,
+        quality=1, orbit=True,
+    ),
+    "光子环": dict(
+        distance=34, inclination=80, fov=24, disk_on=True,
+        r_in=6, r_out=14, peak_temperature=8000, opacity=55,
+        exposure=90, star_gain=120, disk_gain=22, doppler=True,
+        quality=2, orbit=True,
+    ),
+}
+
+
+class LensingCanvas(SquareCanvas):
+    """Fixed 600x600 black canvas; the rendered sky fills it exactly."""
+
+    orbitDragged = Signal(float, float)
+    zoomed = Signal(int)
+    dragBegan = Signal()
+    dragEnded = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(520, 520)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setFixedSize(600, 600)
+        self.setCursor(Qt.OpenHandCursor)
+        self._image = None
+        self._last_pos = None
+
+    def set_frame(self, rgb):
+        self._image = ndarray_to_qimage(np.ascontiguousarray(rgb, dtype=np.uint8))
+        self.update()
+
+    def clear(self):
+        self._image = None
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0))
+        if self._image is not None:
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.drawImage(self.rect(), self._image)
+        painter.end()
+
+    def save_image(self, path):
+        return self.grab().save(path)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._last_pos = event.position()
+            self.setCursor(Qt.ClosedHandCursor)
+            self.dragBegan.emit()
+
+    def mouseMoveEvent(self, event):
+        if self._last_pos is None:
+            return
+        point = event.position()
+        dx = point.x() - self._last_pos.x()
+        dy = point.y() - self._last_pos.y()
+        self._last_pos = point
+        self.orbitDragged.emit(float(dx), float(dy))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._last_pos = None
+            self.setCursor(Qt.OpenHandCursor)
+            self.dragEnded.emit()
+
+    def wheelEvent(self, event):
+        step = event.angleDelta().y()
+        if step:
+            self.zoomed.emit(1 if step > 0 else -1)
+
+
+class MainWindow(LabWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_TITLE)
+        self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
+        self.renderer = LensingRenderer()
+        self.backend = "初始化"
+        self._time = 0.0
+        self._azimuth = 0.0
+        self._dragging = False
+        self._applying = False
+        self._first_frame = True
+        self._render_ms = 0.0
+        self._compile_s = 0.0
+        self._cpu_mode = False
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._render_frame)
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(40)
+        self._anim_timer.timeout.connect(self._tick)
+        self._build_ui()
+
+    # ------------------------------------------------------------------ UI
+    def _build_ui(self):
+        central = QWidget()
+        root = QHBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        panel = QWidget()
+        panel.setFixedWidth(330)
+        panel.setStyleSheet("background-color: #ffffff;")
+        column = QVBoxLayout(panel)
+        column.setContentsMargins(2, 2, 4, 4)
+        column.setSpacing(6)
+
+        scene = QGroupBox("场景")
+        scene_layout = QVBoxLayout(scene)
+        scene_layout.setContentsMargins(6, 6, 6, 6)
+        scene_layout.setSpacing(5)
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(5)
+        preset_row.addWidget(QLabel("预设"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(tuple(PRESETS))
+        self.preset_combo.setCurrentText("吸积盘")
+        self.preset_combo.currentTextChanged.connect(self._apply_preset)
+        preset_row.addWidget(self.preset_combo, 1)
+        scene_layout.addLayout(preset_row)
+        quality_row = QHBoxLayout()
+        quality_row.setSpacing(5)
+        quality_row.addWidget(QLabel("质量"))
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(tuple(item[0] for item in QUALITY))
+        self.quality_combo.setCurrentIndex(1)
+        self.quality_combo.currentIndexChanged.connect(self._schedule_render)
+        quality_row.addWidget(self.quality_combo, 1)
+        scene_layout.addLayout(quality_row)
+        column.addWidget(scene)
+
+        observer = QGroupBox("观测者")
+        observer_layout = QVBoxLayout(observer)
+        observer_layout.setContentsMargins(6, 6, 6, 6)
+        observer_layout.setSpacing(5)
+        self.distance_slider = LabeledSlider(
+            "距离", 12, 120, 46, formatter=lambda v: f"{v} M",
+            label_width=52, value_width=44,
+        )
+        self.inclination_slider = LabeledSlider(
+            "倾角", 0, 88, 84, formatter=lambda v: f"{v}°",
+            label_width=52, value_width=44,
+        )
+        self.fov_slider = LabeledSlider(
+            "视场", 10, 70, 32, formatter=lambda v: f"{v}°",
+            label_width=52, value_width=44,
+        )
+        for slider in (self.distance_slider, self.inclination_slider,
+                       self.fov_slider):
+            slider.valueChanged.connect(self._on_parameter)
+            observer_layout.addWidget(slider)
+        column.addWidget(observer)
+
+        disk = QGroupBox("吸积盘")
+        disk_layout = QVBoxLayout(disk)
+        disk_layout.setContentsMargins(6, 6, 6, 6)
+        disk_layout.setSpacing(5)
+        self.disk_check = QCheckBox("显示吸积盘")
+        self.disk_check.setChecked(True)
+        self.disk_check.toggled.connect(self._on_disk_toggle)
+        disk_layout.addWidget(self.disk_check)
+
+        self.r_in_slider = LabeledSlider(
+            "内缘", 3, 10, 6, formatter=lambda v: f"{v} M",
+            label_width=52, value_width=44,
+        )
+        self.r_out_slider = LabeledSlider(
+            "外缘", 8, 24, 13, formatter=lambda v: f"{v} M",
+            label_width=52, value_width=44,
+        )
+        self.temp_slider = LabeledSlider(
+            "温度", 3000, 15000, 5000, formatter=lambda v: f"{v} K",
+            label_width=52, value_width=56,
+        )
+        self.opacity_slider = LabeledSlider(
+            "不透明", 0, 100, 45, formatter=lambda v: f"{v}%",
+            label_width=52, value_width=44,
+        )
+        self.disk_gain_slider = LabeledSlider(
+            "盘亮度", 3, 40, 16, formatter=lambda v: f"{v / 100:.2f}",
+            label_width=52, value_width=44,
+        )
+        for slider in (self.r_in_slider, self.r_out_slider, self.temp_slider,
+                       self.opacity_slider, self.disk_gain_slider):
+            slider.valueChanged.connect(self._on_parameter)
+            disk_layout.addWidget(slider)
+        column.addWidget(disk)
+
+        display = QGroupBox("显影")
+        display_layout = QVBoxLayout(display)
+        display_layout.setContentsMargins(6, 6, 6, 6)
+        display_layout.setSpacing(5)
+        self.exposure_slider = LabeledSlider(
+            "曝光", 20, 250, 125, formatter=lambda v: f"{v / 100:.2f}×",
+            label_width=52, value_width=48,
+        )
+        self.star_slider = LabeledSlider(
+            "星光", 0, 250, 150, formatter=lambda v: f"{v}%",
+            label_width=52, value_width=44,
+        )
+        for slider in (self.exposure_slider, self.star_slider):
+            slider.valueChanged.connect(self._on_parameter)
+            display_layout.addWidget(slider)
+        self.doppler_check = QCheckBox("多普勒增亮")
+        self.doppler_check.setChecked(True)
+        self.doppler_check.toggled.connect(self._on_parameter)
+        self.orbit_check = QCheckBox("相机环绕")
+        self.orbit_check.setChecked(True)
+        self.orbit_check.toggled.connect(self._on_parameter)
+        display_layout.addWidget(self.doppler_check)
+        display_layout.addWidget(self.orbit_check)
+        column.addWidget(display)
+
+        control = QGroupBox("控制")
+        control_layout = QHBoxLayout(control)
+        control_layout.setContentsMargins(6, 6, 6, 6)
+        control_layout.setSpacing(4)
+        self.pause_btn = QPushButton("暂停")
+        self.reset_btn = QPushButton("重置")
+        self.save_btn = QPushButton("保存")
+        for button in (self.pause_btn, self.reset_btn, self.save_btn):
+            control_layout.addWidget(button, 1)
+        column.addWidget(control)
+        column.addStretch(1)
+
+        root.addWidget(panel, 0)
+        self.canvas = LensingCanvas()
+        root.addWidget(self.canvas, 1, Qt.AlignCenter)
+        self.setCentralWidget(central)
+        central.setStyleSheet("background-color: #ffffff;")
+        self.setMinimumSize(960, 640)
+        self.resize(960, 640)
+
+        self.status = self.statusBar()
+        self.status.setSizeGripEnabled(False)
+        self.state_label = QLabel("准备中")
+        self.params_label = QLabel("史瓦西 · 等待首帧")
+        self.status.addWidget(self.state_label, 1)
+        self.status.addPermanentWidget(self.params_label)
+
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        self.reset_btn.clicked.connect(self._reset)
+        self.save_btn.clicked.connect(self._save)
+        self.canvas.orbitDragged.connect(self._orbit)
+        self.canvas.zoomed.connect(self._zoom)
+        self.canvas.dragBegan.connect(self._drag_begin)
+        self.canvas.dragEnded.connect(self._drag_end)
+
+        self._paused = False
+        self._disk_enabled = True
+        self._sync_disk_enabled()
+        self._anim_timer.start()
+        QTimer.singleShot(90, self._first_render)
+
+    # --------------------------------------------------------------- state
+    def _first_render(self):
+        self.state_label.setText("编译内核")
+        self.params_label.setText("Taichi 首次初始化 · 请稍候")
+        if taichi_available() and "CPU" in taichi_backend_name().upper():
+            self._cpu_mode = True
+        QApplication.processEvents()
+        self._render_frame()
+
+    def _current_quality(self):
+        index = max(0, min(len(QUALITY) - 1, self.quality_combo.currentIndex()))
+        name, width, steps = QUALITY[index]
+        if self._cpu_mode:
+            width = min(width, 320)
+            steps = min(steps, 150)
+        if self._dragging:
+            width = min(width, 420)
+            steps = min(steps, 170)
+        return name, int(width), int(steps)
+
+    def _config(self, width, steps):
+        r_in = float(self.r_in_slider.value())
+        r_out = max(r_in + 1.5, float(self.r_out_slider.value()))
+        return RenderConfig(
+            width=width, height=width,
+            distance=float(self.distance_slider.value()),
+            inclination=float(self.inclination_slider.value()),
+            azimuth=float(self._azimuth),
+            fov=float(self.fov_slider.value()),
+            disk_on=bool(self.disk_check.isChecked()),
+            r_in=r_in, r_out=r_out,
+            peak_temperature=float(self.temp_slider.value()),
+            opacity=float(self.opacity_slider.value()) / 100.0,
+            doppler=bool(self.doppler_check.isChecked()),
+            exposure=float(self.exposure_slider.value()) / 100.0,
+            star_gain=float(self.star_slider.value()) / 100.0,
+            disk_gain=float(self.disk_gain_slider.value()) / 100.0,
+            max_steps=steps, step_scale=0.06, time=float(self._time),
+        )
+
+    def _schedule_render(self, *args, delay=45):
+        if not self._render_timer.isActive():
+            self._render_timer.start(int(delay))
+
+    def _render_frame(self):
+        name, width, steps = self._current_quality()
+        config = self._config(width, steps)
+        started = time.perf_counter()
+        try:
+            rgb = self.renderer.render(config)
+        except Exception as exc:  # noqa: BLE001 - surface in the status bar
+            self.state_label.setText("渲染失败")
+            self.params_label.setText(str(exc)[:140])
+            return
+        elapsed = (time.perf_counter() - started) * 1000.0
+        self.canvas.set_frame(rgb)
+        self.backend = self.renderer.backend
+        if self._first_frame:
+            self._first_frame = False
+            self._compile_s = elapsed
+            self._render_ms = 0.0
+            self.state_label.setText("编译完成")
+            self._schedule_render(delay=0)
+        else:
+            self._render_ms = elapsed
+            if not self._paused and self.state_label.text() not in ("已保存",):
+                self.state_label.setText("运行中")
+        self._update_status(name, width, steps)
+
+    def _update_status(self, name=None, width=None, steps=None):
+        if name is None:
+            name, width, steps = self._current_quality()
+        mode = "CUDA" if "CUDA" in self.backend.upper() else (
+            "CPU" if "CPU" in self.backend.upper() else self.backend
+        )
+        if self._render_ms <= 0.0:
+            timing = f"编译 {self._compile_s / 1000.0:.1f} s"
+        else:
+            timing = f"{self._render_ms:.1f} ms"
+        self.params_label.setText(f"{mode} · {width}² · {steps} 步 · {timing}")
+
+    # ------------------------------------------------------------ animation
+    def _tick(self):
+        if self._paused:
+            return
+        moving = self.orbit_check.isChecked() or self.disk_check.isChecked()
+        if not moving:
+            return
+        if not self._dragging and self.orbit_check.isChecked():
+            self._azimuth = (self._azimuth + 0.18) % 360.0
+        if self.disk_check.isChecked():
+            self._time += 0.35
+        self._schedule_render(delay=0)
+
+    def _toggle_pause(self):
+        self._paused = not self._paused
+        self.pause_btn.setText("继续" if self._paused else "暂停")
+        self.state_label.setText("暂停" if self._paused else "运行中")
+        if not self._paused:
+            self._schedule_render(delay=0)
+
+    def _on_parameter(self, *args):
+        if self._applying:
+            return
+        self._sync_disk_enabled()
+        self._schedule_render()
+
+    def _on_disk_toggle(self, checked):
+        self._disk_enabled = bool(checked)
+        self._sync_disk_enabled()
+        if not self._applying:
+            self._schedule_render()
+
+    def _sync_disk_enabled(self):
+        active = bool(self.disk_check.isChecked())
+        for widget in (self.r_in_slider, self.r_out_slider, self.temp_slider,
+                       self.opacity_slider, self.disk_gain_slider):
+            widget.setEnabled(active)
+        self.doppler_check.setEnabled(active)
+
+    # ------------------------------------------------------------- gestures
+    def _orbit(self, dx, dy):
+        self._azimuth = (self._azimuth - float(dx) * 0.45) % 360.0
+        value = int(round(float(self.inclination_slider.value()) + float(dy) * 0.35))
+        value = max(0, min(88, value))
+        if value != self.inclination_slider.value():
+            self.inclination_slider.blockSignals(True)
+            self.inclination_slider.setValue(value)
+            self.inclination_slider.blockSignals(False)
+        self._schedule_render(delay=0)
+
+    def _zoom(self, steps):
+        value = int(self.fov_slider.value()) - (3 if steps > 0 else -3)
+        value = max(10, min(70, value))
+        self.fov_slider.blockSignals(True)
+        self.fov_slider.setValue(value)
+        self.fov_slider.blockSignals(False)
+        self._schedule_render(delay=0)
+
+    def _drag_begin(self):
+        self._dragging = True
+
+    def _drag_end(self):
+        self._dragging = False
+        self._schedule_render(delay=0)
+
+    # ---------------------------------------------------------------- presets
+    def _apply_preset(self, name):
+        preset = PRESETS.get(name)
+        if not preset:
+            return
+        self._applying = True
+        try:
+            self.distance_slider.setValue(int(preset["distance"]))
+            self.inclination_slider.setValue(int(preset["inclination"]))
+            self.fov_slider.setValue(int(preset["fov"]))
+            self.disk_check.setChecked(bool(preset["disk_on"]))
+            self.r_in_slider.setValue(int(preset["r_in"]))
+            self.r_out_slider.setValue(int(preset["r_out"]))
+            self.temp_slider.setValue(int(preset["peak_temperature"]))
+            self.opacity_slider.setValue(int(preset["opacity"]))
+            self.exposure_slider.setValue(int(preset["exposure"]))
+            self.star_slider.setValue(int(preset["star_gain"]))
+            self.disk_gain_slider.setValue(int(preset["disk_gain"]))
+            self.doppler_check.setChecked(bool(preset["doppler"]))
+            self.orbit_check.setChecked(bool(preset["orbit"]))
+            self.quality_combo.setCurrentIndex(int(preset["quality"]))
+            self._time = 0.0
+            self._azimuth = 0.0
+            self._disk_enabled = bool(preset["disk_on"])
+            self._sync_disk_enabled()
+        finally:
+            self._applying = False
+        self._schedule_render(delay=70)
+
+    def _reset(self):
+        self._paused = False
+        self.pause_btn.setText("暂停")
+        self.state_label.setText("运行中")
+        self._time = 0.0
+        self._azimuth = 0.0
+        current = self.preset_combo.currentText()
+        target = "吸积盘"
+        if current == target:
+            self._apply_preset(target)
+        else:
+            self.preset_combo.setCurrentText(target)
+        self._schedule_render(delay=0)
+
+    # ------------------------------------------------------------------ save
+    def _save(self):
+        path = ask_save_path(
+            self, "保存史瓦西光线追踪", directory="lensing.png",
+            suffix=".png",
+        )
+        if not path:
+            return
+        if self.canvas.save_image(path):
+            self.state_label.setText("已保存")
+            self.params_label.setText(path)
+        else:
+            QMessageBox.warning(self, "保存失败", "无法写入所选路径。")
+
+    def closeEvent(self, event):
+        self._anim_timer.stop()
+        self._render_timer.stop()
+        event.accept()
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_app(MainWindow))

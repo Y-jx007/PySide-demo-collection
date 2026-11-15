@@ -149,6 +149,13 @@ APPS = [
         "category": "Physics",
     },
     {
+        "title": "Lensing",
+        "description": "史瓦西光测地线逐像素 RK4：光子环、爱因斯坦环与吸积盘多普勒增亮",
+        "path": "Physics/Lensing.py",
+        "friendly": "史瓦西光线追踪",
+        "category": "Physics",
+    },
+    {
         "title": "Ising",
         "description": "模拟二维伊辛模型",
         "path": "Physics/Ising.py",
