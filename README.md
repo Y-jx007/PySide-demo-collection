@@ -34,6 +34,7 @@
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
 | **Bremsstrahlung** | 变速圆周电子：真实推迟 Liénard-Wiechert 辐射场，按加速度平行/垂直分量显示轫致（红）与同步（蓝），远场 FFT 频谱加色叠加 |
 | **Mass Spring** | 质点-弹簧网络：重力、阻尼、固定点与鼠标交互，悬索桥 / 网 / 链 / 随机四种预设 |
+| **Soliton** | 非线性薛定谔（分步傅里叶）：单束的自聚焦与坍缩、涡旋环破裂成一圈光丝、双束对撞、噪声海里的调制不稳定性；左键可在任意位置再种一束光 |
 
 ### Fractals
 
@@ -157,7 +158,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 │   ├── Math/                # Arnold / Connection / Cplot / Fourier / Lloyd / Lorenz /
 │   │                        #   Quasicrystal / Stigmergy / Traveler
 │   ├── Physics/             # Beam / Bremsstrahlung / Ising / KAM / Mass-Spring / Maxwell /
-│   │                        #   Navier-Stokes / Noise / Schrödinger / Turing
+│   │                        #   Navier-Stokes / Noise / Schrödinger / Soliton / Turing
 │   ├── Fractals/            # IFS / Lindenmayer / Logistic / Mandelbrot / Newton /
 │   │                        #   Quaternion Julia / Snowflake
 │   ├── Cellular Automata/   # Conway / Distill / Lenia / Particle Lenia
@@ -195,7 +196,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ## 公共组件（common/）
 
 各 app 原先都在自己文件里重写同一批样板代码，现已抽到 common/ 下。
-Math 9 个、Physics 8 个、Unpolished 6 个、Fractals 7 个、Cellular Automata 4 个应用都已改用统一的
+Math 9 个、Physics 9 个、Unpolished 6 个、Fractals 7 个、Cellular Automata 4 个应用都已改用统一的
 `run_app` 入口；Mass Spring 也改为 PySide 画布 + Taichi 内核，统一左侧 330px 分组面板 + 右侧 600px 白色画布 + 状态栏。
 画布层也统一了：matplotlib 画布（`MplCanvas`）覆盖 Fourier / Cplot / Noise / Lenia 核预览，
 numpy 图像画布（`ArrayCanvas`）覆盖 Erosion / Circulation / Conway / Snowflake。

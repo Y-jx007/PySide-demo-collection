@@ -99,6 +99,13 @@ APPS = [
     },
     # ---------------- Physics ----------------
     {
+        "title": "Soliton",
+        "description": "非线性薛定谔：自聚焦、坍缩、涡旋破裂与光丝",
+        "path": "Physics/Soliton.py",
+        "friendly": "非线性薛定谔",
+        "category": "Physics",
+    },
+    {
         "title": "Schrödinger",
         "description": "Runge-Kutta 模拟二维量子波包演化过程",
         "path": "Physics/Schrödinger.py",

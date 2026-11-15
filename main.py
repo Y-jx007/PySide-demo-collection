@@ -468,6 +468,9 @@ class ApplicationLauncher(QMainWindow):
                 self._add_card(cat, app)
 
         self.categories_layout.addStretch()
+        # 清单里新增/删除了应用时，布局文件要跟上，否则「布局覆盖注册表」的
+        # 检查会在下次启动前一直是旧的；写一次是幂等的。
+        self._save_layout()
 
     def _manifest_for_path(self, module_path):
         target = os.path.normcase(os.path.abspath(module_path))
