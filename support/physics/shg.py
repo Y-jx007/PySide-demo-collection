@@ -24,27 +24,42 @@ import numpy as np
 
 from support.physics.nls import PALETTE, PALETTES, palette_lut
 
-# 演示用的两个波长（Nd:YAG / KTP）：1064 nm 基频 → 532 nm 倍频
-PUMP_RGB = (208, 46, 36)
-SHG_RGB = (40, 170, 98)
-MID_RGB = (232, 196, 64)
-PUMP_NM = 1064
-SHG_NM = 532
+# 波长取在可见光两端：800 nm（红）二次谐波到 400 nm（紫）。
+# 这是 Ti:sapphire 倍频到紫外的经典组合，两端在肉眼里都还算“有色”。
+PUMP_NM = 800
+SHG_NM = 400
+
+# 可见光谱的近似色标：从红端走到紫端，中间经过橙黄绿青蓝。
+# 注意这是“波长色标”，不是两束光叠加的真实颜色（真实是红+紫的品红）。
+SPECTRUM_STOPS = (
+    (0.00, (168, 22, 18)),     # 800 nm 红
+    (0.14, (214, 46, 24)),
+    (0.28, (240, 104, 20)),    # 橙
+    (0.40, (246, 196, 36)),    # 黄
+    (0.54, (108, 206, 74)),    # 绿
+    (0.66, (58, 186, 178)),    # 青
+    (0.78, (54, 118, 214)),    # 蓝
+    (0.90, (78, 62, 186)),
+    (1.00, (128, 52, 158)),    # 400 nm 紫
+)
+
+PUMP_RGB = SPECTRUM_STOPS[0][1]
+SHG_RGB = SPECTRUM_STOPS[-1][1]
 
 _BEAM_LUT = None
 
 
 def beam_lut():
-    """256-entry pump -> yellow -> harmonic ramp, the colour key of the map."""
+    """256-entry visible-spectrum ramp from the pump colour to its harmonic."""
     global _BEAM_LUT
     if _BEAM_LUT is None:
-        ramp = np.linspace(0.0, 1.0, 256)[:, None]
-        low = np.asarray(PUMP_RGB, dtype=float)
-        mid = np.asarray(MID_RGB, dtype=float)
-        high = np.asarray(SHG_RGB, dtype=float)
-        first = low[None, :] * (1.0 - 2.0 * ramp) + mid[None, :] * (2.0 * ramp)
-        second = mid[None, :] * (2.0 - 2.0 * ramp) + high[None, :] * (2.0 * ramp - 1.0)
-        table = np.where(ramp <= 0.5, first, second)
+        positions = np.array([stop for stop, _ in SPECTRUM_STOPS])
+        colours = np.array([c for _, c in SPECTRUM_STOPS], dtype=float)
+        ramp = np.linspace(0.0, 1.0, 256)
+        table = np.stack(
+            [np.interp(ramp, positions, colours[:, channel]) for channel in range(3)],
+            axis=1,
+        )
         _BEAM_LUT = np.clip(table, 0, 255).astype(np.uint8)
     return _BEAM_LUT
 

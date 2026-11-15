@@ -42,9 +42,9 @@ EQUATION_TIP = (
     "· 开周期极化：条纹折成两条共振（Δk = ±2π/Λ），效率回升；\n"
     "· 关对称性（κ=0）：χ⁽²⁾ 不存在，整幅图空白。\n\n"
     "下面小图是出射面的效率随 Δk 的变化，就是实验里扫波长看到的 Maker 曲线。\n"
-    "左侧色带是同一条光在 Δk=0 时的颜色变化：基频 1064 nm（红）逐渐转成"
-    "倍频 532 nm（绿），中途两束光重叠的地方偏黄——实验室里就是这样。"
-    "右边整幅图用的也是这套波长色：红处还是基频光，绿处已经转成倍频光。"
+    "左侧色带是同一条光在 Δk=0 时的颜色变化：基频 800 nm（红）逐渐转成"
+    "倍频 400 nm（紫），按可见光谱依次经过橙、黄、绿、蓝。"
+    "右边整幅图用的也是这套波长色：红处还是基频光，紫处已经转成倍频光。"
 )
 
 
@@ -103,8 +103,9 @@ class BeamStrip(QWidget):
         self.setFixedHeight(64)
         self.model = None
         self.setToolTip(
-            "同一条光在晶体里的颜色：入口 1064 nm（红），出口 532 nm（绿），"
-            "中间重叠处偏黄。"
+            "同一条光在晶体里的颜色：入口 800 nm（红），出口 400 nm（紫），"
+            "按可见光谱的顺序经过橙黄绿蓝。真实的两束光叠加是红+紫的品红，"
+            "这里用光谱色标便于读出“转了多少”。"
         )
 
     def update_model(self, model):
@@ -133,9 +134,9 @@ class BeamStrip(QWidget):
         font.setPointSizeF(7.5)
         painter.setFont(font)
         painter.setPen(QColor(110, 110, 110))
-        painter.drawText(QRectF(4, 46, 80, 14), Qt.AlignLeft, "1064 nm")
+        painter.drawText(QRectF(4, 46, 80, 14), Qt.AlignLeft, "800 nm")
         painter.drawText(QRectF(rect.width() - 84, 46, 80, 14),
-                         Qt.AlignRight, "532 nm")
+                         Qt.AlignRight, "400 nm")
         painter.drawText(QRectF(4, 46, rect.width() - 8, 14),
                          Qt.AlignCenter, "z →")
         painter.end()
