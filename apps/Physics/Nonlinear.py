@@ -32,6 +32,12 @@ from support.physics.spm import TemporalNLSE
 MODES = ("空间自聚焦", "时间孤子", "调频")
 
 MIX_HTML = {
+    "四波混频": (
+        '<div style="font-size:12px; color:#1b1b1b;">dA₃/dz = iκ(2P)A₃ + iκA₁A₂A₄*&thinsp;e<sup>+iΔkz</sup></div>'
+        '<div style="font-size:12px; color:#1b1b1b;">dA₄/dz = iκ(2P)A₄ + iκA₁A₂A₃*&thinsp;e<sup>+iΔkz</sup></div>'
+        '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
+        "两束泵浦（各 P）未耗尽；第二项产生相位共轭波，第一项是交叉相位调制。</div>"
+    ),
     "和频": (
         '<div style="font-size:12px; color:#1b1b1b;">da₁/dz = iκ·a₃a₂*&thinsp;e<sup>+iΔkz</sup></div>'
         '<div style="font-size:12px; color:#1b1b1b;">da₂/dz = iκ·a₃a₁*&thinsp;e<sup>+iΔkz</sup></div>'
@@ -773,7 +779,8 @@ class MainWindow(LabWindow):
         beam_layout.addWidget(self.beam_strip)
         column.addWidget(beam_box)
 
-        fringe_box = QGroupBox("出射面效率")
+        self.fringe_box = QGroupBox("出射面效率")
+        fringe_box = self.fringe_box
         fringe_layout = QVBoxLayout(fringe_box)
         self.fringe_plot = FringePlot()
         fringe_layout.addWidget(self.fringe_plot)
@@ -853,6 +860,9 @@ class MainWindow(LabWindow):
         self.beam_strip.unit = labels[2]
         self.beam_strip.update()
         self.qpm_check.setEnabled(name == "倍频")
+        self.fringe_box.setTitle(
+            "共轭增益 vs Δk" if name == "四波混频" else "出射面效率"
+        )
         self.qpm_check.setToolTip("" if name == "倍频" else "和频/差频用两个输入直接匹配，不涉及周期极化")
         self.refresh_doubling()
 
