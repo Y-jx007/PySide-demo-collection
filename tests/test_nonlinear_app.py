@@ -130,6 +130,16 @@ class TestNonlinearWindow(unittest.TestCase):
         self.assertTrue(self.window.momentum_sketch.show_qpm)
         self.assertGreater(self.window.momentum_sketch.period, 0.0)
 
+    def test_process_switch_changes_the_model_and_the_readout(self):
+        self.switch("倍频")
+        self.assertEqual(self.window.process_combo.currentText(), "倍频")
+        self.window.process_combo.setCurrentText("和频")
+        self.assertEqual(self.window.canvas.process, "和频")
+        self.assertFalse(self.window.qpm_check.isEnabled())
+        self.assertIn("n₃", self.window.readout_label.text())
+        self.window.process_combo.setCurrentText("倍频")
+        self.assertTrue(self.window.qpm_check.isEnabled())
+
     def test_each_mode_states_its_equation(self):
         self.assertIn("∇²ψ", self.window.space_label.text())
         self.assertIn("β₂", self.window.time_label.text())

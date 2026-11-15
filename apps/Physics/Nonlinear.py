@@ -53,7 +53,7 @@ DOUBLE_HTML = (
     '<div style="font-size:12px; color:#1b1b1b;">dA₁/dz = iκ·A₂A₁*&thinsp;e<sup>−iΔkz</sup></div>'
     '<div style="font-size:12px; color:#1b1b1b;">dA₂/dz = i(κ/2)·A₁²&thinsp;e<sup>+iΔkz</sup></div>'
     '<div style="font-size:10px; color:#4a4a4a; margin-top:4px;">'
-    "κ ∝ χ⁽²⁾ 只在非中心对称介质里；下面这张小图就是 Δk 补平的过程。</div>"
+    "κ ∝ χ⁽²⁾ 只在非中心对称介质里；小图就是 Δk 被补平的过程。</div>"
 )
 
 TIPS = {
@@ -382,7 +382,7 @@ class MomentumSketch(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(38)
+        self.setFixedHeight(32)
         self.show_qpm = False
         self.period = 0.0
         self.setToolTip(
@@ -401,8 +401,8 @@ class MomentumSketch(QWidget):
         rect = QRectF(self.rect())
         painter.fillRect(rect, QColor(255, 255, 255))
         x0 = 26.0
-        y1 = 12.0
-        y2 = 28.0
+        y1 = 9.0
+        y2 = 24.0
         base = 120.0
         gap = 34.0
         ink = QColor(24, 96, 150)
@@ -727,7 +727,8 @@ class MainWindow(LabWindow):
         qpm_layout.addWidget(self.poling_slider)
         column.addWidget(qpm_box)
 
-        beam_box = QGroupBox("光束颜色")
+        self.beam_box = QGroupBox("光束颜色")
+        beam_box = self.beam_box
         beam_layout = QVBoxLayout(beam_box)
         self.beam_strip = BeamStrip()
         beam_layout.addWidget(self.beam_strip)
@@ -799,6 +800,8 @@ class MainWindow(LabWindow):
 
     def on_process(self, name):
         self.canvas.process = name
+        # 色带解释的是 800→400 nm 的倍频过程，和频时隐藏免得误导
+        self.beam_box.setVisible(name == "倍频")
         self.qpm_check.setEnabled(name == "倍频")
         self.qpm_check.setToolTip("" if name == "倍频" else "和频时用两个输入直接匹配，不涉及周期极化")
         self.refresh_doubling()
