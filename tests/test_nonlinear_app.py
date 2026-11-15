@@ -8,6 +8,8 @@ import unittest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
+
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
@@ -111,6 +113,22 @@ class TestNonlinearWindow(unittest.TestCase):
         self.window.qpm_check.setChecked(True)
         self.assertTrue(self.window.poling_slider.isEnabled())
         self.assertFalse((self.window.canvas.doubling.efficiency() == before).all())
+
+    def test_response_tabs_hold_both_microscopic_views(self):
+        self.assertEqual(self.window.response_tabs.count(), 2)
+        self.window.tick()
+        field = self.window.oscillator_plot.field
+        self.assertGreater(field, 0.0)
+        self.assertAlmostEqual(field,
+                               float(np.sqrt(self.window.canvas.space.peak())),
+                               places=6)
+
+    def test_momentum_sketch_tracks_the_qpm_switch(self):
+        self.switch("倍频")
+        self.assertFalse(self.window.momentum_sketch.show_qpm)
+        self.window.qpm_check.setChecked(True)
+        self.assertTrue(self.window.momentum_sketch.show_qpm)
+        self.assertGreater(self.window.momentum_sketch.period, 0.0)
 
     def test_each_mode_states_its_equation(self):
         self.assertIn("∇²ψ", self.window.space_label.text())

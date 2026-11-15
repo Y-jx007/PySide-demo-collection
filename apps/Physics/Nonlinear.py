@@ -20,7 +20,8 @@ from common.lab_window import LabWindow
 from common.qt_base import (
     LabeledSlider, QCheckBox, QColor, QComboBox, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QMessageBox, QPainter, QPen, QPointF, QPushButton,
-    QRectF, QSizePolicy, QStackedWidget, QTimer, QVBoxLayout, QWidget, Qt, run_app,
+    QRectF, QSizePolicy, QStackedWidget, QTabWidget, QTimer, QVBoxLayout, QWidget,
+    Qt, run_app,
 )
 from common.field_canvas import ArrayCanvas
 from support.physics.nls import MODELS, NLSE, PALETTE, PRESETS, palette_lut
@@ -210,7 +211,7 @@ class FringePlot(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(84)
+        self.setFixedHeight(70)
         self.model = None
         self.setToolTip(
             "出射面的倍频效率随相位失配的变化（扫描看到的 Maker 曲线）。\n"
@@ -261,7 +262,7 @@ class BeamStrip(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(40)
+        self.setFixedHeight(34)
         self.model = None
         self.setToolTip(
             "与图像同一套墨青色阶的图例：浅端是 800 nm 基频，深端是 400 nm 倍频，"
@@ -306,6 +307,132 @@ class BeamStrip(QWidget):
                          Qt.AlignRight, "400 nm")
         painter.drawText(QRectF(4, 19, rect.width() - 8, 14), Qt.AlignCenter,
                          "已转换 %.0f%%" % (converted * 100.0))
+        painter.end()
+
+
+class OscillatorPlot(QWidget):
+    """P–E 曲线：线性振子 vs 非简谐振子，游标在当前峰值场强上。"""
+
+    BETA = 0.02          # 示意用的非谐系数（不是物理单位）
+    E_MAX = 8.0          # 与场上峰值量级对齐，游标才不会一直贴边
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(82)
+        self.field = 0.0
+        self.setToolTip(
+            "横轴场强 E、纵轴极化 P：直线是简谐（线性）响应，"
+            "弯上去这条是非简谐——高次项就是从这里来的。\n"
+            "弯曲越早出现，同样场强下非线性越明显；竖线是当前的峰值场强。"
+        )
+
+    def update_state(self, field):
+        self.field = float(field)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.fillRect(rect, QColor(255, 255, 255))
+        painter.setPen(QPen(QColor(214, 214, 214), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect)
+        left, top, right, bottom = 24.0, 6.0, 8.0, 16.0
+        plot = QRectF(left, top, max(10.0, rect.width() - left - right),
+                      max(10.0, rect.height() - top - bottom))
+        e = np.linspace(0.0, self.E_MAX, 120)
+        cubic = e + self.BETA * e ** 3
+        y_max = float(cubic[-1])
+
+        def sx(value):
+            return plot.left() + plot.width() * min(max(value / self.E_MAX, 0.0), 1.0)
+
+        def sy(value):
+            return plot.bottom() - plot.height() * min(max(value / y_max, 0.0), 1.0)
+
+        painter.setPen(QPen(QColor(190, 190, 190), 1))
+        painter.drawLine(QPointF(plot.left(), plot.bottom()),
+                         QPointF(plot.right(), plot.bottom()))
+        painter.drawLine(QPointF(plot.left(), plot.top()),
+                         QPointF(plot.left(), plot.bottom()))
+        painter.setPen(QPen(QColor(160, 160, 160), 1.0, Qt.DashLine))
+        painter.drawPolyline([QPointF(sx(xi), sy(xi / y_max * y_max)) for xi in e])
+        painter.setPen(QPen(QColor(24, 96, 150), 1.8))
+        painter.drawPolyline([QPointF(sx(xi), sy(yi)) for xi, yi in zip(e, cubic)])
+        cursor = sx(self.field)
+        painter.setPen(QPen(QColor(200, 120, 40), 1.2, Qt.DashLine))
+        painter.drawLine(QPointF(cursor, plot.top()), QPointF(cursor, plot.bottom()))
+        peak = self.field + self.BETA * self.field ** 3
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(200, 120, 40))
+        painter.drawEllipse(QPointF(cursor, sy(peak)), 3.0, 3.0)
+        font = painter.font()
+        font.setPointSizeF(7.5)
+        painter.setFont(font)
+        painter.setPen(QColor(110, 110, 110))
+        painter.drawText(QRectF(rect.left() + 4, rect.top() + 1, 20, 10),
+                         Qt.AlignLeft, "P")
+        painter.drawText(QRectF(rect.left() + 22, rect.bottom() - 13, 40, 12),
+                         Qt.AlignLeft, "E")
+        painter.drawText(QRectF(plot.left() + 2, plot.top() + 1, 120, 12),
+                         Qt.AlignLeft, "实线 非简谐 / 虚线 线性")
+        painter.end()
+
+
+class MomentumSketch(QWidget):
+    """2k₁ 与 k₂ 的动量示意；开周期极化时补上 K = 2π/Λ。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(46)
+        self.show_qpm = False
+        self.period = 0.0
+        self.setToolTip(
+            "相位匹配就是动量守恒：倍频波的波矢 k₂ 要等于两个基频光子之和 2k₁。"
+            "\n差出来的那一段就是 Δk；周期极化用 K = 2π/Λ 把它补平。"
+        )
+
+    def update_state(self, show_qpm, period):
+        self.show_qpm = bool(show_qpm)
+        self.period = float(period)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect())
+        painter.fillRect(rect, QColor(255, 255, 255))
+        x0 = 18.0
+        y1 = 14.0
+        y2 = 32.0
+        base = 118.0
+        gap = 34.0
+        ink = QColor(24, 96, 150)
+        painter.setPen(QPen(ink, 1.6))
+        painter.drawLine(QPointF(x0, y1), QPointF(x0 + base, y1))
+        painter.drawLine(QPointF(x0 + base, y1 - 4), QPointF(x0 + base, y1 + 4))
+        painter.drawLine(QPointF(x0, y2), QPointF(x0 + base + gap, y2))
+        painter.drawLine(QPointF(x0 + base + gap, y2 - 4),
+                         QPointF(x0 + base + gap, y2 + 4))
+        font = painter.font()
+        font.setPointSizeF(7.5)
+        painter.setFont(font)
+        painter.setPen(QColor(110, 110, 110))
+        painter.drawText(QRectF(x0, y1 - 14, 60, 12), Qt.AlignLeft, "2k₁")
+        painter.drawText(QRectF(x0, y2 + 2, 60, 12), Qt.AlignLeft, "k₂")
+        if self.show_qpm:
+            painter.setPen(QPen(QColor(200, 120, 40), 1.6, Qt.DashLine))
+            painter.drawLine(QPointF(x0 + base, y2), QPointF(x0 + base + gap, y2))
+            painter.setPen(QColor(200, 120, 40))
+            painter.drawText(QRectF(x0 + base - 6, y2 + 2, 90, 12), Qt.AlignLeft,
+                             "K = 2π/Λ")
+        else:
+            painter.setPen(QPen(QColor(200, 120, 40), 1.2, Qt.DashLine))
+            painter.drawLine(QPointF(x0 + base, y1), QPointF(x0 + base + gap, y1))
+            painter.setPen(QColor(200, 120, 40))
+            painter.drawText(QRectF(x0 + base - 4, y1 - 14, 90, 12), Qt.AlignLeft,
+                             "Δk")
         painter.end()
 
 
@@ -491,8 +618,12 @@ class MainWindow(LabWindow):
 
         micro_box = QGroupBox("微观响应")
         micro_layout = QVBoxLayout(micro_box)
+        self.response_tabs = QTabWidget()
         self.response_plot = ResponsePlot()
-        micro_layout.addWidget(self.response_plot)
+        self.oscillator_plot = OscillatorPlot()
+        self.response_tabs.addTab(self.response_plot, "两能级布居")
+        self.response_tabs.addTab(self.oscillator_plot, "振子 P(E)")
+        micro_layout.addWidget(self.response_tabs)
         column.addWidget(micro_box)
         column.addStretch(1)
         return page
@@ -584,6 +715,8 @@ class MainWindow(LabWindow):
         self.poling_slider.setEnabled(False)
         self.poling_slider.valueChanged.connect(self.on_poling)
         qpm_layout.addWidget(self.poling_slider)
+        self.momentum_sketch = MomentumSketch()
+        qpm_layout.addWidget(self.momentum_sketch)
         column.addWidget(qpm_box)
 
         beam_box = QGroupBox("光束颜色")
@@ -691,6 +824,9 @@ class MainWindow(LabWindow):
             self.canvas.render_frame()
             self.fringe_plot.update_model(model)
             self.beam_strip.update_model(model)
+            self.momentum_sketch.update_state(
+                self.qpm_check.isChecked(), self.poling() or 0.0
+            )
             self.update_readout()
 
     def reset(self):
@@ -736,6 +872,7 @@ class MainWindow(LabWindow):
                 % (sim.power(), peak, sim.width(), sim.steps)
             )
             self.response_plot.update_state(sim, peak)
+            self.oscillator_plot.update_state(np.sqrt(max(peak, 0.0)))
         elif self.mode == "时间孤子":
             sim = self.canvas.time
             self.readout_label.setText(
