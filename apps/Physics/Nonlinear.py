@@ -632,7 +632,8 @@ class MainWindow(LabWindow):
         self.model_combo.currentTextChanged.connect(self.on_model)
         self.model_combo.setToolTip(
             "饱和：1/(1+I/Iₛ)；高阶 Kerr：n₂I + n₄I²，因子 1−κI；"
-            "双光子吸收：折射之外还会吸收，dI/dt = −βI²，越亮耗得越快。"
+            "双光子吸收：折射之外还会吸收，dI/dt = −βI²，越亮耗得越快；"
+            "饱和吸收：α = α₀/(1+I/Iₛ)，越亮越透明（可饱和吸收体、被动锁模）。"
         )
         selects.addWidget(self.model_combo, 1)
         run_layout.addLayout(selects)
@@ -823,6 +824,7 @@ class MainWindow(LabWindow):
         sim.kappa = self.model_kappa_slider.value() / 1000.0
         # 双光子吸收：吸收型的 χ⁽³⁾，强度越高耗得越快（系数固定在模型里）
         sim.two_photon = 0.05 if name == "双光子吸收" else 0.0
+        sim.saturable_loss = 0.08 if name == "饱和吸收" else 0.0
         self.reset_space()
 
     def on_model_kappa(self, value):

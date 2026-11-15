@@ -200,6 +200,24 @@ class TestPalette(unittest.TestCase):
         np.testing.assert_allclose(rgb[0, 0].astype(int), PALETTES[PALETTE][0][1], atol=1)
 
 
+class TestSaturableAbsorption(unittest.TestCase):
+    def loss(self, amplitude, coefficient=0.08, steps=60):
+        sim = NLSE()
+        sim.reset("单束", amplitude, 0.0)
+        before = sim.power()
+        sim.saturable_loss = coefficient
+        sim.step(steps)
+        return 1.0 - sim.power() / before
+
+    def test_absorption_removes_power(self):
+        self.assertGreater(self.loss(0.6), 0.0)
+
+    def test_brighter_beam_is_more_transparent(self):
+        weak = self.loss(0.3)
+        strong = self.loss(0.9)
+        self.assertLess(strong, weak)
+
+
 class TestTwoPhoton(unittest.TestCase):
     def simulate(self, amplitude, coefficient, steps=120):
         sim = NLSE()
