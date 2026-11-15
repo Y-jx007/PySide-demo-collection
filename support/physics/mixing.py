@@ -48,13 +48,14 @@ class SFGMap:
     """n3(z) for a fan of mismatches: the same diagram, for sum frequency."""
 
     def __init__(self, mismatches=241, samples=360, length=2.0, kappa=1.0,
-                 span=20.0, seed2=0.6):
+                 span=20.0, seed2=0.6, branch="和频"):
         self.mismatches = int(mismatches)
         self.samples = int(samples)
         self.length = float(length)
         self.kappa = float(kappa)
         self.span = float(span)
         self.seed2 = float(seed2)
+        self.branch = branch
         self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
         self.configure()
 
@@ -66,10 +67,16 @@ class SFGMap:
         if span is not None:
             self.span = float(span)
             self.delta_k = np.linspace(-self.span, self.span, self.mismatches)
-        a1, a2, a3, history = propagate_sfg(
-            self.delta_k, length=self.length, samples=self.samples,
-            kappa=self.kappa, seed2=self.seed2,
-        )
+        if self.branch == "差频":
+            a1, a2, a3, history = propagate_dfg(
+                self.delta_k, length=self.length, samples=self.samples,
+                kappa=self.kappa, seed3=self.seed2,
+            )
+        else:
+            a1, a2, a3, history = propagate_sfg(
+                self.delta_k, length=self.length, samples=self.samples,
+                kappa=self.kappa, seed2=self.seed2,
+            )
         self.map = history.T                      # (dk, z), like SHGMap
         self._exit = np.abs(a3) ** 2
         return self.map
@@ -93,3 +100,35 @@ class SFGMap:
         db = 10.0 * np.log10(np.clip(field / reference, 1e-12, 1.0))
         norm = np.clip((db + floor_db) / floor_db, 0.0, 1.0)
         return palette_lut(PALETTE, gamma=1.0)[(norm * 255.0).astype(np.uint8)]
+
+def _rhs_dfg(a1, a2, a3, kappa, detune, z):
+    """Difference frequency: one w1 photon splits into w2 + w3 (w1 = w2 + w3)."""
+    up = 1j * kappa * np.exp(1j * detune * z)
+    down = 1j * kappa * np.exp(-1j * detune * z)
+    return up * a2 * a3, down * a1 * np.conj(a3), down * a1 * np.conj(a2)
+
+
+def propagate_dfg(delta_k, length=2.0, samples=400, kappa=1.0,
+                  seed1=1.0, seed3=0.5):
+    """Integrate the DFG branch; returns (a1, a2, a3, history of |a2|^2)."""
+    detune = np.asarray(delta_k, dtype=float)
+    dz = length / float(samples)
+    a1 = np.full(detune.shape, complex(seed1))
+    a2 = np.zeros(detune.shape, dtype=np.complex128)
+    a3 = np.full(detune.shape, complex(seed3))
+    history = [np.abs(a2) ** 2]
+    z = 0.0
+    for _ in range(int(samples)):
+        b = _rhs_dfg(a1, a2, a3, kappa, detune, z)
+        c = _rhs_dfg(a1 + 0.5 * dz * b[0], a2 + 0.5 * dz * b[1], a3 + 0.5 * dz * b[2],
+                     kappa, detune, z + 0.5 * dz)
+        d = _rhs_dfg(a1 + 0.5 * dz * c[0], a2 + 0.5 * dz * c[1], a3 + 0.5 * dz * c[2],
+                     kappa, detune, z + 0.5 * dz)
+        e = _rhs_dfg(a1 + dz * d[0], a2 + dz * d[1], a3 + dz * d[2],
+                     kappa, detune, z + dz)
+        a1 = a1 + dz * (b[0] + 2.0 * c[0] + 2.0 * d[0] + e[0]) / 6.0
+        a2 = a2 + dz * (b[1] + 2.0 * c[1] + 2.0 * d[1] + e[1]) / 6.0
+        a3 = a3 + dz * (b[2] + 2.0 * c[2] + 2.0 * d[2] + e[2]) / 6.0
+        z += dz
+        history.append(np.abs(a2) ** 2)
+    return a1, a2, a3, np.array(history)
