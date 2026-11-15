@@ -47,7 +47,7 @@ class TestNonlinearWindow(unittest.TestCase):
         self.switch("时间孤子")
         self.assertEqual(self.window.stack.currentIndex(), 1)
         self.assertEqual(self.window.canvas.mode, "时间孤子")
-        self.switch("倍频")
+        self.switch("调频")
         self.assertEqual(self.window.stack.currentIndex(), 2)
         self.assertFalse(self.window.pause_button.isEnabled())
 
@@ -95,19 +95,19 @@ class TestNonlinearWindow(unittest.TestCase):
                                delta=0.05 * before)
 
     def test_doubling_mode_is_static(self):
-        self.switch("倍频")
+        self.switch("调频")
         self.window.tick()
         self.assertEqual(self.window.canvas.doubling.length, 2.0)
         self.assertIn("峰值效率", self.window.readout_label.text())
 
     def test_symmetry_switch_zeroes_the_conversion(self):
-        self.switch("倍频")
+        self.switch("调频")
         self.assertGreater(self.window.canvas.doubling.peak_efficiency(), 0.0)
         self.window.symmetric_check.setChecked(True)
         self.assertEqual(self.window.canvas.doubling.peak_efficiency(), 0.0)
 
     def test_qpm_toggle_enables_the_period_and_changes_the_map(self):
-        self.switch("倍频")
+        self.switch("调频")
         before = self.window.canvas.doubling.efficiency().copy()
         self.assertFalse(self.window.poling_slider.isEnabled())
         self.window.qpm_check.setChecked(True)
@@ -124,20 +124,20 @@ class TestNonlinearWindow(unittest.TestCase):
                                places=6)
 
     def test_momentum_sketch_tracks_the_qpm_switch(self):
-        self.switch("倍频")
+        self.switch("调频")
         self.assertFalse(self.window.momentum_sketch.show_qpm)
         self.window.qpm_check.setChecked(True)
         self.assertTrue(self.window.momentum_sketch.show_qpm)
         self.assertGreater(self.window.momentum_sketch.period, 0.0)
 
     def test_process_switch_changes_the_model_and_the_readout(self):
-        self.switch("倍频")
+        self.switch("调频")
         self.assertEqual(self.window.process_combo.currentText(), "倍频")
         self.window.process_combo.setCurrentText("和频")
         self.assertEqual(self.window.canvas.process, "和频")
         self.assertFalse(self.window.qpm_check.isEnabled())
         self.assertIn("n₃", self.window.readout_label.text())
-        self.window.process_combo.setCurrentText("倍频")
+        self.window.process_combo.setCurrentText("调频")
         self.assertTrue(self.window.qpm_check.isEnabled())
 
     def test_each_mode_states_its_equation(self):

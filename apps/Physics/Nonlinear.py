@@ -29,7 +29,7 @@ from support.physics.mixing import SFGMap
 from support.physics.shg import SHGMap, beam_lut
 from support.physics.spm import TemporalNLSE
 
-MODES = ("空间自聚焦", "时间孤子", "倍频")
+MODES = ("空间自聚焦", "时间孤子", "调频")
 
 MIX_HTML = {
     "和频": (
@@ -82,7 +82,7 @@ TIPS = {
         "横轴是延迟时间 t = t_lab − z/v_g，竖轴是传播距离 z；"
         "下方小图是当前频谱，自相位调制让它对称展宽——超连续谱的起点。"
     ),
-    "倍频": (
+    "调频": (
         "横轴是晶体位置 z，竖轴是 Δk，颜色和另外两个模式同一套墨青色阶："
         "越深 = 倍频功率越强；扇形条纹就是 Maker 条纹。"
         "左侧色带是同一套色阶的图例（浅=800 nm 基频，深=400 nm 倍频），"
@@ -471,7 +471,7 @@ class OpticsCanvas(ArrayCanvas):
     def render_frame(self):
         if self.mode == "时间孤子":
             self.set_array(self.time.render_waterfall())
-        elif self.mode == "倍频":
+        elif self.mode == "调频":
             model = self.doubling if self.process == "倍频" else self.sfg
             self.set_array(np.ascontiguousarray(np.flipud(model.render())))
         elif self.space_view == "动量谱":
@@ -560,8 +560,8 @@ class MainWindow(LabWindow):
         right.setSpacing(6)
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 8, 0)
-        header.addStretch(1)
         header.addWidget(self.mode_combo)
+        header.addStretch(1)
         right.addLayout(header)
         right.addWidget(self.canvas, 1)
         root.addLayout(right, 1)
@@ -707,7 +707,7 @@ class MainWindow(LabWindow):
         self.double_label = QLabel(DOUBLE_HTML)
         self.double_label.setTextFormat(Qt.RichText)
         self.double_label.setWordWrap(True)
-        self.double_label.setToolTip(TIPS["倍频"])
+        self.double_label.setToolTip(TIPS.get("调频", ""))
         equation_layout.addWidget(self.double_label)
         self.momentum_sketch = MomentumSketch()
         equation_layout.addWidget(self.momentum_sketch)
@@ -795,9 +795,9 @@ class MainWindow(LabWindow):
         self.canvas.mode = name
         self.paused = False
         self.pause_button.setText("暂停")
-        self.pause_button.setEnabled(name != "倍频")
+        self.pause_button.setEnabled(name != "调频")
         self.statusBar().showMessage(TIPS[name])
-        if name == "倍频":
+        if name == "调频":
             self.refresh_doubling()
         else:
             self.canvas.render_frame()
@@ -829,11 +829,10 @@ class MainWindow(LabWindow):
     def on_process(self, name):
         self.canvas.process = name
         self.double_label.setText(MIX_HTML.get(name, DOUBLE_HTML))
-        # 色带解释的是 800→400 nm 的倍频过程，和频时隐藏免得误导
+        # 色带解释的是 800→400 nm 的倍频过程，和频/差频时隐藏免得误导
         self.beam_box.setVisible(name == "倍频")
         self.qpm_check.setEnabled(name == "倍频")
-        self.canvas.process = name
-        self.qpm_check.setToolTip("" if name == "倍频" else "和频时用两个输入直接匹配，不涉及周期极化")
+        self.qpm_check.setToolTip("" if name == "倍频" else "和频/差频用两个输入直接匹配，不涉及周期极化")
         self.refresh_doubling()
 
     def on_qpm(self, checked):
@@ -875,7 +874,7 @@ class MainWindow(LabWindow):
                       seed2=self.seed_slider.value() / 100.0,
                       kappa=0.0 if self.symmetric_check.isChecked()
                       else self.crystal_kappa_slider.value() / 100.0)
-        if self.mode == "倍频":
+        if self.mode == "调频":
             self.canvas.render_frame()
             active = model if self.canvas.process == "倍频" else self.canvas.sfg
             self.fringe_plot.update_model(active)
@@ -897,13 +896,13 @@ class MainWindow(LabWindow):
 
     # ---------- 循环 ----------
     def toggle_pause(self):
-        if self.mode == "倍频":
+        if self.mode == "调频":
             return
         self.paused = not self.paused
         self.pause_button.setText("继续" if self.paused else "暂停")
 
     def tick(self):
-        if self.paused or self.mode == "倍频":
+        if self.paused or self.mode == "调频":
             return
         if self.mode == "空间自聚焦":
             self.canvas.space.step(self.steps_slider.value())
