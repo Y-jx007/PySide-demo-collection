@@ -16,8 +16,11 @@ QGroupBox {
     font-weight: bold;
     border: 1px solid #aaaaaa;
     border-radius: 4px;
-    margin-top: 8px;
-    padding-top: 8px;
+    margin-top: 7px;
+    padding-top: 5px;
+    padding-left: 2px;
+    padding-right: 2px;
+    padding-bottom: 2px;
     background-color: white;
     font-size: 12px;
 }
