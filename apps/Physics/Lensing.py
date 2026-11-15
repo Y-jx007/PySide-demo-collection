@@ -48,7 +48,7 @@ QUALITY = (
 # still leaving the UI thread enough time for mouse events.
 DRAG_SIZE = 600
 DRAG_STEPS = 160
-DRAG_INTERVAL_MS = 18
+DRAG_INTERVAL_MS = 8
 
 PRESETS = {
     "吸积盘": dict(
@@ -113,12 +113,14 @@ class LensingCanvas(SquareCanvas):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0))
         if self._image is not None:
-            # The drag preview is already 600x600: skip the full-canvas
-            # smooth rescale, which costs more than the geodesic kernel.
-            if (self._image.width() != self.width()
-                    or self._image.height() != self.height()):
+            # The drag preview is already 600x600: use the no-scaling path,
+            # which is cheaper than a full-canvas smooth rescale.
+            if (self._image.width() == self.width()
+                    and self._image.height() == self.height()):
+                painter.drawImage(0, 0, self._image)
+            else:
                 painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            painter.drawImage(self.rect(), self._image)
+                painter.drawImage(self.rect(), self._image)
         painter.end()
 
     def save_image(self, path):
