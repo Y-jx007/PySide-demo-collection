@@ -512,7 +512,21 @@ class OpticsCanvas(ArrayCanvas):
                 return
             if self.process == "孪生光束":
                 n_s, n_i = twin_beams(self.quantum_gain, runs=1500)
-                counts, _ = np.histogram(n_s - n_i, bins=40, range=(-6.0, 6.0))
+                # 上半：三次采样（信号 / 闲频 / 差值），看两臂是否同步涨落
+                picks = np.arange(0, 60 * 60, 60) % n_s.size
+                signal = n_s[picks][:60]
+                idler = n_i[picks][:60]
+                difference = (n_s - n_i)[picks][:60]
+                bands = []
+                for values in (signal, idler, difference):
+                    peak = max(float(np.max(np.abs(values))), 1e-9)
+                    strip = np.zeros((60, values.size, 3), dtype=float)
+                    frac = np.clip(np.abs(values) / peak, 0.0, 1.0)[None, :, None]
+                    strip[:] = 252.0 + (np.array([24.0, 96.0, 150.0]) - 252.0) * frac
+                    bands.append(strip.astype(np.uint8))
+                art = np.vstack(bands)
+                self.set_array(np.ascontiguousarray(art))
+                return
                 height, slot, gap = 300, 16, 3
                 width = counts.size * slot
                 art = np.full((height, width, 3), 252, dtype=np.uint8)
@@ -543,7 +557,7 @@ class OpticsCanvas(ArrayCanvas):
         if self.mode == "时间孤子":
             return "t（延迟）→", "z ↑"
         if self.process == "孪生光束":
-            return "差值 nₛ − nᵢ →", "计数 ↑"
+            return "采样 →", "信号 / 闲频 / 差值 ↓"
         if self.process == "级联 χ²":
             return "Δk →", "相位 |Δφ| ↑"
         if self.process == "脉冲倍频":
