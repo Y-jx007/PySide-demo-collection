@@ -518,7 +518,9 @@ class OpticsCanvas(ArrayCanvas):
                 idler = n_i[picks][:60]
                 difference = (n_s - n_i)[picks][:60]
                 bands = []
-                shared = max(float(np.max(np.abs(signal))), 1e-9)
+                # 固定色标：0–45 个光子。用样本自己归一化会把“增益变大”这件事
+                # 整幅抵消掉，画面永不变化（就是这个 bug）。
+                shared = 45.0
                 for values in (signal, idler, difference):
                     strip = np.zeros((60, values.size, 3), dtype=float)
                     frac = np.clip(np.abs(values) / shared, 0.0, 1.0)[None, :, None]
