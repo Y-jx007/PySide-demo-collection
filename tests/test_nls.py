@@ -10,7 +10,9 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from support.physics.nls import NLSE, PALETTES, PRESETS, apply_palette, palette_lut  # noqa: E402
+from support.physics.nls import (  # noqa: E402
+    NLSE, PALETTE, PALETTES, PRESETS, apply_palette, palette_lut,
+)
 
 
 class TestPresets(unittest.TestCase):
@@ -100,9 +102,10 @@ class TestSeeding(unittest.TestCase):
 
 class TestPalette(unittest.TestCase):
     def test_palette_lut_shape_and_endpoints(self):
-        table = palette_lut("墨青")
+        table = palette_lut(PALETTE)
         self.assertEqual(table.shape, (256, 3))
-        light, dark = PALETTES["墨青"][0][1], PALETTES["墨青"][-1][1]
+        stops = PALETTES[PALETTE]
+        light, dark = stops[0][1], stops[-1][1]
         np.testing.assert_allclose(table[0].astype(int), light, atol=1)
         np.testing.assert_allclose(table[-1].astype(int), dark, atol=1)
 
@@ -124,7 +127,7 @@ class TestPalette(unittest.TestCase):
     def test_empty_field_falls_back_to_paper(self):
         rgb = apply_palette(np.zeros((8, 8)))
         self.assertEqual(rgb.shape, (8, 8, 3))
-        np.testing.assert_allclose(rgb[0, 0].astype(int), PALETTES["墨青"][0][1], atol=1)
+        np.testing.assert_allclose(rgb[0, 0].astype(int), PALETTES[PALETTE][0][1], atol=1)
 
 
 if __name__ == "__main__":

@@ -16,19 +16,20 @@ from common.qt_base import (
     QVBoxLayout, QWidget, Qt, run_app,
 )
 from common.field_canvas import ArrayCanvas
-from support.physics.nls import NLSE, PALETTES, PRESETS
+from support.physics.nls import NLSE, PALETTE, PRESETS
 
 EQUATION_HTML = (
     '<div style="font-size:13px; color:#1b1b1b;">i&thinsp;∂ψ/∂t = −½∇²ψ − |ψ|²ψ</div>'
-    '<div style="font-size:11px; color:#5c5c5c; margin-top:4px;">'
-    "衍射项 −½∇²ψ 让波包散开，非线性项 −|ψ|²ψ 把亮处越聚越紧；"
-    "功率低时衍射赢（散开），高时自聚焦赢（坍缩）。</div>"
-    '<div style="font-size:11px; color:#1b1b1b; margin-top:6px;">'
-    "饱和：|ψ|² → |ψ|²/(1+|ψ|²/I<sub>s</sub>)</div>"
-    '<div style="font-size:11px; color:#1b1b1b;">'
-    "分步：ψ ← e<sup>iθ/2</sup>ψ → FFT → e<sup>−ik²Δt/2</sup> → IFFT → e<sup>iθ/2</sup></div>"
-    '<div style="font-size:11px; color:#5c5c5c; margin-top:6px;">'
-    "P = ∫|ψ|² dxdy 守恒；θ = Δt·|ψ|²/(1+|ψ|²/I<sub>s</sub>)/2。</div>"
+    '<div style="font-size:10px; color:#4a4a4a; margin-top:5px;">'
+    "非线性光学：强光抬高折射率（Kerr 效应），n = n₀ + n₂I，I ∝ |ψ|²，"
+    "亮处等效势更低——光束等于给自己磨了一枚透镜，越亮越聚。</div>"
+    '<div style="font-size:10px; color:#4a4a4a; margin-top:3px;">'
+    "衍射想摊开、自聚焦想收紧：低于阈值散开，超过阈值坍缩；二维恰是临界维度。</div>"
+    '<div style="font-size:11px; color:#1b1b1b; margin-top:5px;">'
+    "饱和：|ψ|² → |ψ|²/(1 + |ψ|²/I<sub>s</sub>)</div>"
+    '<div style="font-size:10px; color:#5c5c5c; margin-top:2px;">'
+    "两级介质的布居差 ∝ 1/(1+I/I<sub>s</sub>)，故 Δn ∝ I/(1+I/I<sub>s</sub>)："
+    "弱光回到 Kerr，强光封顶，坍缩停在有限尺度。</div>"
 )
 
 EQUATION_TIP = (
@@ -58,7 +59,7 @@ class SolitonCanvas(ArrayCanvas):
         self.window = window
         self.sim = NLSE()
         self.log_view = True
-        self.palette = "墨青"
+        self.palette = PALETTE
 
     def render_frame(self):
         self.set_array(self.sim.render(self.palette, log=self.log_view))
@@ -146,17 +147,12 @@ class MainWindow(LabWindow):
 
         run_box = QGroupBox("演化")
         run_layout = QVBoxLayout(run_box)
-        self.steps_slider = LabeledSlider("每帧步数", 1, 6, 3)
+        self.steps_slider = LabeledSlider("每帧步数", 1, 24, 3)
         run_layout.addWidget(self.steps_slider)
         self.log_check = QCheckBox("对数强度")
         self.log_check.setChecked(True)
         self.log_check.toggled.connect(self.on_log)
         run_layout.addWidget(self.log_check)
-        self.palette_combo = QComboBox()
-        self.palette_combo.addItems(list(PALETTES.keys()))
-        self.palette_combo.setCurrentText("墨青")
-        self.palette_combo.currentTextChanged.connect(self.on_palette)
-        run_layout.addWidget(self.palette_combo)
         column.addWidget(run_box)
 
         read_box = QGroupBox("读数")
@@ -208,10 +204,6 @@ class MainWindow(LabWindow):
 
     def on_log(self, checked):
         self.canvas.log_view = bool(checked)
-        self.canvas.render_frame()
-
-    def on_palette(self, name):
-        self.canvas.palette = name
         self.canvas.render_frame()
 
     def soft_reset(self):

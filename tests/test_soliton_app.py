@@ -68,7 +68,9 @@ class TestSolitonWindow(unittest.TestCase):
         text = self.window.equation_label.text()
         self.assertIn("∇²ψ", text)
         self.assertIn("|ψ|²", text)
-        self.assertIn("FFT", text)
+        self.assertIn("Kerr", text)
+        self.assertIn("饱和", text)
+        self.assertEqual(text.count("<div"), text.count("</div>"))
         self.assertTrue(self.window.equation_label.toolTip())
 
     def test_readout_shows_numbers(self):

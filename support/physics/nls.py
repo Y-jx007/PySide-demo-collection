@@ -16,21 +16,17 @@ from __future__ import annotations
 
 import numpy as np
 
-# 单一色相、从浅到深的纸感色阶，和 Connection 的取色方式一致
+# 只有一个色阶：激光本身的颜色（532 nm 的绿光），从纸白到深绿。
+# 强度越高越深，和 Connection 的纸感取色一致。
+PALETTE = "绿光"
 PALETTES = {
-    "墨青": (
-        (0.00, (250, 248, 242)),
-        (0.18, (208, 224, 226)),
-        (0.42, (126, 178, 186)),
-        (0.68, (48, 112, 130)),
-        (1.00, (12, 32, 44)),
-    ),
-    "赭石": (
-        (0.00, (252, 249, 243)),
-        (0.20, (236, 222, 196)),
-        (0.45, (206, 158, 96)),
-        (0.70, (150, 84, 42)),
-        (1.00, (44, 22, 12)),
+    PALETTE: (
+        (0.00, (250, 250, 244)),
+        (0.16, (214, 236, 204)),
+        (0.40, (138, 205, 140)),
+        (0.66, (52, 158, 96)),
+        (0.86, (16, 104, 62)),
+        (1.00, (6, 46, 28)),
     ),
 }
 
@@ -40,11 +36,11 @@ PRESETS = ("单束", "涡旋", "双束", "噪声海")
 _LUTS = {}
 
 
-def palette_lut(palette="墨青"):
+def palette_lut(palette=PALETTE):
     """256-entry RGB lookup table for a palette (built once per palette)."""
     table = _LUTS.get(palette)
     if table is None:
-        stops = PALETTES.get(palette, PALETTES["墨青"])
+        stops = PALETTES.get(palette, PALETTES[PALETTE])
         positions = np.array([p for p, _ in stops], dtype=float)
         colours = np.array([c for _, c in stops], dtype=float) / 255.0
         ramp = np.linspace(0.0, 1.0, 256)
@@ -57,7 +53,7 @@ def palette_lut(palette="墨青"):
     return table
 
 
-def apply_palette(values, palette="墨青", log=False, gamma=0.7, percentile=99.5):
+def apply_palette(values, palette=PALETTE, log=False, gamma=0.7, percentile=99.5):
     """Map a non-negative field to uint8 RGB through a paper-ish ramp.
 
     Scaling uses a high percentile rather than the maximum: a collapsing
@@ -198,5 +194,5 @@ class NLSE:
         r2 = self.X ** 2 + self.Y ** 2
         return float(np.sqrt(np.sum(intensity * r2) / total))
 
-    def render(self, palette="墨青", log=True):
+    def render(self, palette=PALETTE, log=True):
         return apply_palette(self.intensity(), palette=palette, log=log)
