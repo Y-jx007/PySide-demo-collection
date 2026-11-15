@@ -6,7 +6,7 @@ on:
 
 jobs:
   static:
-    name: syntax + manifest
+    name: syntax + generated registry
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,17 +14,22 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile all Python files
-        run: python -m compileall -q main.py app_runner.py apps_manifest.py manifest_edit.py apps common support tests
+        run: python -m compileall -q main.py launcher_widgets.py app_runner.py apps_manifest.py manifest_edit.py apps common support tests tools
+      - name: Check generated layout and matrix
+        run: python tools/sync_registry.py --check
       - name: Manifest tests (stdlib only)
         run: python -m unittest discover -s tests -p "test_manifest.py" -v
 
-  smoke:
-    name: import smoke test
+  windows:
+    name: Windows offscreen UI + full tests
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      MPLBACKEND: Agg
+      RUN_WINDOW_SMOKE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +38,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6 taichi-forge==0.4.1 numpy pillow matplotlib PyOpenGL numba mpmath scipy cplot sounddevice
-      - name: Run tests
+          python -m pip install -r requirements.txt
+      - name: Check generated layout and matrix
+        run: python tools/sync_registry.py --check
+      - name: UI structure checks
+        run: |
+          python tools/check_ui_style.py apps/Math/Quasicrystal.py
+          python tools/check_ui_style.py apps/Physics/Mass-Spring.py
+          python tools/check_ui_style.py "apps/Cellular Automata/Particle Lenia.py"
+          python tools/check_ui_style.py "apps/Cellular Automata/Distill.py"
+          python tools/check_ui_style.py apps/Unpolished/MPM2D.py
+      - name: Full tests
         run: python -m unittest discover -s tests -v

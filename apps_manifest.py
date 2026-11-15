@@ -7,6 +7,9 @@ the standard library.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 # Category display order.  Unknown categories are appended alphabetically.
 CATEGORY_ORDER = ["Math", "Physics", "Fractals", "Cellular Automata", "Unpolished"]
 
@@ -60,6 +63,13 @@ APPS = [
         "description": "三维奇异吸引子可视化",
         "path": "Math/Lorenz.py",
         "friendly": "洛伦兹吸引子",
+        "category": "Math",
+    },
+    {
+        "title": "Connection",
+        "description": "在曲面上平滑拖动测地点，观察协变导数、场长起伏与 holonomy",
+        "path": "Math/Connection.py",
+        "friendly": "联络与协变导数",
         "category": "Math",
     },
     {
@@ -193,13 +203,6 @@ APPS = [
         "category": "Cellular Automata",
     },
     {
-        "title": "Greenberg-Hastings",
-        "description": "激发介质元胞自动机：螺旋波、靶波与不应期",
-        "path": "Unpolished/Greenberg-Hastings.py",
-        "friendly": "激发介质",
-        "category": "Unpolished",
-    },
-    {
         "title": "Distill",
         "description": "神经网络元胞自动机",
         "path": "Cellular Automata/Distill.py",
@@ -231,37 +234,105 @@ APPS = [
     },
     {
         "title": "MPM2D",
-        "description": "2D MPM 材料：固体 / 雪 / 液体三种本构，照 taichi_elements 实现",
+        "description": "2D MLS-MPM 材料：固体 / 雪 / 液体 / 沙子，白底实验室界面",
         "path": "Unpolished/MPM2D.py",
         "friendly": "MPM 材料",
         "category": "Unpolished",
     },
     {
-        "title": "2D Qusicrystal",
-        "description": "二维准晶衍射图样",
-        "path": "Unpolished/2D Qusicrystal.py",
+        "title": "Quasicrystal",
+        "description": "二维准晶：平面波实空间 + 傅里叶衍射",
+        "path": "Math/Quasicrystal.py",
         "friendly": "二维准晶",
-        "category": "Unpolished",
+        "category": "Math",
     },
     {
         "title": "Mass Spring",
-        "description": "质点-弹簧系统",
-        "path": "Unpolished/Mass Spring.py",
+        "description": "质点-弹簧网络：重力、阻尼与交互",
+        "path": "Physics/Mass-Spring.py",
         "friendly": "质点弹簧系统",
-        "category": "Unpolished",
+        "category": "Physics",
     },
     {
         "title": "Particle Lenia",
-        "description": "粒子化 Lenia",
+        "description": "粒子化 Lenia：两级环核 + 短程排斥",
         "path": "Cellular Automata/Particle Lenia.py",
         "friendly": "粒子化Lenia",
-        "category": "Unpolished",
+        "category": "Cellular Automata",
     },
     {
         "title": "KAM",
-        "description": "KAM 环面与标准映射",
+        "description": "Taichi 实时标准映射 + 行星轨道 + 太阳–木星 CRTBP Poincaré 截面",
         "path": "Physics/KAM.py",
         "friendly": "KAM环面",
         "category": "Unpolished",
     },
 ]
+
+
+def thumbnail_name(module_path):
+    """Canonical launcher cover name for an app path."""
+    return Path(str(module_path)).stem + ".png"
+
+
+def thumbnail_path(module_path, root=None):
+    base = Path(root) if root else Path(__file__).resolve().parent
+    return base / "assets" / "thumbnails" / thumbnail_name(module_path)
+
+
+def build_launcher_layout():
+    """Fallback layout for a fresh install.
+
+    Once runtime/launcher_layout.json exists it is user-owned; dragging cards
+    is authoritative and sync tools must not rewrite their order.
+    """
+    categories = []
+    seen = set()
+    for category in CATEGORY_ORDER:
+        paths = [app["path"] for app in APPS if app["category"] == category]
+        if paths:
+            categories.append({"name": category, "apps": paths})
+            seen.add(category)
+    for category in sorted({app["category"] for app in APPS} - seen):
+        paths = [app["path"] for app in APPS if app["category"] == category]
+        categories.append({"name": category, "apps": paths})
+    return {"version": 1, "categories": categories}
+
+
+def app_matrix_markdown():
+    """Generate docs/APP_MATRIX.md from the same registry."""
+    lines = [
+        "# 应用矩阵",
+        "",
+        "> 此文件由 python tools/sync_registry.py 从 apps_manifest.py 自动生成，请勿手改。",
+        "",
+        "| 应用 | 分类 | 路径 | 说明 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for app in APPS:
+        title = str(app["title"]).replace("|", "\\|")
+        description = str(app["description"]).replace("|", "\\|")
+        lines.append(
+            f"| **{title}** | {app['category']} | {app['path']} | {description} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def generated_payloads(root=None):
+    base = Path(root) if root else Path(__file__).resolve().parent
+    matrix_path = base / "docs" / "APP_MATRIX.md"
+    return {matrix_path: app_matrix_markdown()}
+
+
+def write_generated(root=None):
+    """Regenerate the docs matrix; the user-owned layout is never rewritten."""
+    changed = []
+    for path, content in generated_payloads(root).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        old = path.read_text(encoding="utf-8") if path.exists() else None
+        if old != content:
+            path.write_text(content, encoding="utf-8")
+            changed.append(path)
+    return changed
+

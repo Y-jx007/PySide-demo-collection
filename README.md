@@ -19,6 +19,8 @@
 | **Traveler** | 遗传算法求解旅行商问题 |
 | **Lorenz** | 三维洛伦兹吸引子可视化 |
 | **Stigmergy** | 间接通信（stigmergy）两种模型：**黏菌**用三向嗅探 + 信息素沉积自发形成静脉状输运网络；**蚁群**有巢穴与食物，蚂蚁在觅食/返程两态间切换，沿途留下两种信息素，最终收敛出通往食物的蚁道。左键拖拽投放食物、右键擦除，Shift+左键设置蚁巢 |
+| **Quasicrystal** | 二维准晶：平面波实空间 + 傅里叶衍射（7 重 / 14 个一级峰），支持对数强度与衍射缩放 |
+| **Connection** | 曲面上的联络：平滑跟随的测地点、可固定的基点、随位置连续变化的向量场长度、协变导数 ∇u v 与回到基点的 holonomy；曲面由 GPU 渲染，画布其余部分仍用 QPainter |
 
 ### Physics
 
@@ -31,6 +33,7 @@
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
 | **Bremsstrahlung** | 变速圆周电子：真实推迟 Liénard-Wiechert 辐射场，按加速度平行/垂直分量显示轫致（红）与同步（蓝），远场 FFT 频谱加色叠加 |
+| **Mass Spring** | 质点-弹簧网络：重力、阻尼、固定点与鼠标交互，悬索桥 / 网 / 链 / 随机四种预设 |
 
 ### Fractals
 
@@ -49,9 +52,9 @@
 |------|------|
 | **Lenia** | 连续元胞自动机，参考 [Lenia](https://chakazul.github.io/Lenia/JavaScript/Lenia.html) |
 | **Conway** | 生命游戏，14 个经典预设（滑翔机枪、脉冲星等）、残影轨迹、滚轮缩放 |
-| **Greenberg-Hastings** | 激发介质元胞自动机：静息/激发/不应期三态，支持螺旋波、靶波、随机激发和点击刺激；正方形格点的 Moore 邻域会形成方形波前 |
 | **Distill** | 神经网络元胞自动机，参考 [Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)，需要 PyTorch |
 | **Snowflake** | Reiter 雪花生长模型，六重对称枝晶，参考 [Reiter 2005](http://www.patarnott.com/pdf/SnowCrystalGrowth.pdf) |
+| **Particle Lenia** | 粒子化 Lenia：两级环核 + 短程排斥 + 惯性，圆盘 / 环 / 链 / 随机四种初始；参考 [Particle Lenia](https://znah.net/lenia/) |
 
 ### Unpolished（未打磨）
 
@@ -60,12 +63,9 @@
 | **Circulation** | 全球环流：合成模式用解析气压 + 地转风 + ETOPO1 地形；真实模式用 NCEP/NCAR 2015–2024 月平均 10 m 风，可看月均、月际 Δ 与十年趋势 |
 | **Erosion** | 小尺度平面泥地；两层土壤水（入渗/径流/下渗/蒸散）+ Voronoi 多边形 cohesive 网络干裂，黏粒/气温/湿度/风速/韧性可调 |
 | **Caustic** | 焦散/光线折射模拟 |
-| **MPM2D** | 2D MLS-MPM 材料演示：固体（弹性）/ 雪（塑性）/ 液体（J 驱动压力），本构与参数照 taichi_elements 的 mpm_solver；鼠标可倾倒材料 |
+| **MPM2D** | 2D MLS-MPM 材料演示：固体（弹性）/ 雪（塑性）/ 液体（J 驱动压力）/ 沙子，鼠标可倾倒材料；白底 960×640 实验室界面 |
 | **Noise** | 环境噪声：A 计权声级、L10/L50/L90、1/f 斜率、小时/长期历史（需要 sounddevice + matplotlib） |
-| **2D Qusicrystal** | 二维准晶衍射图样 |
-| **Mass Spring** | 质点-弹簧系统 |
-| **Particle Lenia** | 粒子化 Lenia |
-| **KAM** | KAM 环面与标准映射 |
+| **KAM** | 标准映射频率图 + 行星轨道 + 太阳–木星 CRTBP Poincaré 截面：Taichi GPU 并行实时计算，拖动 K 全分辨率刷新；行星轨道用 J2000 轨道要素与真实进动速率（时间加速）；截面来自真实三体积分，显示 KAM 环面、岛链与混沌海 |
 
 ## Noise
 
@@ -101,7 +101,7 @@ pip install -r requirements-distill.txt
 python main.py
 ```
 
-主界面支持直接拖动卡片调整顺序和分类：跨分类拖动时，应用文件会一起挪到 `apps/<新分类>/`，
+主界面左侧分类按“胶卷”排列：左键拖动任意胶片可横向滑动，右键拖动卡片调整顺序和分类。跨分类拖动时，应用文件会一起挪到 `apps/<新分类>/`，
 并同步改写 `apps_manifest.py` 里的 `path` / `category`（应用正在运行或目标处有同名文件时会拒绝这次拖动）。
 卡片顺序与所在分类保存在 `runtime/launcher_layout.json`（已加入 `.gitignore`）。
 
@@ -151,20 +151,20 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 │   ├── dynamic_fractal.py   # 分形画布基类 + 视图坐标变换
 │   └── reaction_diffusion.py# 反应扩散基类
 ├── apps/                    # 只放应用入口（清单里的每个条目一个 .py）
-│   ├── Math/                # Arnold / Cplot / Fourier / Lloyd / Lorenz / Stigmergy / Traveler
-│   ├── Physics/             # Beam / Bremsstrahlung / Ising / KAM / Maxwell / Navier-Stokes /
-│   │                        #   Noise / Schrödinger / Turing
+│   ├── Math/                # Arnold / Connection / Cplot / Fourier / Lloyd / Lorenz /
+│   │                        #   Quasicrystal / Stigmergy / Traveler
+│   ├── Physics/             # Beam / Bremsstrahlung / Ising / KAM / Mass-Spring / Maxwell /
+│   │                        #   Navier-Stokes / Noise / Schrödinger / Turing
 │   ├── Fractals/            # IFS / Lindenmayer / Logistic / Mandelbrot / Newton /
 │   │                        #   Quaternion Julia / Snowflake
-│   ├── Cellular Automata/   # Conway / Distill / Greenberg-Hastings / Lenia / Particle Lenia
-│   └── Unpolished/          # 2D Qusicrystal / Caustic / Circulation / Erosion / MPM2D /
-│                            #   Greenberg-Hastings / Mass Spring
+│   ├── Cellular Automata/   # Conway / Distill / Lenia / Particle Lenia
+│   └── Unpolished/          # Caustic / Circulation / Erosion / MPM2D
 ├── support/                 # 应用专用支撑模块（按分类分目录，供 app 与测试导入）
-│   ├── physics/             # circulation_data / lienard_wiechert / lw_taichi /
+│   ├── physics/             # circulation_data / kam_crtbp / kam_standard_map / kam_taichi / mass_spring /
+│   │                        #   particle_lenia / quasicrystal / solar_system_orbits / lienard_wiechert / lw_taichi /
 │   │                        #   noise_dsp / noise_history / soil_water
-│   ├── math/                # cplot_parallel / cplot_fast_contour
-│   ├── fractals/            # fractal_common（双画布窗口、轨道叠加）/ fractal_kernels
-│   └── cellular_automata/   # greenberg_hastings_model
+│   ├── math/                # connection / cplot_parallel / cplot_fast_contour
+│   └── fractals/            # fractal_common（双画布窗口、轨道叠加）/ fractal_kernels
 ├── assets/                  # 资源目录（应用启动时读取；Lenia 保存预设会回写 data/）
 │   ├── data/                # worldelev / wind_real / worldmask / czm_* / lenia_presets
 │   ├── presets/             # turing/fk_map.png、snowflake_alpha/、snowflake_terrain/
@@ -179,17 +179,23 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 └── pyproject.toml
 ```
 
+## UI 规范
+
+新增或重构应用必须遵循 [docs/UI_GUIDELINES.md](docs/UI_GUIDELINES.md)：960×640 最小窗口、330 左侧分组面板、600×600 白色无边框画布、无左栏标题/副标题/图标、520×520 纯图像封面。样板应用为 Quasicrystal、Mass-Spring、Particle Lenia。**双视图应用**（两张并列图像，如 Distill）是明确例外：标记 `UI_LAYOUT = "two_view"`，控制区放在顶部，使用宽幅双画布，不套 330 左栏/600 方画布，推荐 1040×740、最小 1000×700；两个预览各加 2px 中性色边框，像素网格用最近邻放大（SmoothPixmapTransform=False）。提交前可运行 `python tools/check_ui_style.py apps/<分类>/<应用>.py`，测试会检查样板应用的结构与封面。
+
+卡片顺序和分类以启动器拖动后的 `runtime/launcher_layout.json` 为准，源文件位置跟随卡片；`python tools/sync_registry.py` 只更新 [docs/APP_MATRIX.md](docs/APP_MATRIX.md)，**不会覆盖你的布局**。CI 在 Windows 上以 offscreen Qt 运行注册表检查、UI 检查、视觉回归、headless smoke 和全量测试。
+
 ## 公共组件（common/）
 
 各 app 原先都在自己文件里重写同一批样板代码，现已抽到 common/ 下。
-Math 7 个、Physics 13 个、Fractals 6 个、Cellular Automata 6 个应用都已改用统一的
-`run_app` 入口（`Mass Spring.py` 用的是 Taichi 自带 GUI，不涉及 PySide）。
+Math 9 个、Physics 8 个、Unpolished 6 个、Fractals 7 个、Cellular Automata 4 个应用都已改用统一的
+`run_app` 入口；Mass Spring 也改为 PySide 画布 + Taichi 内核，统一左侧 330px 分组面板 + 右侧 600px 白色画布 + 状态栏。
 画布层也统一了：matplotlib 画布（`MplCanvas`）覆盖 Fourier / Cplot / Noise / Lenia 核预览，
-numpy 图像画布（`ArrayCanvas`）覆盖 Erosion / MPM2D / Circulation / Conway / Snowflake /
-Greenberg-Hastings。其余替换按需推进（`ndarray_to_qimage` 覆盖 Erosion / MPM2D /
+numpy 图像画布（`ArrayCanvas`）覆盖 Erosion / Circulation / Conway / Snowflake。
+其余替换按需推进（`ndarray_to_qimage` 覆盖 Erosion /
 Bremsstrahlung / Caustic / Circulation；`LabeledSlider` 覆盖 Beam / Erosion / Schrödinger /
-MPM2D / Bremsstrahlung / Navier-Stokes / KAM / Noise / Circulation / Quaternion Julia /
-Conway / Snowflake / Greenberg-Hastings / Particle Lenia / Distill，共 60 余个滑块；
+Bremsstrahlung / Navier-Stokes / KAM / Noise / Circulation / Quaternion Julia /
+Conway / Snowflake / Particle Lenia / Distill，共 60 余个滑块；
 `FPSCounter` 覆盖 Erosion / Schrödinger / Conway，`StoppableThread` 覆盖 KAM / Distill）：
 
 | 组件 | 位置 | 替代掉的重复代码 |
@@ -204,7 +210,8 @@ Conway / Snowflake / Greenberg-Hastings / Particle Lenia / Distill，共 60 余�
 | `StoppableThread` | `common/workers.py` | CatMapWorker / TSPWorker 各自维护的 stop 标志与收尾 |
 | `FPSCounter` | `common/utils.py` | Stigmergy 手写的帧率统计 |
 | `MplCanvas` | `common/mpl_canvas.py` | Fourier / Cplot / Noise / Lenia 各自的 Figure + FigureCanvas（Cplot 的 Gcf 登记） |
-| `ArrayCanvas` | `common/field_canvas.py` | Erosion / MPM2D / Circulation / Conway / Snowflake / Greenberg-Hastings 的居中绘制与鼠标坐标换算 |
+| `ArrayCanvas` | `common/field_canvas.py` | Erosion / Circulation / Conway / Snowflake 的居中绘制与鼠标坐标换算 |
+| `LabWindow` / `SquareCanvas` | `common/lab_window.py` | 960×640 窗口、600×600 白底画布、保存画布的统一样板 |
 
 新的 app 只需要两行入口：
 
