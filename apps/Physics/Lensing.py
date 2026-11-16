@@ -497,7 +497,7 @@ class MainWindow(LabWindow):
             return
         if not self.disk_check.isChecked():
             return
-        self._time += 0.26
+        self._time += 0.05
         self._schedule_render(delay=0)
 
     def _toggle_pause(self):
