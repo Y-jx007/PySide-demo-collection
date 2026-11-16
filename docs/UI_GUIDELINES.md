@@ -182,6 +182,6 @@ python tools/check_ui_style.py apps/Math/Quasicrystal.py
 - 角度在拖动期间保持浮点，不要每像素取整；滑杆只显示四舍五入值。这样垂直拖动不会按 1° 跳变。
 - 相机始终 lookAt(target)，不加 roll；不要同时让自动环绕和鼠标抢方向。如果需要自动环绕，默认关闭，并在开始手动拖动时立即停用。
 - 滚轮缩放改变视场/距离，不改变目标点；重置回到默认机位。
-- 拖动预览可以**降分辨率**，但不要大幅降积分步数：Kerr Lensing 在 600 px 下使用步长约 0.02 M、至少 800 步，否则近临界光线没有足够的绕行，会在阴影外形成一圈伪暗环。
+- 拖动预览可以**降分辨率**，但不要大幅降积分步数：Kerr–Newman Lensing 在 600 px 下使用步长约 0.02 M、至少 800 步，否则近临界光线没有足够的绕行，会在阴影外形成一圈伪暗环。
 - 参考代码：support/physics/lensing.py 的 orbit_step() 是可复用的 yaw/极角更新；common/gpu_surface.py 的 Camera3D 是投影/反投影的样板。
 

@@ -21,7 +21,7 @@
 | **Snowflake** | Fractals | Fractals/Snowflake.py | Reiter 雪花生长模型，六重对称枝晶 |
 | **Beam** | Physics | Physics/Beam.py | 横梁承重：有限元算弯曲应力，超强度即断裂 |
 | **Bremsstrahlung** | Physics | Physics/Bremsstrahlung.py | 推迟 Liénard-Wiechert 场：轫致分量（红）与同步分量（蓝） |
-| **Kerr Lensing** | Physics | Physics/Lensing.py | Kerr 零测地线逐像素 RK4：自旋可调、参考系拖曳、光子环与吸积盘多普勒增亮 |
+| **Kerr–Newman Lensing** | Physics | Physics/Lensing.py | Kerr–Newman 零测地线逐像素 RK4：自旋与电荷可调、参考系拖曳、D 形阴影与吸积盘多普勒增亮 |
 | **Ising** | Physics | Physics/Ising.py | 模拟二维伊辛模型 |
 | **Maxwell** | Physics | Physics/Maxwell.py | 模拟气体分子速率分布 |
 | **Navier-Stokes** | Physics | Physics/Navier-Stokes.py | 2D Q9 格子 Boltzmann 模拟卡门涡街 |

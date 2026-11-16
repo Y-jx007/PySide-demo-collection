@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Lensing: Schwarzschild null-geodesic ray tracing with an accretion disk.
+"""Kerr-Newman null-geodesic ray tracing with an accretion disk.
 
 Every canvas pixel is integrated backwards along an exact null geodesic.
-The Taichi kernel uses classical RK4 on the Cartesian form of the Binet
-equation u'' + u = 3 M u^2 (u = 1/r), then shades a thin Keplerian disk with
-Doppler beaming (g^4) and a Planck colour shift.  Without the disk the same
-kernel renders the lensed star field: the photon ring, the Einstein ring and
-the shadow edge at b = 3 sqrt(3) M emerge directly from the integration.
+The Taichi kernel uses classical RK4 on the separated Kerr-Newman equations
+in Boyer-Lindquist coordinates, so spin a/M and charge Q/M both change the
+horizon, ergosphere, photon ring and D-shaped shadow.  The disk is a neutral
+thin Keplerian disk with Doppler beaming (g^4) and a Planck colour shift.
 
 This page intentionally uses a dark canvas: the contrast of the shadow, the
 photon ring and the star field is the subject of the app, not a dark theme.
 """
+import math
 import time
 
 import numpy as np
@@ -31,7 +31,7 @@ from support.physics.lensing import (
     orbit_step, taichi_available, taichi_backend_name,
 )
 
-APP_TITLE = "Kerr · 旋转黑洞光线追踪"
+APP_TITLE = "Kerr–Newman · 带电旋转黑洞光线追踪"
 
 # The UI contract asks for this token; the actual white window is painted by
 # QPalette below so no stylesheet reaches the QCheckBox widgets.
@@ -59,31 +59,31 @@ PRESETS = {
         distance=46, inclination=84, fov=32, disk_on=True,
         r_in=6, r_out=13, peak_temperature=5000, opacity=45,
         exposure=130, star_gain=150, disk_gain=22, doppler=True,
-        spin=80, quality=1,
+        spin=75, charge=45, quality=1,
     ),
     "纯星场": dict(
         distance=36, inclination=65, fov=46, disk_on=False,
         r_in=6, r_out=13, peak_temperature=6500, opacity=70,
         exposure=155, star_gain=125, disk_gain=13, doppler=True,
-        spin=80, quality=1,
+        spin=75, charge=45, quality=1,
     ),
     "正面": dict(
         distance=44, inclination=18, fov=34, disk_on=True,
         r_in=6, r_out=14, peak_temperature=6000, opacity=55,
         exposure=125, star_gain=140, disk_gain=24, doppler=True,
-        spin=90, quality=1,
+        spin=90, charge=30, quality=1,
     ),
     "侧视": dict(
         distance=50, inclination=87, fov=28, disk_on=True,
         r_in=6, r_out=14, peak_temperature=5500, opacity=80,
         exposure=120, star_gain=140, disk_gain=20, doppler=True,
-        spin=70, quality=1,
+        spin=70, charge=50, quality=1,
     ),
     "光子环": dict(
         distance=34, inclination=80, fov=24, disk_on=True,
         r_in=6, r_out=14, peak_temperature=8000, opacity=55,
         exposure=105, star_gain=0, disk_gain=26, doppler=True,
-        spin=95, quality=1,
+        spin=90, charge=40, quality=1,
     ),
 }
 
@@ -207,12 +207,12 @@ class MainWindow(LabWindow):
         self._white_background(panel)
         column = QVBoxLayout(panel)
         column.setContentsMargins(2, 2, 4, 4)
-        column.setSpacing(6)
+        column.setSpacing(3)
 
         scene = QGroupBox("场景")
         scene_layout = QVBoxLayout(scene)
-        scene_layout.setContentsMargins(6, 6, 6, 6)
-        scene_layout.setSpacing(5)
+        scene_layout.setContentsMargins(4, 4, 4, 4)
+        scene_layout.setSpacing(3)
         preset_row = QHBoxLayout()
         preset_row.setSpacing(5)
         preset_row.addWidget(QLabel("预设"))
@@ -236,27 +236,37 @@ class MainWindow(LabWindow):
         scene_layout.addLayout(quality_row)
         column.addWidget(scene)
 
-        blackhole = QGroupBox("黑洞")
+        self.blackhole_group = QGroupBox("黑洞")
+        blackhole = self.blackhole_group
         blackhole_layout = QVBoxLayout(blackhole)
-        blackhole_layout.setContentsMargins(6, 6, 6, 6)
-        blackhole_layout.setSpacing(4)
+        blackhole_layout.setContentsMargins(4, 4, 4, 4)
+        blackhole_layout.setSpacing(2)
         self.spin_slider = LabeledSlider(
-            "自旋 a", 0, 99, 80,
+            "自旋 a", 0, 99, 75,
             formatter=lambda v: f"{v / 100:.2f}",
             label_width=52, value_width=44,
         )
-        self.spin_slider.setToolTip("Kerr 自旋 a/M；0 为史瓦西，0.99 为近极限黑洞。")
+        self.spin_slider.setToolTip(
+            "Kerr–Newman 自旋 a/M；0 为带电球对称，0.99 为近极限黑洞。"
+        )
         self.spin_slider.valueChanged.connect(self._on_spin)
         blackhole_layout.addWidget(self.spin_slider)
-        self.spin_info = QLabel("")
-        self.spin_info.setStyleSheet("color: #6b7280; font-size: 9px;")
-        blackhole_layout.addWidget(self.spin_info)
+        self.charge_slider = LabeledSlider(
+            "电荷 Q", 0, 99, 45,
+            formatter=lambda v: f"{v / 100:.2f}",
+            label_width=52, value_width=44,
+        )
+        self.charge_slider.setToolTip(
+            "电荷 Q/M；要求 a²+Q²<1，界面会自动压低电荷上限。"
+        )
+        self.charge_slider.valueChanged.connect(self._on_charge)
+        blackhole_layout.addWidget(self.charge_slider)
         column.addWidget(blackhole)
 
         observer = QGroupBox("观测者")
         observer_layout = QVBoxLayout(observer)
-        observer_layout.setContentsMargins(6, 6, 6, 6)
-        observer_layout.setSpacing(5)
+        observer_layout.setContentsMargins(4, 4, 4, 4)
+        observer_layout.setSpacing(3)
         self.distance_slider = LabeledSlider(
             "距离", 12, 120, 46, formatter=lambda v: f"{v} M",
             label_width=52, value_width=44,
@@ -279,8 +289,8 @@ class MainWindow(LabWindow):
 
         disk = QGroupBox("吸积盘")
         disk_layout = QVBoxLayout(disk)
-        disk_layout.setContentsMargins(6, 6, 6, 6)
-        disk_layout.setSpacing(5)
+        disk_layout.setContentsMargins(4, 4, 4, 4)
+        disk_layout.setSpacing(3)
         self.disk_check = QCheckBox("显示吸积盘")
         self.disk_check.setChecked(True)
         self.disk_check.toggled.connect(self._on_disk_toggle)
@@ -314,8 +324,8 @@ class MainWindow(LabWindow):
 
         display = QGroupBox("显影")
         display_layout = QVBoxLayout(display)
-        display_layout.setContentsMargins(6, 6, 6, 6)
-        display_layout.setSpacing(5)
+        display_layout.setContentsMargins(4, 4, 4, 4)
+        display_layout.setSpacing(3)
         self.exposure_slider = LabeledSlider(
             "曝光", 20, 250, 130, formatter=lambda v: f"{v / 100:.2f}×",
             label_width=52, value_width=48,
@@ -335,8 +345,8 @@ class MainWindow(LabWindow):
 
         control = QGroupBox("控制")
         control_layout = QHBoxLayout(control)
-        control_layout.setContentsMargins(6, 6, 6, 6)
-        control_layout.setSpacing(4)
+        control_layout.setContentsMargins(4, 4, 4, 4)
+        control_layout.setSpacing(3)
         self.pause_btn = QPushButton("暂停")
         self.reset_btn = QPushButton("重置")
         self.save_btn = QPushButton("保存")
@@ -412,6 +422,7 @@ class MainWindow(LabWindow):
             azimuth=float(self._azimuth),
             fov=float(self.fov_slider.value()),
             spin=float(self.spin_slider.value()) / 100.0,
+            charge=float(self.charge_slider.value()) / 100.0,
             disk_on=bool(self.disk_check.isChecked()),
             r_in=r_in, r_out=r_out,
             peak_temperature=float(self.temp_slider.value()),
@@ -473,8 +484,10 @@ class MainWindow(LabWindow):
             timing = f"{self._render_ms:.1f} ms"
         tag = "预览 · " if name and name.endswith("预览") else ""
         spin = self.spin_slider.value() / 100.0
+        charge = self.charge_slider.value() / 100.0
         self.params_label.setText(
-            f"{tag}a {spin:.2f} · {mode} · {width}² · {steps} 步 · {timing}"
+            f"{tag}a {spin:.2f} Q {charge:.2f} · {mode} · {width}² · "
+            f"{steps} 步 · {timing}"
         )
 
     # ------------------------------------------------------------ animation
@@ -498,15 +511,35 @@ class MainWindow(LabWindow):
         self._inclination = float(value)
         self._on_parameter()
 
+    def _charge_limit(self):
+        a = float(self.spin_slider.value()) / 100.0
+        return int(math.floor(math.sqrt(max(0.0, 0.998 ** 2 - a * a)) * 100.0))
+
+    def _clamp_charge(self):
+        limit = self._charge_limit()
+        if self.charge_slider.value() > limit:
+            was_applying = self._applying
+            self._applying = True
+            self.charge_slider.setValue(limit)
+            self._applying = was_applying
+
     def _on_spin(self, value):
+        self._clamp_charge()
+        self._update_spin_info()
+        if not self._applying:
+            self._schedule_render()
+
+    def _on_charge(self, value):
+        self._clamp_charge()
         self._update_spin_info()
         if not self._applying:
             self._schedule_render()
 
     def _update_spin_info(self):
         a = float(self.spin_slider.value()) / 100.0
-        self.spin_info.setText(
-            f"r+ {kerr_horizon(a):.2f} M · ISCO {kerr_isco(a):.2f} M · 顺行盘"
+        q = float(self.charge_slider.value()) / 100.0
+        self.blackhole_group.setTitle(
+            f"黑洞 · r+ {kerr_horizon(a, q):.2f} M · ISCO {kerr_isco(a, q):.2f} M"
         )
 
     def _on_parameter(self, *args):
@@ -583,6 +616,7 @@ class MainWindow(LabWindow):
             self.doppler_check.setChecked(bool(preset["doppler"]))
             self.quality_combo.setCurrentIndex(int(preset["quality"]))
             self.spin_slider.setValue(int(preset["spin"]))
+            self.charge_slider.setValue(int(preset["charge"]))
             self._time = 0.0
             self._azimuth = 0.0
             self._disk_enabled = bool(preset["disk_on"])

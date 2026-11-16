@@ -149,10 +149,10 @@ APPS = [
         "category": "Physics",
     },
     {
-        "title": "Kerr Lensing",
-        "description": "Kerr 零测地线逐像素 RK4：自旋可调、参考系拖曳、光子环与吸积盘多普勒增亮",
+        "title": "Kerr–Newman Lensing",
+        "description": "Kerr–Newman 零测地线逐像素 RK4：自旋与电荷可调、参考系拖曳、D 形阴影与吸积盘多普勒增亮",
         "path": "Physics/Lensing.py",
-        "friendly": "Kerr旋转黑洞",
+        "friendly": "Kerr–Newman黑洞",
         "category": "Physics",
     },
     {
