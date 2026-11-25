@@ -1,0 +1,580 @@
+# -*- coding: utf-8 -*-
+"""Jones knot invariant explorer.
+
+A knot is entered by name (Rolfsen label, English/Chinese alias or T(p, q)).
+From that name the app reads a braid word and then *generates* everything:
+
+* the closed braid is swept into a hemp tube (no per-knot curve is stored);
+* the Jones polynomial comes from a Temperley-Lieb state sum over the braid;
+* determinant = |V(-1)|, Alexander from the catalogue / torus formula.
+
+The Kauffman bracket helpers below (PD code based) are kept as an independent
+cross-check used by the tests.
+"""
+from collections import defaultdict
+from fractions import Fraction
+import math
+import numpy as np
+
+from common.free_camera import FreeCamera
+from common.lab_window import LabWindow
+from common.shader_canvas import ShaderMeshCanvas
+from common.qt_base import (
+    QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
+    LabeledSlider, QVBoxLayout, QWidget, Qt, run_app,
+)
+from support.math.knots import (
+    KnotError, braid_curves, braid_permutation, catalogue_names,
+    determinant_from_jones, jones_from_braid, mirror_jones, resolve, writhe_of,
+)
+
+# Knot Atlas PD codes.  Crossing order is X[a,b,c,d].
+TREFOIL_PD = ((1, 4, 2, 5), (3, 6, 4, 1), (5, 2, 6, 3))
+FIGURE_EIGHT_PD = ((4, 2, 5, 1), (8, 6, 1, 5), (6, 3, 7, 4), (2, 7, 3, 8))
+
+
+def kauffman_bracket(pd):
+    """Return the Kauffman bracket as a Laurent polynomial in A.
+
+    Key is an integer A exponent, value a Fraction coefficient.
+    """
+    n = len(pd)
+    total = defaultdict(Fraction)
+    for mask in range(1 << n):
+        parent = {}
+
+        def find(x):
+            parent.setdefault(x, x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x, y):
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                parent[ry] = rx
+
+        a_count = b_count = 0
+        for k, (a, b, c, d) in enumerate(pd):
+            if (mask >> k) & 1:
+                b_count += 1
+                pairings = ((a, d), (b, c))
+            else:
+                a_count += 1
+                pairings = ((a, b), (c, d))
+            for x, y in pairings:
+                union(x, y)
+
+        loops = len({find(x) for x in parent})
+        power = a_count - b_count
+        poly = {0: Fraction(1)}
+        for _ in range(max(0, loops - 1)):
+            nxt = defaultdict(Fraction)
+            for exponent, coef in poly.items():
+                nxt[exponent + 2] -= coef
+                nxt[exponent - 2] -= coef
+            poly = nxt
+        for exponent, coef in poly.items():
+            total[exponent + power] += coef
+    return {e: c for e, c in total.items() if c}
+
+
+def jones_polynomial(pd, writhe):
+    """Return V(t) as {Fraction exponent: Fraction coefficient}."""
+    bracket = kauffman_bracket(pd)
+    sign = Fraction(-1) if writhe % 2 else Fraction(1)
+    out = defaultdict(Fraction)
+    for exponent, coef in bracket.items():
+        a_exp = exponent - 3 * writhe
+        # t = A^-4  =>  A^a = t^(-a/4)
+        out[Fraction(-a_exp, 4)] += coef * sign
+    return {e: c for e, c in out.items() if c}
+
+
+_SUP = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+
+
+def _pow_t(exp):
+    exp = int(exp)
+    if exp == 0:
+        return ""
+    if exp == 1:
+        return "t"
+    return "t" + str(exp).translate(_SUP)
+
+
+def format_polynomial(poly):
+    if not poly:
+        return "0"
+    terms = sorted(poly.items(), key=lambda kv: kv[0], reverse=True)
+    pieces = []
+    for exponent, coef in terms:
+        sign = "-" if coef < 0 else "+"
+        value = abs(coef)
+        if value.denominator == 1:
+            number = "" if value.numerator == 1 and exponent != 0 else str(value.numerator)
+        else:
+            number = f"{value.numerator}/{value.denominator}"
+        body = number + _pow_t(exponent)
+        if not body:
+            body = "1"
+        pieces.append((sign, body))
+    first_sign, first_body = pieces[0]
+    text = ("-" if first_sign == "-" else "") + first_body
+    for sign, body in pieces[1:]:
+        text += f" {sign} {body}"
+    return text
+
+
+def _tube_one(points, radius=0.07, sides=28, scale=1.0, turns=None):
+    """One closed curve -> three twisted hemp strands around it."""
+    pts = np.asarray(points, dtype=np.float64) * scale
+    n = len(pts)
+    tangents = np.roll(pts, -1, axis=0) - np.roll(pts, 1, axis=0)
+    tangents /= np.maximum(np.linalg.norm(tangents, axis=1, keepdims=True), 1e-9)
+    up = np.array([0.0, 0.0, 1.0])
+    normals = np.cross(tangents, up)
+    bad = np.linalg.norm(normals, axis=1) < 1e-6
+    normals[bad] = np.cross(tangents[bad], np.array([0.0, 1.0, 0.0]))
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-9)
+    binormals = np.cross(tangents, normals)
+    binormals /= np.maximum(np.linalg.norm(binormals, axis=1, keepdims=True), 1e-9)
+
+    angles = np.linspace(0.0, 2.0 * math.pi, sides, endpoint=False)
+    ring_cos = np.cos(angles)[None, :]
+    ring_sin = np.sin(angles)[None, :]
+    u = np.linspace(0.0, 1.0, n, endpoint=False)[:, None]
+    u = np.repeat(u, sides, axis=1)
+    v = np.repeat(angles[None, :], n, axis=0) / (2.0 * math.pi)
+
+    core_r = radius * 0.47
+    strand_r = radius * 0.54
+    if turns is None:
+        # keep the fibre density roughly constant as the curve grows
+        turns = max(10.0, 23.0 * n / 240.0)
+
+    all_verts, all_normals, all_uvs, all_idx, all_strand = [], [], [], [], []
+    offset = 0
+    for k in range(3):
+        theta = 2.0 * math.pi * (turns * u[:, 0] + k / 3.0)
+        e1 = (normals * np.cos(theta)[:, None]
+              + binormals * np.sin(theta)[:, None])
+        e2 = (-normals * np.sin(theta)[:, None]
+              + binormals * np.cos(theta)[:, None])
+        centers = pts + core_r * e1
+        offs = (strand_r * ring_cos[..., None] * e1[:, None, :]
+                + strand_r * ring_sin[..., None] * e2[:, None, :])
+        verts = centers[:, None, :] + offs
+        normals_s = offs / max(strand_r, 1e-9)
+        all_verts.append(verts.reshape(-1, 3))
+        all_normals.append(normals_s.reshape(-1, 3))
+        uv = np.stack((u, v + k / 3.0), axis=-1)
+        all_uvs.append(uv.reshape(-1, 2))
+        all_strand.append(np.full(n * sides, k, dtype=np.int32))
+        idx = []
+        for i in range(n):
+            ni = (i + 1) % n
+            for j in range(sides):
+                nj = (j + 1) % sides
+                a = offset + i * sides + j
+                b = offset + i * sides + nj
+                c = offset + ni * sides + nj
+                d = offset + ni * sides + j
+                idx.extend(((a, b, c), (a, c, d)))
+        all_idx.append(np.asarray(idx, dtype=np.uint32).reshape(-1, 3))
+        offset += n * sides
+
+    return (np.concatenate(all_verts).astype(np.float32),
+            np.concatenate(all_normals).astype(np.float32),
+            np.concatenate(all_uvs).astype(np.float32),
+            np.concatenate(all_idx),
+            np.concatenate(all_strand))
+
+
+def tube_mesh(points, radius=0.07, sides=28):
+    return _tube_one(points, radius=radius, sides=sides, scale=0.62)
+
+
+def tube_mesh_multi(curves, radius=0.07, sides=28):
+    """Tube for every link component, merged into one mesh."""
+    parts = [_tube_one(c, radius=radius, sides=sides, scale=1.0) for c in curves]
+    parts = [p for p in parts if p is not None]
+    if not parts:
+        raise ValueError("no curve to mesh")
+    verts, normals, uvs, idx, strand = [], [], [], [], []
+    base = 0
+    for v, nm, uv, ix, st in parts:
+        verts.append(v)
+        normals.append(nm)
+        uvs.append(uv)
+        idx.append(ix + np.uint32(base))
+        strand.append(st)
+        base += len(v)
+    return (np.concatenate(verts), np.concatenate(normals),
+            np.concatenate(uvs), np.concatenate(idx), np.concatenate(strand))
+
+
+class JonesCanvas(ShaderMeshCanvas):
+    VERTEX_SRC = """
+    #version 330 core
+    layout(location = 0) in vec3 a_pos;
+    layout(location = 1) in vec3 a_normal;
+    layout(location = 2) in vec2 a_uv;
+    layout(location = 3) in float a_strand;
+    uniform mat4 u_mvp;
+    out vec3 v_world;
+    out vec3 v_normal;
+    out vec2 v_uv;
+    out float v_strand;
+    void main() {
+        v_world = a_pos;
+        v_normal = a_normal;
+        v_uv = a_uv;
+        v_strand = a_strand;
+        gl_Position = u_mvp * vec4(a_pos, 1.0);
+    }
+    """
+
+    FRAGMENT_SRC = """
+    #version 330 core
+    in vec3 v_world;
+    in vec3 v_normal;
+    in vec2 v_uv;
+    in float v_strand;
+    uniform vec3 u_eye;
+    out vec4 frag_color;
+
+    float hash21(vec2 p) {
+        p = fract(p * vec2(123.34, 456.21));
+        p += dot(p, p + 45.32);
+        return fract(p.x * p.y);
+    }
+
+    float D_GGX(float NoH, float a) {
+        float a2 = a * a;
+        float d = NoH * NoH * (a2 - 1.0) + 1.0;
+        return a2 / (3.14159265 * d * d + 1e-7);
+    }
+
+    float V_Smith(float NoV, float NoL, float a) {
+        float a2 = a * a;
+        float gv = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+        float gl = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+        return 0.5 / (gv + gl + 1e-7);
+    }
+
+    vec3 pbr_light(vec3 N, vec3 V, vec3 L, vec3 radiance,
+                   vec3 albedo, float rough, vec3 F0) {
+        vec3 H = normalize(L + V);
+        float NoL = max(dot(N, L), 0.0);
+        float NoV = max(dot(N, V), 1e-4);
+        float NoH = max(dot(N, H), 0.0);
+        float VoH = max(dot(V, H), 0.0);
+        float a = max(0.05, rough * rough);
+        vec3 F = F0 + (1.0 - F0) * pow(1.0 - VoH, 5.0);
+        vec3 spec = F * D_GGX(NoH, a) * V_Smith(NoV, NoL, a);
+        vec3 diffuse = albedo * (1.0 - F) / 3.14159265;
+        return (diffuse + spec) * radiance * NoL;
+    }
+
+    void main() {
+        vec3 N = normalize(v_normal);
+        vec3 V = normalize(u_eye - v_world);
+
+        vec3 dpdx = dFdx(v_world);
+        vec3 dpdy = dFdy(v_world);
+        vec2 duvdx = dFdx(v_uv);
+        vec2 duvdy = dFdy(v_uv);
+        float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
+        vec3 T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) / max(det, 1e-5));
+        vec3 B = normalize(cross(N, T));
+        float fibre = sin(6.2831853 * (v_uv.x * 300.0 + v_uv.y * 17.0));
+        float fine = sin(6.2831853 * (v_uv.x * 760.0 - v_uv.y * 53.0));
+        float grain = hash21(floor(v_uv * vec2(900.0, 90.0)));
+        N = normalize(N + (0.44 * fibre + 0.22 * fine) * B
+                        + 0.14 * (grain - 0.5) * T);
+
+        int sid = int(clamp(v_strand + 0.5, 0.0, 2.0));
+        vec3 albedo = vec3(0.44, 0.29, 0.16);
+        if (sid == 1) albedo = vec3(0.37, 0.23, 0.12);
+        if (sid == 2) albedo = vec3(0.50, 0.34, 0.19);
+        albedo *= 0.68 + 0.32 * fibre;
+
+        float rough = 0.90 + 0.07 * grain + 0.04 * fine;
+        vec3 F0 = vec3(0.035);
+        vec3 color = vec3(0.0);
+
+        vec3 L1 = normalize(vec3(-0.65, 0.70, 0.55));
+        vec3 L2 = normalize(vec3(0.62, 0.52, 0.58));
+        vec3 L3 = normalize(vec3(0.10, -0.65, 0.35));
+        color += pbr_light(N, V, L1, vec3(2.3, 1.75, 1.20),
+                           albedo, rough, F0);
+        color += pbr_light(N, V, L2, vec3(1.15, 1.25, 1.35),
+                           albedo, rough, F0);
+        color += pbr_light(N, V, L3, vec3(0.30, 0.34, 0.38),
+                           albedo, rough, F0);
+
+        // Camera-facing fill opens the dark backside without flattening the form.
+        vec3 Lcam = normalize(-V + vec3(0.0, 0.20, 0.0));
+        color += pbr_light(N, V, Lcam, vec3(0.42, 0.38, 0.32),
+                           albedo, rough, F0);
+
+        float hemi = 0.5 + 0.5 * N.y;
+        color += albedo * mix(0.10, 0.24, hemi);
+        float rim = pow(1.0 - max(dot(N, V), 0.0), 2.4);
+        color += vec3(1.0, 0.80, 0.58) * rim * 0.055;
+
+        color = (color * (2.51 * color + 0.03)) /
+                (color * (2.43 * color + 0.59) + 0.14);
+        color = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));
+        frag_color = vec4(color, 1.0);
+    }
+    """
+
+    def __init__(self, parent=None):
+        spec = resolve("3_1")
+        curves = braid_curves(spec["braid"], spec["strands"])
+        mesh = tube_mesh_multi(curves)
+        super().__init__(
+            self.VERTEX_SRC,
+            self.FRAGMENT_SRC,
+            mesh,
+            camera=FreeCamera(target=(0.0, 0.0, 0.0), distance=4.4,
+                              yaw=35.0, pitch=24.0),
+            overlay="PBR hemp · 程序化纤维 · 拖动自由旋转 · 滚轮缩放 · 双击复位",
+            parent=parent,
+        )
+        self.setFixedSize(640, 640)
+        self.curves = curves
+
+    def set_curves(self, curves):
+        self.curves = curves
+        self.set_mesh(tube_mesh_multi(curves))
+
+    def set_curve(self, points):
+        """Backwards-compatible single-component setter."""
+        self.set_curves([points])
+
+    def reset_view(self):
+        self.camera.reset()
+        self.update()
+
+
+class JonesApp(LabWindow):
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
+        self.setWindowTitle("Jones · 扭结不变量")
+        self.resize(1000, 720)
+        self.setMinimumSize(1000, 720)
+        self.preset_key = "3_1"
+        self.spec = resolve("3_1")
+        self.mirror = False
+        self.polynomial = {}
+        self.canvas = JonesCanvas()
+        self._build_ui()
+        self.apply_spec(self.spec)
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        panel = QWidget()
+        panel.setFixedWidth(330)
+        col = QVBoxLayout(panel)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(6)
+
+        presets = QGroupBox("结名")
+        pform = QFormLayout(presets)
+        pform.setContentsMargins(8, 6, 8, 6)
+        pform.setSpacing(5)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setEditable(True)
+        self.preset_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.preset_combo.addItems(catalogue_names())
+        self.preset_combo.setCurrentText(self.spec["pretty"])
+        self.preset_combo.lineEdit().setPlaceholderText("3_1 / 5₂ / Trefoil / 三叶结 / T(2,5)")
+        self.preset_combo.lineEdit().returnPressed.connect(self.apply_typed)
+        self.preset_combo.activated.connect(self._apply_index)
+        pform.addRow("结", self.preset_combo)
+        self.mirror_check = QPushButton("镜像（切换手性）")
+        self.mirror_check.clicked.connect(self.toggle_mirror)
+        pform.addRow("", self.mirror_check)
+        reset_view = QPushButton("重置视角")
+        reset_view.clicked.connect(self.canvas.reset_view)
+        pform.addRow("", reset_view)
+        self.zoom_slider = LabeledSlider(
+            "", 50, 220, 100, formatter=lambda v: f"{v}%", value_width=46
+        )
+        self.zoom_slider.valueChanged.connect(self.set_zoom)
+        pform.addRow("视图缩放", self.zoom_slider)
+        col.addWidget(presets)
+
+        invariant = QGroupBox("不变量")
+        vbox = QVBoxLayout(invariant)
+        vbox.setContentsMargins(8, 6, 8, 6)
+        vbox.setSpacing(4)
+        self.lbl_crossings = QLabel("交叉数  –")
+        self.lbl_writhe = QLabel("writhe  –")
+        self.lbl_components = QLabel("分支数  –")
+        self.lbl_det = QLabel("行列式  –")
+        for widget in (self.lbl_crossings, self.lbl_writhe,
+                       self.lbl_components, self.lbl_det):
+            widget.setStyleSheet("font-family: Consolas, monospace;")
+            vbox.addWidget(widget)
+        vbox.addSpacing(4)
+        vbox.addWidget(QLabel("Jones"))
+        self.lbl_poly = QLabel("V(t) = –")
+        self.lbl_poly.setWordWrap(True)
+        self.lbl_poly.setStyleSheet("font-family: Consolas, monospace; font-size: 13px;")
+        vbox.addWidget(self.lbl_poly)
+        vbox.addWidget(QLabel("Alexander"))
+        self.lbl_alexander = QLabel("Δ(t) = –")
+        self.lbl_alexander.setWordWrap(True)
+        self.lbl_alexander.setStyleSheet("font-family: Consolas, monospace; font-size: 13px;")
+        vbox.addWidget(self.lbl_alexander)
+        col.addWidget(invariant)
+
+        formula = QGroupBox("公式")
+        fbox = QVBoxLayout(formula)
+        fbox.setContentsMargins(8, 6, 8, 6)
+        fbox.setSpacing(4)
+        ftext = QLabel(
+            "<b>Kauffman bracket</b><br>"
+            "⟨D⟩ = Σ<sub>s</sub> A<sup>a−b</sup>"
+            "(−A²−A⁻²)<sup>|s|−1</sup><br>"
+            "<b>Jones</b><br>"
+            "V<sub>K</sub>(t) = (−A³)<sup>−w(D)</sup>⟨D⟩, "
+            "t = A⁻⁴<br>"
+            "<b>Alexander</b><br>"
+            "Δ<sub>K</sub>(t) ≐ Δ<sub>K</sub>(t⁻¹), Δ<sub>K</sub>(1)=1<br>"
+            "<b>行列式</b><br>"
+            "det(K) = |Δ<sub>K</sub>(−1)|"
+        )
+        ftext.setWordWrap(True)
+        ftext.setStyleSheet("font-size: 11px; color:#344054;")
+        fbox.addWidget(ftext)
+        col.addWidget(formula)
+
+        algorithm = QGroupBox("算法")
+        abox = QVBoxLayout(algorithm)
+        abox.setContentsMargins(8, 6, 8, 6)
+        abox.setSpacing(2)
+        steps = QLabel(
+            "1. 结名 → 辫子词 BR[n, σ…]<br>"
+            "2. 辫子词展开成 Temperley–Lieb 状态<br>"
+            "3. 闭合辫数环，取 δ = −A²−A⁻²<br>"
+            "4. 用 writhe 归一化得 V(t)<br>"
+            "5. 同时把闭合辫扫成三维 hemp 绳"
+        )
+        steps.setWordWrap(True)
+        steps.setStyleSheet("font-size: 11px; color:#344054;")
+        abox.addWidget(steps)
+        smooth = QLabel(
+            "A/B 平滑：交叉点换成两条不相交弧线，A 与 B 相差 90°；"
+            "每个交叉选一种，2ⁿ 个状态。"
+        )
+        smooth.setWordWrap(True)
+        smooth.setStyleSheet("font-size: 11px; color:#344054;")
+        abox.addWidget(smooth)
+        abox.addWidget(QLabel("R1/R2/R3 不改变 V(t)。"))
+        col.addWidget(algorithm)
+
+        col.addStretch(1)
+
+        root.addWidget(panel)
+        root.addWidget(self.canvas)
+
+        self.lbl_status = QLabel("就绪")
+        self.statusBar().addWidget(self.lbl_status, 1)
+
+    # ---------------------------------------------------------------- naming
+    def apply_typed(self):
+        text = self.preset_combo.currentText().strip()
+        try:
+            spec = resolve(text)
+        except KnotError as exc:
+            self.lbl_status.setText(f"✗ {exc}")
+            self.preset_combo.setCurrentText(self.spec["pretty"])
+            return
+        self.apply_spec(spec)
+
+    def _apply_index(self, index):
+        if index < 0:
+            return
+        self._apply_text(self.preset_combo.itemText(index))
+
+    def _apply_text(self, text):
+        try:
+            spec = resolve(text)
+        except KnotError as exc:
+            self.lbl_status.setText(f"✗ {exc}")
+            return
+        self.apply_spec(spec)
+
+    def apply_spec(self, spec):
+        self.spec = spec
+        self.preset_key = spec["key"]
+        self.mirror = False
+        self.mirror_check.setText("镜像（切换手性）")
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.setCurrentText(spec["pretty"])
+        self.preset_combo.blockSignals(False)
+        self._recompute()
+
+    def set_zoom(self, value):
+        self.canvas.zoom = int(value) / 100.0
+        self.canvas.camera.zoom = self.canvas.zoom
+        self.canvas.camera.update()
+        self.canvas.update()
+
+    def toggle_mirror(self):
+        self.mirror = not self.mirror
+        self.mirror_check.setText("恢复原手性" if self.mirror else "镜像（切换手性）")
+        self._recompute()
+
+    def _recompute(self):
+        spec = self.spec
+        base = jones_from_braid(spec["braid"], spec["strands"])
+        self.polynomial = mirror_jones(base) if self.mirror else base
+        writhe = writhe_of(spec["braid"])
+        if self.mirror:
+            writhe = -writhe
+        perm = braid_permutation(spec["braid"], spec["strands"])
+        seen = set()
+        components = 0
+        for s in range(spec["strands"]):
+            if s in seen:
+                continue
+            components += 1
+            while s not in seen:
+                seen.add(s)
+                s = perm[s]
+        alex = {Fraction(e): Fraction(c) for e, c in spec["alex"].items()}
+        self.lbl_crossings.setText(f"交叉数  {spec['crossings']}")
+        self.lbl_writhe.setText(f"writhe  {writhe:+d}  (辫长 {len(spec['braid'])})")
+        self.lbl_components.setText(f"分支数  {components}  ·  {spec['strands']} 股")
+        self.lbl_det.setText(f"行列式  {determinant_from_jones(base)}")
+        self.lbl_poly.setText("V(t) = " + format_polynomial(self.polynomial))
+        self.lbl_alexander.setText("Δ(t) = " + format_polynomial(alex))
+        curves = braid_curves(spec["braid"], spec["strands"])
+        if self.mirror:
+            curves = [[(-x, y, z) for x, y, z in c] for c in curves]
+        self.canvas.set_curves(curves)
+        self.lbl_status.setText(
+            f"Jones · {spec['pretty']} · {spec['key']} · "
+            f"{'镜像' if self.mirror else '标准'} · "
+            f"由辫子 {spec['braid']} 生成"
+        )
+
+
+MainWindow = JonesApp
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_app(MainWindow))
