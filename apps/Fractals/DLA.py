@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Diffusion-limited aggregation: coral, lichen and dendrite growth.
+"""Extended diffusion-limited aggregation: coral, lichen, dendrite, crystal...
 
-The simulation lives on the GPU: walkers, occupancy, attachment time.  A single
-render kernel maps the grid straight to canvas pixels (bilinear footprint,
-supersampled, continuous 256-level palette), so a frame costs one small
-device-to-host RGB copy.  Grids are allocated once at MAX_GRID and the active
-size is a kernel argument, so switching 512/1024/2048 never recompiles.
+Growth model
+------------
+Walkers diffuse in a thin shell around the cluster and stick with a probability
+that can be biased by direction (anisotropy), pulled toward the centre (bias)
+or refused and slid along the surface (stick < 100%).  A freshly stuck particle
+may relax to the neighbouring free site with the most occupied neighbours
+(surface relaxation), which fills fjords and turns open DLA into compact
+crystal-like growth.  Several nuclei can grow at once and merge.
 
-Morphology knobs:
-  * walker count      -- fewer walkers = stronger growth noise = open branches
-  * sticking          -- <100% lets walkers slide along the surface (dense crust)
-  * anisotropy        -- angular bias of sticking, gives lobed / six-fold shapes
-  * nuclei            -- several seeds grow and merge into a patchy colony
+Rendering stays on the GPU: one kernel maps the grid to canvas pixels
+(bilinear, supersampled, continuous 256-level palette), so a frame costs a
+single small device-to-host RGB copy.
 """
 import numpy as np
 
@@ -20,7 +21,7 @@ from common.taichi_base import ensure_taichi
 from common.qt_base import (
     QApplication, QColor, QComboBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QImage, QLabel, QMessageBox, QPainter, QPen, QPushButton,
-    QTimer, QVBoxLayout, QWidget, Qt, run_app, LabeledSlider,
+    QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, run_app, LabeledSlider,
 )
 from common.utils import FPSCounter
 
@@ -30,17 +31,30 @@ MAX_GRID = 2048
 MAX_WALKERS = 32768
 MAX_RES = 1200
 GRID_SIZES = (512, 1024, 2048)
+ORDERS = (3, 4, 5, 6, 8)
 CANVAS_SIZE = 600
 
-# name -> (walkers, substeps, stick%, drift%, anisotropy%, k-fold, nuclei, seed radius)
+# walkers, substeps, stick%, anisotropy%, order, relax%, bias%, drift%,
+# nuclei, nucleus radius, view half-size in cells (for a 1024 grid)
 PRESETS = {
-    "珊瑚": dict(walkers=1024, speed=512, stick=100, drift=0, aniso=30,
-                 kfold=5, seeds=1, seed_r=0),
-    "地衣": dict(walkers=4096, speed=128, stick=12, drift=0, aniso=0,
-                 kfold=5, seeds=6, seed_r=16),
-    "枝晶": dict(walkers=768, speed=512, stick=100, drift=0, aniso=85,
-                 kfold=6, seeds=1, seed_r=0),
+    "珊瑚": dict(walkers=1024, speed=512, stick=100, aniso=30, kfold=5,
+                 relax=0, bias=0, drift=0, seeds=1, seed_r=0, view=260),
+    "地衣": dict(walkers=4096, speed=128, stick=12, aniso=0, kfold=5,
+                 relax=50, bias=0, drift=0, seeds=6, seed_r=16, view=180),
+    "枝晶": dict(walkers=768, speed=512, stick=100, aniso=85, kfold=6,
+                 relax=0, bias=0, drift=0, seeds=1, seed_r=0, view=250),
+    "雪花": dict(walkers=1024, speed=384, stick=85, aniso=75, kfold=6,
+                 relax=55, bias=8, drift=0, seeds=1, seed_r=0, view=400),
+    "水晶": dict(walkers=1536, speed=256, stick=90, aniso=65, kfold=4,
+                 relax=60, bias=20, drift=0, seeds=1, seed_r=0, view=505),
+    "海扇": dict(walkers=1024, speed=384, stick=100, aniso=50, kfold=3,
+                 relax=50, bias=0, drift=0, seeds=1, seed_r=0, view=215),
+    "玛瑙": dict(walkers=2048, speed=192, stick=100, aniso=0, kfold=5,
+                 relax=55, bias=30, drift=0, seeds=1, seed_r=0, view=514),
+    "海藻": dict(walkers=512, speed=640, stick=100, aniso=0, kfold=5,
+                 relax=20, bias=0, drift=35, seeds=1, seed_r=0, view=360),
 }
+PRESET_NAMES = tuple(PRESETS)
 
 # Coral-reef palette: deep water -> lagoon teal -> coral red -> coral pink
 # -> pale sand.  Anchors sampled from the reef photographs used as reference.
@@ -136,12 +150,6 @@ class DLASimulation:
     # ----------------------------------------------------------------- growth
     @ti.func
     def _spawn(self, i: ti.i32, size: ti.i32) -> ti.i32:
-        """Start a walker in the shell just outside the cluster.
-
-        Returns 1 when the spawn cell is free.  Keeping the walker close to the
-        surface makes growth affordable; the shell kill radius below keeps it
-        from wandering away and wasting steps.
-        """
         c = size // 2
         limit = size // 2 - 3
         gap = ti.max(4, size // 160)
@@ -158,9 +166,22 @@ class DLASimulation:
             ok = 1
         return ok
 
+    @ti.func
+    def _neighbours(self, x: ti.i32, y: ti.i32, size: ti.i32) -> ti.i32:
+        n = 0
+        for dy in ti.static(range(-1, 2)):
+            for dx in ti.static(range(-1, 2)):
+                if dx != 0 or dy != 0:
+                    xx = x + dx
+                    yy = y + dy
+                    if xx >= 0 and xx < size and yy >= 0 and yy < size:
+                        if self.occ[xx, yy] != 0:
+                            n += 1
+        return n
+
     @ti.kernel
     def step(self, size: ti.i32, substeps: ti.i32, stick: ti.f32, drift: ti.f32,
-             aniso: ti.f32, kfold: ti.f32):
+             aniso: ti.f32, kfold: ti.f32, relax: ti.f32, bias: ti.f32):
         c = ti.cast(size // 2, ti.f32)
         killpad = ti.max(24, size // 24)
         for i in range(MAX_WALKERS):
@@ -189,6 +210,17 @@ class DLASimulation:
                     if ti.random() < ti.abs(drift):
                         dx = 1 if drift > 0 else -1
                         dy = 0
+                    if ti.random() < bias:
+                        # Inward step, axis chosen by distance so the bias does
+                        # not lock onto the x/y axes.
+                        ax = ti.abs(ti.cast(x, ti.f32) - c)
+                        ay = ti.abs(ti.cast(y, ti.f32) - c)
+                        if ti.random() * (ax + ay + 1e-6) < ax:
+                            dx = -1 if ti.cast(x, ti.f32) > c else 1
+                            dy = 0
+                        else:
+                            dx = 0
+                            dy = -1 if ti.cast(y, ti.f32) > c else 1
                     nx = x + dx
                     ny = y + dy
                     if nx < 1 or nx > size - 2 or ny < 1 or ny > size - 2:
@@ -198,17 +230,39 @@ class DLASimulation:
                         ang = ti.atan2(ti.cast(y, ti.f32) - c, ti.cast(x, ti.f32) - c)
                         p = stick * (1.0 + aniso * ti.cos(kfold * ang))
                         if ti.random() < ti.min(1.0, ti.max(0.0, p)):
-                            if self.occ[x, y] == 0:
-                                self.occ[x, y] = ti.cast(1, ti.u8)
-                                self.age[x, y] = self.steps[None]
-                                rr = ti.cast(ti.sqrt((x - c) * (x - c) +
-                                                     (y - c) * (y - c)), ti.i32)
+                            px = x
+                            py = y
+                            if ti.random() < relax:
+                                # Surface relaxation: move to the free neighbour
+                                # with the most occupied neighbours (fills
+                                # fjords instead of extending tips).
+                                best = self._neighbours(x, y, size)
+                                bx = x
+                                by = y
+                                for ddy in ti.static(range(-1, 2)):
+                                    for ddx in ti.static(range(-1, 2)):
+                                        if ddx != 0 or ddy != 0:
+                                            xx = x + ddx
+                                            yy = y + ddy
+                                            if xx >= 1 and xx <= size - 2 and yy >= 1 and yy <= size - 2:
+                                                if self.occ[xx, yy] == 0:
+                                                    cnt = self._neighbours(xx, yy, size)
+                                                    if cnt > best:
+                                                        best = cnt
+                                                        bx = xx
+                                                        by = yy
+                                px = bx
+                                py = by
+                            if self.occ[px, py] == 0:
+                                self.occ[px, py] = ti.cast(1, ti.u8)
+                                self.age[px, py] = self.steps[None]
+                                rr = ti.cast(ti.sqrt((px - c) * (px - c) +
+                                                     (py - c) * (py - c)), ti.i32)
                                 ti.atomic_max(self.max_r[None], rr)
                             state = 0
                         else:
                             # Non-sticking: slide away instead of waiting on the
-                            # same site, otherwise the probability has no effect
-                            # on the morphology at all.
+                            # same site, so the probability changes morphology.
                             bx = x - dx
                             by = y - dy
                             if bx >= 1 and bx <= size - 2 and by >= 1 and by <= size - 2:
@@ -359,6 +413,7 @@ class DLACanvas(QWidget):
         self.sim = sim
         self.setFixedSize(600, 600)
         self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("滚轮缩放 · 左键拖动平移 · 双击适应团簇")
         self._image = None
         self._buffer = None
         self.dpr = sim.res / float(CANVAS_SIZE)
@@ -370,6 +425,13 @@ class DLACanvas(QWidget):
         self._press_center = None
 
     # ----------------------------------------------------------------- camera
+    def set_view(self, half):
+        """Frame the scene once (used on reset / preset load, never per frame)."""
+        self.view_half = float(half)
+        self.view_cx = self.sim.size * 0.5
+        self.view_cy = self.sim.size * 0.5
+        self._clamp_view()
+
     def reset_view(self, fit=False):
         sim = self.sim
         if fit:
@@ -478,6 +540,7 @@ class DLAApp(LabWindow):
         self.sim = DLASimulation(1024, screen_resolution())
         self.sim.set_walkers(PRESETS["珊瑚"]["walkers"])
         self.canvas = DLACanvas(self.sim)
+        self.view_half_cells = float(PRESETS["珊瑚"]["view"])
         self._build_ui()
         self.fps = FPSCounter()
         self.timer = QTimer(self)
@@ -499,7 +562,7 @@ class DLAApp(LabWindow):
         panel.setFixedWidth(330)
         col = QVBoxLayout(panel)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(6)
+        col.setSpacing(5)
 
         run = QGroupBox("模拟")
         rh = QHBoxLayout(run)
@@ -519,8 +582,8 @@ class DLAApp(LabWindow):
 
         params = QGroupBox("生长参数")
         form = QFormLayout(params)
-        form.setContentsMargins(8, 6, 8, 5)
-        form.setSpacing(4)
+        form.setContentsMargins(8, 5, 8, 5)
+        form.setSpacing(3)
         self.grid_combo = QComboBox()
         self.grid_combo.addItems([str(n) for n in GRID_SIZES])
         self.grid_combo.setMinimumWidth(110)
@@ -535,7 +598,7 @@ class DLAApp(LabWindow):
         form.addRow("游走粒子", self.walkers_slider)
 
         self.speed_slider = LabeledSlider(
-            "", 8, 512, 512, formatter=lambda v: f"{v}×", value_width=44
+            "", 8, 768, 512, formatter=lambda v: f"{v}×", value_width=44
         )
         self.speed_slider.valueChanged.connect(self.change_speed)
         form.addRow("每帧步数", self.speed_slider)
@@ -552,26 +615,62 @@ class DLAApp(LabWindow):
         self.aniso_slider.valueChanged.connect(self.change_aniso)
         form.addRow("各向异性", self.aniso_slider)
 
+        self.relax_slider = LabeledSlider(
+            "", 0, 100, 0, formatter=lambda v: f"{v}%", value_width=46
+        )
+        self.relax_slider.valueChanged.connect(self.change_relax)
+        form.addRow("表面弛豫", self.relax_slider)
+
+        self.bias_slider = LabeledSlider(
+            "", 0, 100, 0, formatter=lambda v: f"{v}%", value_width=46
+        )
+        self.bias_slider.valueChanged.connect(self.change_bias)
+        form.addRow("趋心偏置", self.bias_slider)
+
         self.drift_slider = LabeledSlider(
             "", -100, 100, 0, formatter=lambda v: f"{v}%", value_width=46
         )
         self.drift_slider.valueChanged.connect(self.change_drift)
         form.addRow("风向漂移", self.drift_slider)
+
+        order_row = QWidget()
+        order_layout = QHBoxLayout(order_row)
+        order_layout.setContentsMargins(0, 0, 0, 0)
+        order_layout.setSpacing(6)
+        self.order_combo = QComboBox()
+        self.order_combo.addItems([str(k) for k in ORDERS])
+        self.order_combo.setCurrentText("5")
+        self.order_combo.currentTextChanged.connect(self.change_order)
+        self.nuclei_spin = QSpinBox()
+        self.nuclei_spin.setRange(1, 12)
+        self.nuclei_spin.setValue(1)
+        self.nuclei_spin.setSuffix(" 核")
+        self.nuclei_spin.valueChanged.connect(self.change_nuclei)
+        order_layout.addWidget(self.order_combo, 1)
+        order_layout.addWidget(self.nuclei_spin, 1)
+        form.addRow("取向 / 核数", order_row)
         col.addWidget(params)
 
         presets = QGroupBox("预设")
-        ph = QHBoxLayout(presets)
-        ph.setContentsMargins(6, 6, 6, 6)
-        for name in ("珊瑚", "地衣", "枝晶"):
-            b = QPushButton(name)
-            b.clicked.connect(lambda _=False, n=name: self.apply_preset(n))
-            ph.addWidget(b)
+        pv = QVBoxLayout(presets)
+        pv.setContentsMargins(6, 5, 6, 5)
+        pv.setSpacing(4)
+        rows = (PRESET_NAMES[:4], PRESET_NAMES[4:])
+        for names in rows:
+            h = QHBoxLayout()
+            h.setSpacing(4)
+            for name in names:
+                b = QPushButton(name)
+                b.setMinimumWidth(0)
+                b.clicked.connect(lambda _=False, n=name: self.apply_preset(n))
+                h.addWidget(b)
+            pv.addLayout(h)
         col.addWidget(presets)
 
         stats = QGroupBox("读数")
         sv = QVBoxLayout(stats)
-        sv.setContentsMargins(8, 6, 8, 4)
-        sv.setSpacing(3)
+        sv.setContentsMargins(8, 5, 8, 4)
+        sv.setSpacing(2)
         self.lbl_count = QLabel("颗粒  1")
         self.lbl_radius = QLabel("半径  0")
         self.lbl_cov = QLabel("覆盖  0.00%")
@@ -585,11 +684,10 @@ class DLAApp(LabWindow):
 
         info = QGroupBox("机制")
         iv = QVBoxLayout(info)
-        iv.setContentsMargins(8, 6, 8, 6)
+        iv.setContentsMargins(8, 5, 8, 5)
         txt = QLabel(
-            "珊瑚：少粒子 + 五重取向，长出开放枝状；地衣：多核 + 低黏附，"
-            "滑移成致密结壳；枝晶：六重强取向。"
-            "滚轮缩放，左键拖动，双击适应团簇。"
+            "弛豫＝填谷致密，趋心＝向内压缩，取向＝晶向对称，核数＝多核并合；"
+            "滚轮缩放，拖动平移，双击适应。"
         )
         txt.setWordWrap(True)
         txt.setStyleSheet("color:#52606d; font-size:12px;")
@@ -609,13 +707,15 @@ class DLAApp(LabWindow):
         self.drift = 0.0
         self.aniso = 0.30
         self.kfold = 5.0
+        self.relax = 0.0
+        self.bias = 0.0
 
     # ------------------------------------------------------------------- loop
     def tick(self):
         if self.sim is None:
             return
         self.sim.step(self.sim.size, self.steps_per_frame, self.stick,
-                      self.drift, self.aniso, self.kfold)
+                      self.drift, self.aniso, self.kfold, self.relax, self.bias)
         self.canvas.render_frame()
         self.frame += 1
         if self.frame % 8 == 0:
@@ -642,7 +742,7 @@ class DLAApp(LabWindow):
     def reset(self):
         self.sim.reset(self.sim.size, self.sim.seeds, self.sim.seed_r)
         self.sim.set_walkers(self.walkers_slider.value())
-        self.canvas.reset_view(fit=False)
+        self.canvas.set_view(self.view_half_cells * self.sim.size / 1024.0)
         self.canvas.render_frame()
         self.frame = 0
         self.fps.reset()
@@ -665,23 +765,30 @@ class DLAApp(LabWindow):
         cfg = PRESETS[name]
         self.sim.seeds = cfg["seeds"]
         self.sim.seed_r = cfg["seed_r"]
+        self.view_half_cells = float(cfg["view"])
         self.kfold = float(cfg["kfold"])
         self.steps_per_frame = int(cfg["speed"])
         self.stick = max(0.05, cfg["stick"] / 100.0)
         self.aniso = cfg["aniso"] / 100.0
+        self.relax = cfg["relax"] / 100.0
+        self.bias = cfg["bias"] / 100.0
         self.drift = cfg["drift"] / 100.0
         self.walkers_slider.setValue(cfg["walkers"])
         self.speed_slider.setValue(cfg["speed"])
         self.stick_slider.setValue(cfg["stick"])
         self.aniso_slider.setValue(cfg["aniso"])
+        self.relax_slider.setValue(cfg["relax"])
+        self.bias_slider.setValue(cfg["bias"])
         self.drift_slider.setValue(cfg["drift"])
+        self.order_combo.setCurrentText(str(cfg["kfold"]))
+        self.nuclei_spin.setValue(cfg["seeds"])
         self.reset()
 
     def change_grid(self, text):
         n = int(text)
         self.sim.reset(n, self.sim.seeds, self.sim.seed_r)
         self.sim.set_walkers(self.walkers_slider.value())
-        self.canvas.reset_view(fit=False)
+        self.canvas.set_view(self.view_half_cells * self.sim.size / 1024.0)
         self.canvas.render_frame()
         self.frame = 0
         self.update_stats()
@@ -699,8 +806,20 @@ class DLAApp(LabWindow):
     def change_aniso(self, value):
         self.aniso = float(value) / 100.0
 
+    def change_relax(self, value):
+        self.relax = float(value) / 100.0
+
+    def change_bias(self, value):
+        self.bias = float(value) / 100.0
+
     def change_drift(self, value):
         self.drift = float(value) / 100.0
+
+    def change_order(self, text):
+        self.kfold = float(text)
+
+    def change_nuclei(self, value):
+        self.sim.seeds = int(value)
 
     # ------------------------------------------------------------------ stats
     def update_stats(self):

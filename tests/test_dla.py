@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""DLA growth-model invariants (no Qt window needed)."""
+"""Extended-DLA growth-model invariants (no Qt window needed)."""
 import importlib.util
 import os
 import sys
@@ -28,13 +28,17 @@ class TestDLA(unittest.TestCase):
         self.sim.set_walkers(1024)
 
     def _grow(self, steps=30, substeps=128, stick=1.0, drift=0.0,
-              aniso=0.0, kfold=5.0):
+              aniso=0.0, kfold=5.0, relax=0.0, bias=0.0):
         for _ in range(steps):
-            self.sim.step(512, substeps, stick, drift, aniso, kfold)
+            self.sim.step(512, substeps, stick, drift, aniso, kfold, relax, bias)
 
     def _count_radius(self):
         count, radius, _, _ = self.sim.stats()
         return count, radius
+
+    def _density(self):
+        count, radius = self._count_radius()
+        return count / max(1.0, radius) ** 2
 
     def test_reset_state(self):
         occ = self.sim.occ.to_numpy()[:512, :512]
@@ -69,16 +73,24 @@ class TestDLA(unittest.TestCase):
 
     def test_low_stick_grows_denser(self):
         self._grow(40, substeps=128, stick=1.0)
-        n_open, r_open = self._count_radius()
+        open_density = self._density()
         self.sim.reset(512, 1, 0)
         self._grow(40, substeps=128, stick=0.2)
-        n_dense, r_dense = self._count_radius()
-        # Non-sticking walkers slide along the surface instead of waiting on
-        # the same site, so the cluster fills in and its fractal dimension
-        # rises even though fewer particles arrive.
-        open_density = n_open / max(1.0, r_open) ** 2
-        dense_density = n_dense / max(1.0, r_dense) ** 2
-        self.assertGreater(dense_density, open_density)
+        self.assertGreater(self._density(), open_density)
+
+    def test_relaxation_fills_the_cluster(self):
+        self._grow(40, substeps=128)
+        rough_density = self._density()
+        self.sim.reset(512, 1, 0)
+        self._grow(40, substeps=128, relax=1.0)
+        self.assertGreater(self._density(), rough_density)
+
+    def test_inward_bias_compacts_the_cluster(self):
+        self._grow(40, substeps=128)
+        free_density = self._density()
+        self.sim.reset(512, 1, 0)
+        self._grow(40, substeps=128, bias=0.5)
+        self.assertGreater(self._density(), free_density)
 
     def test_anisotropy_breaks_the_round_envelope(self):
         def envelope_cv(sim):
@@ -99,8 +111,7 @@ class TestDLA(unittest.TestCase):
         round_cv = envelope_cv(self.sim)
         self.sim.reset(512, 1, 0)
         self._grow(60, substeps=128, aniso=0.9, kfold=6.0)
-        lobed_cv = envelope_cv(self.sim)
-        self.assertGreater(lobed_cv, round_cv)
+        self.assertGreater(envelope_cv(self.sim), round_cv)
 
     def test_grid_switch_leaves_no_stale_cells(self):
         self._grow(15)
@@ -127,14 +138,23 @@ class TestDLA(unittest.TestCase):
         self.assertLessEqual(int(diff.max()), 8)
         self.assertGreater(len(np.unique(lut, axis=0)), 64)
 
-    def test_presets_use_different_physics(self):
-        coral = dla.PRESETS["珊瑚"]
-        lichen = dla.PRESETS["地衣"]
-        dendrite = dla.PRESETS["枝晶"]
-        self.assertNotEqual(coral["stick"], lichen["stick"])
-        self.assertNotEqual(coral["aniso"], dendrite["aniso"])
-        self.assertGreater(lichen["seeds"], 1)
-        self.assertGreater(dendrite["aniso"], coral["aniso"])
+    def test_presets_are_complete_and_distinct(self):
+        self.assertEqual(len(dla.PRESETS), 8)
+        keys = {"walkers", "speed", "stick", "aniso", "kfold", "relax",
+                "bias", "drift", "seeds", "seed_r", "view"}
+        for name, cfg in dla.PRESETS.items():
+            self.assertEqual(set(cfg), keys, name)
+            self.assertIn(cfg["kfold"], dla.ORDERS, name)
+            self.assertGreaterEqual(cfg["seeds"], 1, name)
+            self.assertGreater(cfg["walkers"], 0, name)
+            self.assertGreater(cfg["view"], 0, name)
+        # the family must not collapse into the same physics
+        signatures = {tuple(sorted(cfg.items())) for cfg in dla.PRESETS.values()}
+        self.assertEqual(len(signatures), 8)
+        self.assertNotEqual(dla.PRESETS["珊瑚"]["aniso"], dla.PRESETS["地衣"]["aniso"])
+        self.assertNotEqual(dla.PRESETS["水晶"]["kfold"], dla.PRESETS["海扇"]["kfold"])
+        self.assertGreater(dla.PRESETS["玛瑙"]["bias"], 0)
+        self.assertGreater(dla.PRESETS["海藻"]["drift"], 0)
 
 
 if __name__ == "__main__":
