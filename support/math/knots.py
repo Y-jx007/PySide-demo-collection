@@ -457,9 +457,20 @@ def torus_curve(p, q, sign=1, samples=520, major=2.0, minor=0.72):
     return pts
 
 
-def braid_curves(word, strands, per_step=14, radius=1.0, height=0.40,
-                 over=0.17, closure_steps=16):
-    """Closed-braid polylines (one per link component), centred and scaled."""
+TORUS_KEYS = {"3_1": (2, 3), "5_1": (2, 5), "7_1": (2, 7), "8_19": (3, 4)}
+
+
+def braid_curves(word, strands, per_step=20, major=2.10, minor=0.66,
+                 over=0.09, key=None):
+    """Closed braid laid on a torus surface.
+
+    The braid length becomes the major angle (one full turn) and the strand
+    slot becomes the minor angle: slot k sits at theta = 2*pi*k/n.  Every
+    generator swaps two neighbouring slots (with the over-strand bulging out
+    and the under-strand dipping in), so after one full turn strand s ends
+    exactly where strand sigma(s) begins.  The curve is therefore closed with
+    no closure frame, and torus braids come out as classic torus knots.
+    """
     n = max(1, int(strands))
     word = tuple(int(g) for g in word)
 
@@ -468,15 +479,28 @@ def braid_curves(word, strands, per_step=14, radius=1.0, height=0.40,
                for t in [2 * math.pi * i / 96 for i in range(96)]]
         return _normalise([pts])
 
-    torus = _torus_params(word, n)
+    torus = None
+    if key in TORUS_KEYS:
+        p, q = TORUS_KEYS[key]
+        torus = (p, q, 1)
+    else:
+        torus = _torus_params(word, n)
     if torus is not None:
         p, q, sign = torus
         return _normalise([torus_curve(p, q, sign)])
 
-    phi = [2 * math.pi * j / n for j in range(n)]
+    total = max(1, len(word))
+
+    def point(slot, u, bump):
+        theta = 2.0 * math.pi * slot / n
+        phi = 2.0 * math.pi * u
+        rr = minor + bump
+        return ((major + rr * math.cos(theta)) * math.cos(phi),
+                (major + rr * math.cos(theta)) * math.sin(phi),
+                rr * math.sin(theta))
+
     slots = list(range(n))
-    paths = [[(radius * math.cos(phi[s]), radius * math.sin(phi[s]), 0.0)]
-             for s in range(n)]
+    paths = [[point(s, 0.0, 0.0)] for s in range(n)]
 
     for k, g in enumerate(word):
         i = abs(g) - 1
@@ -488,27 +512,14 @@ def braid_curves(word, strands, per_step=14, radius=1.0, height=0.40,
             start = slots[s]
             target = b if start == a else a
             for j in range(1, per_step + 1):
-                u = j / per_step
-                e = _smooth(u)
-                ang = phi[start] + (phi[target] - phi[start]) * e
-                bump = over * (1.0 if s == over_strand else -1.0) * math.sin(math.pi * u)
-                r = radius + bump
-                paths[s].append((r * math.cos(ang), r * math.sin(ang),
-                                 height * (k + u)))
+                t = j / per_step
+                e = _smooth(t)
+                slot = start + (target - start) * e
+                u = (k + t) / total
+                bump = (over * (1.0 if s == over_strand else -1.0)
+                        * math.sin(math.pi * t))
+                paths[s].append(point(slot, u, bump))
         slots[sa], slots[sb] = b, a
-
-    top = height * len(word)
-    bulge = max(0.55, 0.30 * top)
-
-    def closure_arc(j):
-        """Smooth outward bulge from the top of slot j back to its bottom."""
-        pts = []
-        for i in range(1, closure_steps + 1):
-            t = i / closure_steps
-            rr = radius + bulge * math.sin(math.pi * t)
-            zz = top * (1.0 - t)
-            pts.append((rr * math.cos(phi[j]), rr * math.sin(phi[j]), zz))
-        return pts
 
     final_slot = braid_permutation(word, n)
     seen = set()
@@ -521,10 +532,7 @@ def braid_curves(word, strands, per_step=14, radius=1.0, height=0.40,
         while s not in seen:
             seen.add(s)
             comp.extend(paths[s])
-            j = final_slot[s]
-            comp.extend(closure_arc(j))
-            s = j
-        comp.append(comp[0])
+            s = final_slot[s]
         components.append(_dedupe(comp))
     return _normalise(components)
 

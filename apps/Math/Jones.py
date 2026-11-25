@@ -334,7 +334,7 @@ class JonesCanvas(ShaderMeshCanvas):
 
     def __init__(self, parent=None):
         spec = resolve("3_1")
-        curves = braid_curves(spec["braid"], spec["strands"])
+        curves = braid_curves(spec["braid"], spec["strands"], key=spec["key"])
         mesh = tube_mesh_multi(curves)
         super().__init__(
             self.VERTEX_SRC,
@@ -562,7 +562,7 @@ class JonesApp(LabWindow):
         self.lbl_det.setText(f"行列式  {determinant_from_jones(base)}")
         self.lbl_poly.setText("V(t) = " + format_polynomial(self.polynomial))
         self.lbl_alexander.setText("Δ(t) = " + format_polynomial(alex))
-        curves = braid_curves(spec["braid"], spec["strands"])
+        curves = braid_curves(spec["braid"], spec["strands"], key=spec["key"])
         if self.mirror:
             curves = [[(-x, y, z) for x, y, z in c] for c in curves]
         self.canvas.set_curves(curves)
