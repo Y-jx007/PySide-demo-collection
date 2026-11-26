@@ -772,12 +772,12 @@ def state_loops(word, strands, smoothing=None):
     return loops
 
 
-def state_curves(word, strands, smoothing=None):
-    """Closed planar state diagram -> 3D polylines (flat, centred, scaled)."""
+def state_paths(word, strands, smoothing=None):
+    """State diagram as smooth 2D polylines (closure routed around the top)."""
     loops = state_loops(word, strands, smoothing)
     n = max(1, int(strands))
     top = float(n - 1)
-    curves = []
+    paths = []
     for loop in loops:
         if len(loop) < 3:
             continue
@@ -786,12 +786,18 @@ def state_curves(word, strands, smoothing=None):
             nx, ny = loop[(idx + 1) % len(loop)]
             pts.append((x, y))
             if abs(nx - x) > 0.5 * max(1, len(word)):
-                # closure jump: route just outside the diagram
                 edge = max(x, nx) + 0.45
                 pts.extend([(edge, y), (edge, top + 0.45),
                             (min(x, nx) - 0.45, top + 0.45), (nx - 0.02, ny)])
-        pts = _chaikin([(x, y, 0.0) for x, y in pts], 2)
-        curves.append(pts)
+        smooth = _chaikin([(x, y, 0.0) for x, y in pts], 2)
+        paths.append([(p[0], p[1]) for p in smooth])
+    return paths
+
+
+def state_curves(word, strands, smoothing=None):
+    """Closed planar state diagram -> 3D polylines (flat, centred, scaled)."""
+    paths = state_paths(word, strands, smoothing)
+    curves = [[(x, y, 0.0) for x, y in path] for path in paths]
     return _normalise(curves) if curves else []
 
 

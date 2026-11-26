@@ -21,14 +21,14 @@ from common.lab_window import LabWindow
 from common.shader_canvas import ShaderMeshCanvas
 from common.qt_base import (
     QComboBox, QColor, QFont, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-    QPainter, QPen, QPointF, QPushButton, QRectF, QSizePolicy, QVBoxLayout,
-    QWidget, LabeledSlider, Signal, Qt, run_app,
+    QPainter, QPen, QPointF, QPolygonF, QPushButton, QRectF, QSizePolicy,
+    QVBoxLayout, QWidget, LabeledSlider, Signal, Qt, run_app,
 )
 from support.math.knots import (
     KnotError, braid_components, braid_curves, braid_permutation,
     catalogue_names, conjugate, destabilize, determinant_from_jones,
     jones_from_braid, mirror_jones, r2_insert, r2_remove, r3_apply, resolve,
-    stabilize, state_curves, state_loops, writhe_of,
+    stabilize, state_loops, state_paths, writhe_of,
 )
 
 # Knot Atlas PD codes.  Crossing order is X[a,b,c,d].
@@ -243,6 +243,9 @@ class BraidDiagram(QWidget):
     """Schematic braid diagram: columns are generators, rows are strands."""
 
     crossingClicked = Signal(int)
+    LOOP_COLORS = (QColor(196, 92, 70), QColor(46, 128, 160),
+                   QColor(120, 148, 78), QColor(150, 100, 165),
+                   QColor(188, 140, 60), QColor(92, 110, 128))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -254,12 +257,14 @@ class BraidDiagram(QWidget):
         self.strands = 2
         self.selected = -1
         self.smoothing = {}
+        self.loops = None
 
-    def set_state(self, word, strands, selected=-1, smoothing=None):
+    def set_state(self, word, strands, selected=-1, smoothing=None, loops=None):
         self.word = list(word)
         self.strands = int(strands)
         self.selected = int(selected)
         self.smoothing = dict(smoothing or {})
+        self.loops = list(loops) if loops else None
         self.update()
 
     def _layout(self):
@@ -277,6 +282,28 @@ class BraidDiagram(QWidget):
         k = int((x - pad) // cw)
         return k if 0 <= k < n else -1
 
+    def _paint_state(self, p):
+        """Kauffman state: every loop in its own colour."""
+        pts = [pt for loop in self.loops for pt in loop]
+        if not pts:
+            return
+        xs = [q[0] for q in pts]
+        ys = [q[1] for q in pts]
+        pad = 12.0
+        w = max(1e-6, max(xs) - min(xs))
+        h = max(1e-6, max(ys) - min(ys))
+        scale = min((self.width() - 2 * pad) / w, (self.height() - 2 * pad) / h)
+        ox = pad + (self.width() - 2 * pad - w * scale) / 2 - min(xs) * scale
+        oy = pad + (self.height() - 2 * pad - h * scale) / 2 - min(ys) * scale
+        for index, loop in enumerate(self.loops):
+            color = self.LOOP_COLORS[index % len(self.LOOP_COLORS)]
+            p.setPen(QPen(color, 2.4, Qt.SolidLine, Qt.RoundCap))
+            poly = QPolygonF([QPointF(ox + x * scale, oy + y * scale)
+                              for x, y in loop])
+            p.drawPolyline(poly)
+        p.setPen(QColor(90, 100, 110))
+        p.drawText(8, self.height() - 6, f"Kauffman 状态 · {len(self.loops)} 个闭环")
+
     def mousePressEvent(self, event):
         k = self.column_at(event.position().x())
         if k >= 0:
@@ -287,6 +314,12 @@ class BraidDiagram(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.fillRect(self.rect(), QColor(253, 252, 250))
+        if self.loops:
+            self._paint_state(p)
+            p.setPen(QPen(QColor(210, 210, 205), 1.0))
+            p.drawRect(0, 0, self.width() - 1, self.height() - 1)
+            p.end()
+            return
         pad, cw, rowh, n = self._layout()
         if n == 0:
             p.setPen(QColor(130, 130, 130))
@@ -796,22 +829,23 @@ class JonesApp(LabWindow):
         self._rebuild()
         if self.smoothing:
             loops = len(state_loops(self.word, self.strands, self.smoothing))
-            note += f" · 3D 显示 Kauffman 状态（{loops} 个闭环）"
+            note += f" · 辫子图显示该状态（{loops} 个闭环；平滑后不再是纽结）"
         else:
-            note += " · 3D 回到闭合辫"
+            note += " · 辫子图回到闭合辫"
         self.lbl_status.setText(note)
 
     def _refresh_diagram(self):
-        self.diagram.set_state(self.word, self.strands, self.selected, self.smoothing)
+        loops = state_paths(self.word, self.strands, self.smoothing) \
+            if self.smoothing else None
+        self.diagram.set_state(self.word, self.strands, self.selected,
+                               self.smoothing, loops)
         parts = []
         for g in self.word:
             parts.append(f"σ{abs(int(g))}" + ("⁻¹" if g < 0 else ""))
         word_text = " ".join(parts) if parts else "（空辫）"
-        loops = ""
-        if self.smoothing:
-            loops = f" · 状态 {len(state_loops(self.word, self.strands, self.smoothing))} 环"
+        loops_text = f" · 状态 {len(loops)} 环" if loops else ""
         self.lbl_word.setText(
-            f"{word_text}   ·   {self.strands} 股 · 长 {len(self.word)}{loops}")
+            f"{word_text}   ·   {self.strands} 股 · 长 {len(self.word)}{loops_text}")
         self._update_actions()
 
     def _update_actions(self):
@@ -914,9 +948,9 @@ class JonesApp(LabWindow):
         self._rebuild()
         if self.smoothing:
             loops = len(state_loops(self.word, self.strands, self.smoothing))
-            note += f" · 3D 显示该 Kauffman 状态（{loops} 个闭环，不再是单个纽结）"
+            note += f" · 辫子图显示该状态（{loops} 个闭环；平滑后不再是纽结）"
         else:
-            note += " · 3D 回到闭合辫"
+            note += " · 辫子图回到闭合辫"
         self.lbl_status.setText(note)
 
     def _rebuild(self):
@@ -935,20 +969,11 @@ class JonesApp(LabWindow):
         self.lbl_poly.setText("V(t) = " + format_polynomial(self.polynomial))
         self.lbl_alexander.setText("Δ(t) = " + format_polynomial(alex))
         pristine = list(self.word) == list(spec["braid"])
+        curves = braid_curves(self.word, self.strands,
+                              key=spec["key"] if pristine else None)
+        view = f"辫长 {len(self.word)}"
         if self.smoothing:
-            curves = state_curves(self.word, self.strands, self.smoothing)
-            loops = len(curves)
-            view = f"Kauffman 状态：{loops} 个闭环（A/B 平滑后不再是纽结）"
-            if not getattr(self, "_state_view", False):
-                self.canvas.camera.set_angles(90.0, 0.0)
-                self._state_view = True
-        else:
-            curves = braid_curves(self.word, self.strands,
-                                  key=spec["key"] if pristine else None)
-            view = f"辫长 {len(self.word)}"
-            if getattr(self, "_state_view", False):
-                self.canvas.camera.set_angles(35.0, 24.0)
-                self._state_view = False
+            view += f" · 辫子图状态 {len(state_paths(self.word, self.strands, self.smoothing))} 环"
         if self.mirror:
             curves = [[(-x, y, z) for x, y, z in c] for c in curves]
         self.canvas.set_curves(curves)
