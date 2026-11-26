@@ -137,7 +137,23 @@ KNOT_TABLE = {
 }
 
 TORUS_NAMES = {(2, 3): "3_1", (2, 5): "5_1", (2, 7): "7_1", (3, 4): "8_19"}
+# Torus knots outside the 8-crossing catalogue: label -> (p, q).
+EXTRA_TORUS = {
+    "9_1": (2, 9),
+    "11a367": (2, 11),
+    "10_124": (3, 5),
+    "13a5190": (2, 13),
+}
 DEFAULT_KNOT = "3_1"
+
+_SUBSCRIPT = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def _pretty_label(key):
+    if "_" not in key:
+        return key
+    head, tail = key.split("_", 1)
+    return head + tail.translate(_SUBSCRIPT)
 
 
 class KnotError(ValueError):
@@ -162,7 +178,7 @@ def _catalogue_spec(key):
                 source="catalogue")
 
 
-def _torus(p, q):
+def _torus(p, q, label=None):
     if p < 2 or q < 2:
         raise KnotError("环面结要求 p, q ≥ 2")
     if p > q:
@@ -176,7 +192,14 @@ def _torus(p, q):
         spec = _catalogue_spec(key)
         spec["source"] = "torus"
         return spec
-    return dict(key=f"T({p},{q})", pretty=f"T({p},{q})", braid=word, strands=p,
+    name = label
+    if name is None:
+        for extra_label, pair in EXTRA_TORUS.items():
+            if pair == (p, q):
+                name = extra_label
+                break
+    name = name or f"T({p},{q})"
+    return dict(key=name, pretty=_pretty_label(name), braid=word, strands=p,
                 crossings=min(p * (q - 1), q * (p - 1)),
                 alex=_torus_alexander(p, q), conway="", source="torus")
 
@@ -203,6 +226,14 @@ def resolve(text):
             if norm in (cleaned, cleaned + "结"):
                 return _catalogue_spec(key)
 
+    # torus knots beyond the catalogue
+    flat = norm.replace(" ", "_").replace("-", "_")
+    if flat in EXTRA_TORUS:
+        return _torus(*EXTRA_TORUS[flat], label=flat)
+    for label, (p, q) in EXTRA_TORUS.items():
+        if norm.isdigit() and label.replace("_", "") == norm:
+            return _torus(p, q, label=label)
+
     if norm.isdigit():
         hits = [f"{norm[:i]}_{norm[i:]}" for i in range(1, len(norm))
                 if f"{norm[:i]}_{norm[i:]}" in KNOT_TABLE]
@@ -210,11 +241,16 @@ def resolve(text):
             return _catalogue_spec(hits[0])
         if len(hits) > 1:
             raise KnotError(f"名称有歧义：{raw}（可能是 {' / '.join(hits)}）")
+    if re.fullmatch(r"\d+[_\s.-]?\d+", norm):
+        raise KnotError(
+            f"{raw} 暂未收录：目录覆盖 0₁–8₂₁；"
+            "环面结可写 T(p,q)（如 T(2,9) 即 9₁）")
     raise KnotError(f"未知结名：{raw}；可用 n_k（3_1…8_21）、别名或 T(p,q)")
 
 
 def catalogue_names():
-    return [KNOT_TABLE[k]["pretty"] for k in KNOT_TABLE]
+    return ([KNOT_TABLE[k]["pretty"] for k in KNOT_TABLE]
+            + [_pretty_label(k) for k in EXTRA_TORUS])
 
 
 # ------------------------------------------------------- Alexander (torus)

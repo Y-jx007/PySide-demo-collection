@@ -95,6 +95,12 @@ class TestBraidEngine(unittest.TestCase):
         self.assertEqual(self.knots.resolve("torus 3 4")["key"], "8_19")
         spec = self.knots.resolve("T(4,5)")
         self.assertEqual(spec["crossings"], 15)
+        # torus knots beyond the 8-crossing catalogue resolve by name too
+        nine = self.knots.resolve("9_1")
+        self.assertEqual(nine["crossings"], 9)
+        self.assertEqual(nine["braid"], (1,) * 9)
+        self.assertEqual(self.knots.resolve("91")["key"], "9_1")
+        self.assertEqual(self.knots.resolve("T(2,9)")["key"], "9_1")
         with self.assertRaises(self.knots.KnotError):
             self.knots.resolve("T(2,2)")   # Hopf link, not a knot
 

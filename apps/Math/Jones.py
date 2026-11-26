@@ -149,33 +149,28 @@ def _tube_one(points, radius=0.052, sides=40, scale=1.0, turns=None, strands=5):
     v = np.repeat(angles[None, :], n, axis=0) / (2.0 * math.pi)
 
     if turns is None:
-        # twist density per unit arc length, independent of the sampling
+        # tight twist: about 3.6 turns per unit arc length
         length = float(np.sum(np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)))
-        turns = max(8, int(round(length * 2.4)))
+        turns = max(10, int(round(length * 3.6)))
 
-    core_r = radius * 0.55
-    # thin filaments packed around the core without overlapping
-    strand_r = core_r * math.sin(math.pi / strands) * 0.80
+    # Solid rope: outer filaments sit tangent to each other and to a central
+    # core filament, so there are no see-through gaps when the rope bends.
+    pitch_r = radius / (1.0 + math.sin(math.pi / strands))
+    strand_r = pitch_r * math.sin(math.pi / strands)
+    core_r = max(pitch_r - strand_r, radius * 0.12)
 
     all_verts, all_normals, all_uvs, all_idx, all_strand = [], [], [], [], []
     offset = 0
-    for k in range(strands):
-        theta = 2.0 * math.pi * (turns * u[:, 0] + k / strands)
-        e1 = (normals * np.cos(theta)[:, None]
-              + binormals * np.sin(theta)[:, None])
-        e2 = (-normals * np.sin(theta)[:, None]
-              + binormals * np.cos(theta)[:, None])
-        centers = pts + core_r * e1
-        offs = (strand_r * ring_cos[..., None] * e1[:, None, :]
-                + strand_r * ring_sin[..., None] * e2[:, None, :])
+
+    def emit(centers, offs, strand_id, u_coord, v_coord):
+        nonlocal offset
         verts = centers[:, None, :] + offs
-        normals_s = offs / max(strand_r, 1e-9)
         all_verts.append(verts.reshape(-1, 3))
-        all_normals.append(normals_s.reshape(-1, 3))
-        uv = np.stack((u, v + k / strands), axis=-1)
+        all_normals.append((offs / np.maximum(
+            np.linalg.norm(offs, axis=-1, keepdims=True), 1e-9)).reshape(-1, 3))
+        uv = np.stack((u_coord, v_coord), axis=-1)
         all_uvs.append(uv.reshape(-1, 2))
-        all_strand.append(np.full(n * sides, k, dtype=np.int32))
-        # vectorised quad -> two triangles
+        all_strand.append(np.full(n * sides, strand_id, dtype=np.int32))
         ring = np.arange(sides)
         ring_next = (ring + 1) % sides
         rows = np.arange(n)
@@ -190,6 +185,22 @@ def _tube_one(points, radius=0.052, sides=40, scale=1.0, turns=None, strands=5):
         tri2 = np.stack((a, c, d), axis=-1).reshape(-1, 3)
         all_idx.append(np.concatenate((tri1, tri2)).astype(np.uint32))
         offset += n * sides
+
+    for k in range(strands):
+        theta = 2.0 * math.pi * (turns * u[:, 0] + k / strands)
+        e1 = (normals * np.cos(theta)[:, None]
+              + binormals * np.sin(theta)[:, None])
+        e2 = (-normals * np.sin(theta)[:, None]
+              + binormals * np.cos(theta)[:, None])
+        centers = pts + pitch_r * e1
+        offs = (strand_r * ring_cos[..., None] * e1[:, None, :]
+                + strand_r * ring_sin[..., None] * e2[:, None, :])
+        emit(centers, offs, k, u, v + k / strands)
+
+    # central core filament fills the hole of the outer ring
+    core_offs = (core_r * ring_cos[..., None] * normals[:, None, :]
+                 + core_r * ring_sin[..., None] * binormals[:, None, :])
+    emit(pts, core_offs, 0, u, v)
 
     return (np.concatenate(all_verts).astype(np.float32),
             np.concatenate(all_normals).astype(np.float32),
