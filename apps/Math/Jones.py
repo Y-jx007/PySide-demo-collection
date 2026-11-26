@@ -152,6 +152,9 @@ def _tube_one(points, radius=0.052, sides=40, scale=1.0, turns=None, strands=7):
         # tight twist: about 3.6 turns per unit arc length
         length = float(np.sum(np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)))
         turns = max(10, int(round(length * 3.6)))
+    # never wrap faster than the polyline can resolve, or the filaments turn
+    # into triangular spikes instead of a smooth helix
+    turns = max(6, min(turns, n // 14))
 
     # Solid rope: filaments overlap slightly so the grooves stay shallow and
     # the silhouette stays round even when the whole rope is only a few pixels.

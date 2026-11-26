@@ -511,8 +511,9 @@ def braid_curves(word, strands, per_step=30, major=2.10, minor=0.66,
     word = tuple(int(g) for g in word)
 
     if n == 1:
+        # plenty of samples: the rope twist needs ~20 points per turn
         pts = [(math.cos(t), math.sin(t), 0.0)
-               for t in [2 * math.pi * i / 96 for i in range(96)]]
+               for t in [2 * math.pi * i / 480 for i in range(480)]]
         return _normalise([pts])
 
     torus = None
