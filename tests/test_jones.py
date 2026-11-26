@@ -161,6 +161,21 @@ class TestBraidMoves(unittest.TestCase):
         self.assertEqual(self.knots.braid_components((1, 1, 1), 2), 1)
         self.assertEqual(self.knots.braid_components((), 1), 1)
 
+    def test_kauffman_state_loops(self):
+        word, n = (1, 1, 1), 2
+        self.assertEqual(len(self.knots.state_loops(word, n)), 1)
+        for mode in ("A", "B"):
+            loops = self.knots.state_loops(word, n, {i: mode for i in range(3)})
+            self.assertGreaterEqual(len(loops), 1)
+            curves = self.knots.state_curves(word, n, {i: mode for i in range(3)})
+            self.assertEqual(len(curves), len(loops))
+            for curve in curves:
+                self.assertGreater(len(curve), 3)
+                self.assertTrue(all(len(pt) == 3 for pt in curve))
+        # mixed states must still trace closed components
+        mixed = self.knots.state_loops(word, n, {1: "A"})
+        self.assertGreaterEqual(len(mixed), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,7 +28,7 @@ from support.math.knots import (
     KnotError, braid_components, braid_curves, braid_permutation,
     catalogue_names, conjugate, destabilize, determinant_from_jones,
     jones_from_braid, mirror_jones, r2_insert, r2_remove, r3_apply, resolve,
-    stabilize, writhe_of,
+    stabilize, state_curves, state_loops, writhe_of,
 )
 
 # Knot Atlas PD codes.  Crossing order is X[a,b,c,d].
@@ -320,8 +320,9 @@ class BraidDiagram(QWidget):
                     p.drawLine(QPointF(x0, ya), QPointF(x1, ya))
                     p.drawLine(QPointF(x0, yb), QPointF(x1, yb))
                 else:
-                    p.drawLine(QPointF(x0, ya), QPointF(x1, yb))
-                    p.drawLine(QPointF(x0, yb), QPointF(x1, ya))
+                    # caps: both sides turn back, the arcs never cross
+                    p.drawLine(QPointF(x0, ya), QPointF(x0, yb))
+                    p.drawLine(QPointF(x1, ya), QPointF(x1, yb))
                 continue
             down_over = int(g) > 0
             # over strand: down (i -> i+1) when g > 0, up otherwise
@@ -330,14 +331,22 @@ class BraidDiagram(QWidget):
                 p.drawLine(QPointF(x0, ya), QPointF(x1, yb))
             else:
                 p.drawLine(QPointF(x0, yb), QPointF(x1, ya))
-            # under strand, split around the crossing centre
+            # under strand: leave a gap where the over strand passes
             p.setPen(thin_pen)
             if down_over:
-                p.drawLine(QPointF(x0, yb), QPointF(x0 + cw * 0.38, ya + rowh * 0.38))
-                p.drawLine(QPointF(x0 + cw * 0.62, ya + rowh * 0.62), QPointF(x1, ya))
+                p.drawLine(QPointF(x0, yb), QPointF(x0 + cw * 0.38, yb - rowh * 0.38))
+                p.drawLine(QPointF(x0 + cw * 0.62, yb - rowh * 0.62), QPointF(x1, ya))
             else:
-                p.drawLine(QPointF(x0, ya), QPointF(x0 + cw * 0.38, yb - rowh * 0.38))
-                p.drawLine(QPointF(x0 + cw * 0.62, yb - rowh * 0.62), QPointF(x1, yb))
+                p.drawLine(QPointF(x0, ya), QPointF(x0 + cw * 0.38, ya + rowh * 0.38))
+                p.drawLine(QPointF(x0 + cw * 0.62, ya + rowh * 0.62), QPointF(x1, yb))
+        # closure hint: the two ends join outside the diagram
+        if self.strands > 1:
+            p.setPen(QPen(QColor(205, 195, 180), 1.4, Qt.DashLine))
+            y_top = pad + 0.5 * rowh
+            y_bot = pad + (self.strands - 0.5) * rowh
+            height = max(1.0, y_bot - y_top)
+            p.drawArc(QRectF(pad - 16, y_top, 16, height), 90 * 16, 180 * 16)
+            p.drawArc(QRectF(pad + n * cw, y_top, 16, height), -90 * 16, 180 * 16)
         p.setPen(QPen(QColor(210, 210, 205), 1.0))
         p.drawRect(0, 0, self.width() - 1, self.height() - 1)
         p.end()
@@ -668,6 +677,25 @@ class JonesApp(LabWindow):
         bv = QVBoxLayout(braid_box)
         bv.setContentsMargins(6, 5, 6, 5)
         bv.setSpacing(4)
+        self.buttons = {}
+        top = QHBoxLayout()
+        top.setSpacing(4)
+        self.lbl_word = QLabel("—")
+        self.lbl_word.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
+        top.addWidget(self.lbl_word, 1)
+        for text, slot in (
+            ("A", lambda: self.set_smoothing("A")),
+            ("B", lambda: self.set_smoothing("B")),
+            ("全A", lambda: self.smooth_all("A")),
+            ("全B", lambda: self.smooth_all("B")),
+        ):
+            button = QPushButton(text)
+            button.setFixedWidth(38)
+            button.setToolTip("Kauffman 平滑：只改辫子图与状态视图")
+            button.clicked.connect(slot)
+            top.addWidget(button)
+            self.buttons[text] = button
+        bv.addLayout(top)
         self.diagram = BraidDiagram()
         self.diagram.crossingClicked.connect(self.select_crossing)
         bv.addWidget(self.diagram)
@@ -681,13 +709,12 @@ class JonesApp(LabWindow):
             ("稳定+", self.do_stabilize),
             ("稳定−", self.do_destabilize),
             ("撤销", self.undo),
-            ("A", lambda: self.set_smoothing("A")),
-            ("B", lambda: self.set_smoothing("B")),
         )
         for text, slot in actions:
             button = QPushButton(text)
             button.clicked.connect(slot)
             row.addWidget(button)
+            self.buttons[text] = button
         bv.addLayout(row)
         rv.addWidget(braid_box)
         root.addWidget(right)
@@ -755,8 +782,53 @@ class JonesApp(LabWindow):
             f"{'⁻¹' if self.word[self.selected] < 0 else ''}"
             f" · 用 A/B 平滑查看该交叉的两种平滑")
 
+    def smooth_all(self, mode):
+        if not self.word:
+            self.lbl_status.setText("空辫没有交叉可平滑")
+            return
+        already = all(self.smoothing.get(k) == mode for k in range(len(self.word)))
+        if already:
+            self.smoothing = {}
+            note = "清除全部平滑"
+        else:
+            self.smoothing = {k: mode for k in range(len(self.word))}
+            note = f"全部 {len(self.word)} 个交叉取 {mode} 平滑"
+        self._rebuild()
+        if self.smoothing:
+            loops = len(state_loops(self.word, self.strands, self.smoothing))
+            note += f" · 3D 显示 Kauffman 状态（{loops} 个闭环）"
+        else:
+            note += " · 3D 回到闭合辫"
+        self.lbl_status.setText(note)
+
     def _refresh_diagram(self):
         self.diagram.set_state(self.word, self.strands, self.selected, self.smoothing)
+        parts = []
+        for g in self.word:
+            parts.append(f"σ{abs(int(g))}" + ("⁻¹" if g < 0 else ""))
+        word_text = " ".join(parts) if parts else "（空辫）"
+        loops = ""
+        if self.smoothing:
+            loops = f" · 状态 {len(state_loops(self.word, self.strands, self.smoothing))} 环"
+        self.lbl_word.setText(
+            f"{word_text}   ·   {self.strands} 股 · 长 {len(self.word)}{loops}")
+        self._update_actions()
+
+    def _update_actions(self):
+        if not getattr(self, "buttons", None):
+            return
+        self.buttons["R2−"].setEnabled(
+            r2_remove(self.word, 0, self.strands) is not None)
+        self.buttons["R3"].setEnabled(
+            r3_apply(self.word, 0, self.strands) is not None)
+        self.buttons["稳定−"].setEnabled(
+            destabilize(self.word, self.strands) is not None)
+        has_sel = 0 <= self.selected < len(self.word)
+        self.buttons["A"].setEnabled(has_sel)
+        self.buttons["B"].setEnabled(has_sel)
+        self.buttons["全A"].setEnabled(bool(self.word))
+        self.buttons["全B"].setEnabled(bool(self.word))
+        self.buttons["撤销"].setEnabled(bool(self.history))
 
     def _apply_word(self, word, strands, note):
         self.history.append((list(self.word), int(self.strands),
@@ -779,6 +851,7 @@ class JonesApp(LabWindow):
     def do_r2_insert(self):
         gen = self._current_gen()
         pos = self.selected + 1 if self.selected >= 0 else len(self.word)
+        self.selected = pos
         self._apply_word(r2_insert(self.word, pos, gen, self.strands),
                          self.strands, f"R2 插入 σ{gen}σ{gen}⁻¹ @{pos + 1}")
 
@@ -831,11 +904,20 @@ class JonesApp(LabWindow):
         if not (0 <= self.selected < len(self.word)):
             self.lbl_status.setText("先点选辫子图里的一个交叉")
             return
-        self.smoothing[self.selected] = mode
-        self._refresh_diagram()
-        self.lbl_status.setText(
-            f"第 {self.selected + 1} 个交叉取 {mode} 平滑（仅示意：平滑后是链环，"
-            "3D 仍显示原结）")
+        k = self.selected
+        if self.smoothing.get(k) == mode:
+            del self.smoothing[k]
+            note = f"清除第 {k + 1} 个交叉的平滑"
+        else:
+            self.smoothing[k] = mode
+            note = f"第 {k + 1} 个交叉取 {mode} 平滑"
+        self._rebuild()
+        if self.smoothing:
+            loops = len(state_loops(self.word, self.strands, self.smoothing))
+            note += f" · 3D 显示该 Kauffman 状态（{loops} 个闭环，不再是单个纽结）"
+        else:
+            note += " · 3D 回到闭合辫"
+        self.lbl_status.setText(note)
 
     def _rebuild(self):
         spec = self.spec
@@ -853,8 +935,20 @@ class JonesApp(LabWindow):
         self.lbl_poly.setText("V(t) = " + format_polynomial(self.polynomial))
         self.lbl_alexander.setText("Δ(t) = " + format_polynomial(alex))
         pristine = list(self.word) == list(spec["braid"])
-        curves = braid_curves(self.word, self.strands,
-                              key=spec["key"] if pristine else None)
+        if self.smoothing:
+            curves = state_curves(self.word, self.strands, self.smoothing)
+            loops = len(curves)
+            view = f"Kauffman 状态：{loops} 个闭环（A/B 平滑后不再是纽结）"
+            if not getattr(self, "_state_view", False):
+                self.canvas.camera.set_angles(90.0, 0.0)
+                self._state_view = True
+        else:
+            curves = braid_curves(self.word, self.strands,
+                                  key=spec["key"] if pristine else None)
+            view = f"辫长 {len(self.word)}"
+            if getattr(self, "_state_view", False):
+                self.canvas.camera.set_angles(35.0, 24.0)
+                self._state_view = False
         if self.mirror:
             curves = [[(-x, y, z) for x, y, z in c] for c in curves]
         self.canvas.set_curves(curves)
@@ -862,7 +956,7 @@ class JonesApp(LabWindow):
         same = base == self.base_jones
         self.lbl_status.setText(
             f"Jones · {spec['pretty']} · {spec['key']} · "
-            f"{'镜像' if self.mirror else '标准'} · 辫长 {len(self.word)} · "
+            f"{'镜像' if self.mirror else '标准'} · {view} · "
             + ("✓ 结型不变" if same else "✗ 结型已改变"))
 
 

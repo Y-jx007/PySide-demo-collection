@@ -504,7 +504,11 @@ def r2_remove(word, index=0, strands=None):
 
 
 def r3_apply(word, index=0, strands=None):
-    """Replace σa σb σa by σb σa σb (|a-b| = 1, same sign)."""
+    """Replace σa σb σa by σb σa σb (|a-b| = 1, same sign).
+
+    The relation is symmetric in a and b, so b = a-1 is just as valid as
+    b = a+1; both signs of the whole triple are allowed too.
+    """
     w = list(word)
     start = max(0, min(int(index), max(0, len(w) - 3)))
     order = list(range(start, len(w) - 2)) + list(range(0, start))
@@ -512,7 +516,7 @@ def r3_apply(word, index=0, strands=None):
         if i + 2 >= len(w):
             continue
         a, b, c = w[i], w[i + 1], w[i + 2]
-        if a == c and abs(b) == abs(a) + 1 and (b > 0) == (a > 0):
+        if a == c and abs(abs(b) - abs(a)) == 1 and (b > 0) == (a > 0):
             return w[:i] + [b, a, b] + w[i + 3:], i
     return None
 
@@ -694,6 +698,101 @@ def _chaikin(pts, iterations=2):
                         0.25 * az + 0.75 * bz))
         pts = out
     return pts
+
+
+def state_loops(word, strands, smoothing=None):
+    """Trace the closed braid diagram under the given A/B smoothings.
+
+    ``smoothing`` maps a crossing index to 'A' (parallel arcs) or 'B' (two
+    caps).  Unsmoothed crossings stay crossings.  Returns planar loops of
+    (x, y) points; the braid is closed around the outside.
+    """
+    n = max(1, int(strands))
+    w = [int(g) for g in word]
+    total = len(w)
+    if total == 0:
+        return [[(math.cos(t), 0.5 + 0.5 * math.sin(t))
+                 for t in [2.0 * math.pi * i / 96 for i in range(96)]]]
+
+    smooth = dict(smoothing or {})
+
+    def node(k, side, row):
+        return (k * 2 + side) * n + row
+
+    adj = [[] for _ in range(2 * total * n)]
+
+    def link(a, b):
+        adj[a].append(b)
+        adj[b].append(a)
+
+    for k, g in enumerate(w):
+        i = abs(int(g)) - 1
+        mode = smooth.get(k)
+        for r in range(n):
+            if r not in (i, i + 1):
+                link(node(k, 0, r), node(k, 1, r))
+        if mode == "A":
+            link(node(k, 0, i), node(k, 1, i))
+            link(node(k, 0, i + 1), node(k, 1, i + 1))
+        elif mode == "B":
+            link(node(k, 0, i), node(k, 0, i + 1))
+            link(node(k, 1, i), node(k, 1, i + 1))
+        else:
+            link(node(k, 0, i), node(k, 1, i + 1))
+            link(node(k, 0, i + 1), node(k, 1, i))
+    for k in range(total - 1):
+        for r in range(n):
+            link(node(k, 1, r), node(k + 1, 0, r))
+    # closure: right end back to the left end
+    for r in range(n):
+        link(node(total - 1, 1, r), node(0, 0, r))
+
+    loops = []
+    seen = set()
+    for start in range(len(adj)):
+        if start in seen:
+            continue
+        comp = []
+        cur = start
+        prev = -1
+        while True:
+            seen.add(cur)
+            comp.append(cur)
+            nxt = [v for v in adj[cur] if v != prev]
+            prev, cur = cur, (nxt[0] if nxt else start)
+            if cur == start or cur in seen:
+                break
+        rows = []
+        for v in comp:
+            row = v % n
+            block = v // n
+            k, side = block // 2, block % 2
+            rows.append((k + side, row))
+        loops.append(rows)
+    return loops
+
+
+def state_curves(word, strands, smoothing=None):
+    """Closed planar state diagram -> 3D polylines (flat, centred, scaled)."""
+    loops = state_loops(word, strands, smoothing)
+    n = max(1, int(strands))
+    top = float(n - 1)
+    curves = []
+    for loop in loops:
+        if len(loop) < 3:
+            continue
+        pts = []
+        for idx, (x, y) in enumerate(loop):
+            nx, ny = loop[(idx + 1) % len(loop)]
+            pts.append((x, y))
+            if abs(nx - x) > 0.5 * max(1, len(word)):
+                # closure jump: route just outside the diagram
+                edge = max(x, nx) + 0.45
+                pts.extend([(edge, y), (edge, top + 0.45),
+                            (min(x, nx) - 0.45, top + 0.45), (nx - 0.02, ny)])
+        pts = _chaikin([(x, y, 0.0) for x, y in pts], 2)
+        curves.append(pts)
+    return _normalise(curves) if curves else []
 
 
 def _dedupe(pts, eps=1e-9):
