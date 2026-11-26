@@ -118,5 +118,49 @@ class TestBraidEngine(unittest.TestCase):
                 self.assertLess(abs(x) + abs(y) + abs(z), 40.0, key)
 
 
+class TestBraidMoves(unittest.TestCase):
+    """Reidemeister / Markov moves keep the closed-braid Jones polynomial."""
+
+    @classmethod
+    def setUpClass(cls):
+        from support.math import knots
+        cls.knots = knots
+
+    def _jones(self, word, strands):
+        return self.knots.jones_from_braid(word, strands)
+
+    def test_r2_insert_remove_roundtrip(self):
+        for key in ("3_1", "5_2", "7_4"):
+            spec = self.knots.resolve(key)
+            word, n = list(spec["braid"]), spec["strands"]
+            grown = self.knots.r2_insert(word, 2, 1, n)
+            self.assertEqual(self._jones(grown, n), self._jones(word, n))
+            back, _ = self.knots.r2_remove(grown, 2, n)
+            self.assertEqual(back, word)
+
+    def test_r3_preserves_jones(self):
+        got = self.knots.r3_apply((1, 2, 1), 0)
+        self.assertIsNotNone(got)
+        word, _ = got
+        self.assertEqual(word, [2, 1, 2])
+        self.assertEqual(self._jones(word, 3), self._jones((1, 2, 1), 3))
+
+    def test_conjugation_preserves_jones(self):
+        word, n = (1, 1, 1, 2, -1, 2), 3
+        conj = self.knots.conjugate(word, 2, n)
+        self.assertEqual(self._jones(conj, n), self._jones(word, n))
+
+    def test_stabilization_roundtrip(self):
+        word, n = (1, 1, 1), 2
+        grown, m = self.knots.stabilize(word, n)
+        self.assertEqual((grown, m), (list(word) + [2], 3))
+        self.assertEqual(self._jones(grown, m), self._jones(word, n))
+        self.assertEqual(self.knots.destabilize(grown, m), (list(word), n))
+
+    def test_components(self):
+        self.assertEqual(self.knots.braid_components((1, 1, 1), 2), 1)
+        self.assertEqual(self.knots.braid_components((), 1), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -461,6 +461,88 @@ def braid_permutation(word, strands):
     return slots
 
 
+def braid_components(word, strands):
+    """Number of components of the closed braid (1 = knot)."""
+    perm = braid_permutation(word, strands)
+    seen = set()
+    count = 0
+    for s in range(strands):
+        if s in seen:
+            continue
+        count += 1
+        while s not in seen:
+            seen.add(s)
+            s = perm[s]
+    return count
+
+
+# --------------------------------------------------------- braid editing
+# Knot-preserving moves on the braid word (Markov / Reidemeister twins).
+def _clamp_gen(gen, strands):
+    gen = int(gen)
+    if strands < 2:
+        raise KnotError("至少需要 2 股才能做交叉")
+    return max(1, min(gen, strands - 1))
+
+
+def r2_insert(word, index, gen, strands):
+    """Insert σ_gen σ_gen⁻¹ at ``index`` (a Reidemeister-II pair)."""
+    gen = _clamp_gen(gen, strands)
+    index = max(0, min(int(index), len(word)))
+    return list(word[:index]) + [gen, -gen] + list(word[index:])
+
+
+def r2_remove(word, index=0, strands=None):
+    """Remove the first cancelable σ σ⁻¹ pair at/after ``index``."""
+    w = list(word)
+    start = max(0, min(int(index), max(0, len(w) - 1)))
+    order = list(range(start, len(w) - 1)) + list(range(0, start))
+    for i in order:
+        if i + 1 < len(w) and w[i] == -w[i + 1]:
+            return w[:i] + w[i + 2:], i
+    return None
+
+
+def r3_apply(word, index=0, strands=None):
+    """Replace σa σb σa by σb σa σb (|a-b| = 1, same sign)."""
+    w = list(word)
+    start = max(0, min(int(index), max(0, len(w) - 3)))
+    order = list(range(start, len(w) - 2)) + list(range(0, start))
+    for i in order:
+        if i + 2 >= len(w):
+            continue
+        a, b, c = w[i], w[i + 1], w[i + 2]
+        if a == c and abs(b) == abs(a) + 1 and (b > 0) == (a > 0):
+            return w[:i] + [b, a, b] + w[i + 3:], i
+    return None
+
+
+def conjugate(word, gen, strands):
+    """Markov conjugation σ_gen · w · σ_gen⁻¹ (same closed braid)."""
+    gen = _clamp_gen(gen, strands)
+    return [gen] + list(word) + [-gen]
+
+
+def stabilize(word, strands):
+    """Markov I: add one strand with a single crossing at the end."""
+    n = int(strands)
+    return list(word) + [n], n + 1
+
+
+def destabilize(word, strands):
+    """Inverse of stabilize: drop a strand that occurs exactly once, at the end."""
+    w = list(word)
+    n = int(strands)
+    if n <= 1 or not w:
+        return None
+    last = abs(w[-1])
+    if last != n - 1:
+        return None
+    if any(abs(g) == last for g in w[:-1]):
+        return None
+    return w[:-1], n - 1
+
+
 def _smooth(u):
     return u * u * (3.0 - 2.0 * u)
 

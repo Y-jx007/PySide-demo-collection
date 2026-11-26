@@ -20,12 +20,15 @@ from common.free_camera import FreeCamera
 from common.lab_window import LabWindow
 from common.shader_canvas import ShaderMeshCanvas
 from common.qt_base import (
-    QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
-    LabeledSlider, QVBoxLayout, QWidget, Qt, run_app,
+    QComboBox, QColor, QFont, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QPainter, QPen, QPointF, QPushButton, QRectF, QSizePolicy, QVBoxLayout,
+    QWidget, LabeledSlider, Signal, Qt, run_app,
 )
 from support.math.knots import (
-    KnotError, braid_curves, braid_permutation, catalogue_names,
-    determinant_from_jones, jones_from_braid, mirror_jones, resolve, writhe_of,
+    KnotError, braid_components, braid_curves, braid_permutation,
+    catalogue_names, conjugate, destabilize, determinant_from_jones,
+    jones_from_braid, mirror_jones, r2_insert, r2_remove, r3_apply, resolve,
+    stabilize, writhe_of,
 )
 
 # Knot Atlas PD codes.  Crossing order is X[a,b,c,d].
@@ -236,6 +239,110 @@ def tube_mesh_multi(curves, radius=0.052, sides=40):
             np.concatenate(uvs), np.concatenate(idx), np.concatenate(strand))
 
 
+class BraidDiagram(QWidget):
+    """Schematic braid diagram: columns are generators, rows are strands."""
+
+    crossingClicked = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(96)
+        self.setMaximumHeight(112)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor)
+        self.word = []
+        self.strands = 2
+        self.selected = -1
+        self.smoothing = {}
+
+    def set_state(self, word, strands, selected=-1, smoothing=None):
+        self.word = list(word)
+        self.strands = int(strands)
+        self.selected = int(selected)
+        self.smoothing = dict(smoothing or {})
+        self.update()
+
+    def _layout(self):
+        pad = 14.0
+        usable = max(1.0, self.width() - 2.0 * pad)
+        n = len(self.word)
+        cw = min(44.0, usable / max(1, n))
+        rowh = max(6.0, (self.height() - 2.0 * pad) / max(1, self.strands))
+        return pad, cw, rowh, n
+
+    def column_at(self, x):
+        pad, cw, _, n = self._layout()
+        if n <= 0:
+            return -1
+        k = int((x - pad) // cw)
+        return k if 0 <= k < n else -1
+
+    def mousePressEvent(self, event):
+        k = self.column_at(event.position().x())
+        if k >= 0:
+            self.crossingClicked.emit(k)
+        event.accept()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.fillRect(self.rect(), QColor(253, 252, 250))
+        pad, cw, rowh, n = self._layout()
+        if n == 0:
+            p.setPen(QColor(130, 130, 130))
+            p.drawText(self.rect(), Qt.AlignCenter, "平凡结 · 无交叉")
+            p.end()
+            return
+        if 0 <= self.selected < n:
+            p.fillRect(QRectF(pad + self.selected * cw, 4, cw, self.height() - 8),
+                       QColor(230, 242, 255))
+        base = QColor(120, 100, 78)
+        over_pen = QPen(base, 2.4, Qt.SolidLine, Qt.RoundCap)
+        thin_pen = QPen(base, 1.6, Qt.SolidLine, Qt.RoundCap)
+        smooth_pen = QPen(QColor(46, 140, 160), 2.0, Qt.DashLine, Qt.RoundCap)
+        for k, g in enumerate(self.word):
+            i = abs(int(g)) - 1
+            x0 = pad + k * cw
+            x1 = x0 + cw
+            ya = pad + (i + 0.5) * rowh
+            yb = pad + (i + 1.5) * rowh
+            # strands that do not take part in this crossing stay straight
+            p.setPen(thin_pen)
+            for r in range(self.strands):
+                if r in (i, i + 1):
+                    continue
+                y = pad + (r + 0.5) * rowh
+                p.drawLine(QPointF(x0, y), QPointF(x1, y))
+            if k in self.smoothing:
+                mode = self.smoothing[k]
+                p.setPen(smooth_pen)
+                if mode == "A":
+                    p.drawLine(QPointF(x0, ya), QPointF(x1, ya))
+                    p.drawLine(QPointF(x0, yb), QPointF(x1, yb))
+                else:
+                    p.drawLine(QPointF(x0, ya), QPointF(x1, yb))
+                    p.drawLine(QPointF(x0, yb), QPointF(x1, ya))
+                continue
+            down_over = int(g) > 0
+            # over strand: down (i -> i+1) when g > 0, up otherwise
+            p.setPen(over_pen)
+            if down_over:
+                p.drawLine(QPointF(x0, ya), QPointF(x1, yb))
+            else:
+                p.drawLine(QPointF(x0, yb), QPointF(x1, ya))
+            # under strand, split around the crossing centre
+            p.setPen(thin_pen)
+            if down_over:
+                p.drawLine(QPointF(x0, yb), QPointF(x0 + cw * 0.38, ya + rowh * 0.38))
+                p.drawLine(QPointF(x0 + cw * 0.62, ya + rowh * 0.62), QPointF(x1, ya))
+            else:
+                p.drawLine(QPointF(x0, ya), QPointF(x0 + cw * 0.38, yb - rowh * 0.38))
+                p.drawLine(QPointF(x0 + cw * 0.62, yb - rowh * 0.62), QPointF(x1, yb))
+        p.setPen(QPen(QColor(210, 210, 205), 1.0))
+        p.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        p.end()
+
+
 class JonesCanvas(ShaderMeshCanvas):
     VERTEX_SRC = """
     #version 330 core
@@ -401,7 +508,7 @@ class JonesCanvas(ShaderMeshCanvas):
             overlay="PBR hemp · 程序化纤维 · 拖动自由旋转 · 滚轮缩放 · 双击复位",
             parent=parent,
         )
-        self.setFixedSize(640, 640)
+        self.setFixedSize(600, 600)
         self.curves = curves
 
     def set_curves(self, curves):
@@ -422,12 +529,18 @@ class JonesApp(LabWindow):
         super().__init__()
         self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
         self.setWindowTitle("Jones · 扭结不变量")
-        self.resize(1000, 720)
-        self.setMinimumSize(1000, 720)
+        self.resize(1000, 800)
+        self.setMinimumSize(1000, 800)
         self.preset_key = "3_1"
         self.spec = resolve("3_1")
         self.mirror = False
         self.polynomial = {}
+        self.word = list(self.spec["braid"])
+        self.strands = int(self.spec["strands"])
+        self.base_jones = {}
+        self.history = []
+        self.smoothing = {}
+        self.selected = -1
         self.canvas = JonesCanvas()
         self._build_ui()
         self.apply_spec(self.spec)
@@ -544,7 +657,40 @@ class JonesApp(LabWindow):
         col.addStretch(1)
 
         root.addWidget(panel)
-        root.addWidget(self.canvas)
+
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(6)
+        rv.addWidget(self.canvas)
+
+        braid_box = QGroupBox("辫子图")
+        bv = QVBoxLayout(braid_box)
+        bv.setContentsMargins(6, 5, 6, 5)
+        bv.setSpacing(4)
+        self.diagram = BraidDiagram()
+        self.diagram.crossingClicked.connect(self.select_crossing)
+        bv.addWidget(self.diagram)
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        actions = (
+            ("R2+", self.do_r2_insert),
+            ("R2−", self.do_r2_remove),
+            ("R3", self.do_r3),
+            ("共轭", self.do_conjugate),
+            ("稳定+", self.do_stabilize),
+            ("稳定−", self.do_destabilize),
+            ("撤销", self.undo),
+            ("A", lambda: self.set_smoothing("A")),
+            ("B", lambda: self.set_smoothing("B")),
+        )
+        for text, slot in actions:
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+        bv.addLayout(row)
+        rv.addWidget(braid_box)
+        root.addWidget(right)
 
         self.lbl_status = QLabel("就绪")
         self.statusBar().addWidget(self.lbl_status, 1)
@@ -581,7 +727,13 @@ class JonesApp(LabWindow):
         self.preset_combo.blockSignals(True)
         self.preset_combo.setCurrentText(spec["pretty"])
         self.preset_combo.blockSignals(False)
-        self._recompute()
+        self.word = list(spec["braid"])
+        self.strands = int(spec["strands"])
+        self.base_jones = jones_from_braid(self.word, self.strands)
+        self.history = []
+        self.smoothing = {}
+        self.selected = -1
+        self._rebuild()
 
     def set_zoom(self, value):
         self.canvas.zoom = int(value) / 100.0
@@ -592,41 +744,126 @@ class JonesApp(LabWindow):
     def toggle_mirror(self):
         self.mirror = not self.mirror
         self.mirror_check.setText("恢复原手性" if self.mirror else "镜像（切换手性）")
-        self._recompute()
+        self._rebuild()
 
-    def _recompute(self):
+    # ------------------------------------------------------------- braid edit
+    def select_crossing(self, index):
+        self.selected = int(index)
+        self._refresh_diagram()
+        self.lbl_status.setText(
+            f"选中第 {self.selected + 1} 个交叉 · σ{abs(self.word[self.selected])}"
+            f"{'⁻¹' if self.word[self.selected] < 0 else ''}"
+            f" · 用 A/B 平滑查看该交叉的两种平滑")
+
+    def _refresh_diagram(self):
+        self.diagram.set_state(self.word, self.strands, self.selected, self.smoothing)
+
+    def _apply_word(self, word, strands, note):
+        self.history.append((list(self.word), int(self.strands),
+                             dict(self.smoothing), int(self.selected)))
+        self.word = list(word)
+        self.strands = int(strands)
+        self.smoothing = {}
+        self.selected = min(self.selected, len(self.word) - 1)
+        self._rebuild()
+        ok = jones_from_braid(self.word, self.strands) == self.base_jones
+        self.lbl_status.setText(
+            f"{note} · 辫长 {len(self.word)} · {self.strands} 股 · "
+            + ("✓ 不变量未变" if ok else "✗ 不变量改变"))
+
+    def _current_gen(self, fallback=1):
+        if 0 <= self.selected < len(self.word):
+            return abs(int(self.word[self.selected]))
+        return fallback
+
+    def do_r2_insert(self):
+        gen = self._current_gen()
+        pos = self.selected + 1 if self.selected >= 0 else len(self.word)
+        self._apply_word(r2_insert(self.word, pos, gen, self.strands),
+                         self.strands, f"R2 插入 σ{gen}σ{gen}⁻¹ @{pos + 1}")
+
+    def do_r2_remove(self):
+        start = max(0, self.selected)
+        result = r2_remove(self.word, start, self.strands)
+        if result is None:
+            self.lbl_status.setText("没有可删除的 σσ⁻¹ 对（可先插入一对）")
+            return
+        self._apply_word(result[0], self.strands, f"R2 删除 @{result[1] + 1}")
+
+    def do_r3(self):
+        start = max(0, self.selected)
+        result = r3_apply(self.word, start, self.strands)
+        if result is None:
+            self.lbl_status.setText("没有 σaσbσa 模式（可先插入 R2 对或选中别的交叉）")
+            return
+        self._apply_word(result[0], self.strands, f"R3 @{result[1] + 1}")
+
+    def do_conjugate(self):
+        gen = self._current_gen()
+        self._apply_word(conjugate(self.word, gen, self.strands),
+                         self.strands, f"共轭 σ{gen}·w·σ{gen}⁻¹")
+
+    def do_stabilize(self):
+        word, strands = stabilize(self.word, self.strands)
+        self._apply_word(word, strands, "稳定化 +1 股")
+
+    def do_destabilize(self):
+        result = destabilize(self.word, self.strands)
+        if result is None:
+            self.lbl_status.setText("当前辫子无法直接去掉一股（需最后一位只出现一次）")
+            return
+        self._apply_word(result[0], result[1], "去稳定化 −1 股")
+
+    def undo(self):
+        if not self.history:
+            self.lbl_status.setText("没有可撤销的操作")
+            return
+        word, strands, smoothing, selected = self.history.pop()
+        self.word = list(word)
+        self.strands = int(strands)
+        self.smoothing = dict(smoothing)
+        self.selected = int(selected)
+        self._rebuild()
+        self.lbl_status.setText(
+            f"已撤销 · 辫长 {len(self.word)} · {self.strands} 股")
+
+    def set_smoothing(self, mode):
+        if not (0 <= self.selected < len(self.word)):
+            self.lbl_status.setText("先点选辫子图里的一个交叉")
+            return
+        self.smoothing[self.selected] = mode
+        self._refresh_diagram()
+        self.lbl_status.setText(
+            f"第 {self.selected + 1} 个交叉取 {mode} 平滑（仅示意：平滑后是链环，"
+            "3D 仍显示原结）")
+
+    def _rebuild(self):
         spec = self.spec
-        base = jones_from_braid(spec["braid"], spec["strands"])
+        base = jones_from_braid(self.word, self.strands)
         self.polynomial = mirror_jones(base) if self.mirror else base
-        writhe = writhe_of(spec["braid"])
+        writhe = writhe_of(self.word)
         if self.mirror:
             writhe = -writhe
-        perm = braid_permutation(spec["braid"], spec["strands"])
-        seen = set()
-        components = 0
-        for s in range(spec["strands"]):
-            if s in seen:
-                continue
-            components += 1
-            while s not in seen:
-                seen.add(s)
-                s = perm[s]
+        components = braid_components(self.word, self.strands)
         alex = {Fraction(e): Fraction(c) for e, c in spec["alex"].items()}
         self.lbl_crossings.setText(f"交叉数  {spec['crossings']}")
-        self.lbl_writhe.setText(f"writhe  {writhe:+d}  (辫长 {len(spec['braid'])})")
-        self.lbl_components.setText(f"分支数  {components}  ·  {spec['strands']} 股")
+        self.lbl_writhe.setText(f"writhe  {writhe:+d}  (辫长 {len(self.word)})")
+        self.lbl_components.setText(f"分支数  {components}  ·  {self.strands} 股")
         self.lbl_det.setText(f"行列式  {determinant_from_jones(base)}")
         self.lbl_poly.setText("V(t) = " + format_polynomial(self.polynomial))
         self.lbl_alexander.setText("Δ(t) = " + format_polynomial(alex))
-        curves = braid_curves(spec["braid"], spec["strands"], key=spec["key"])
+        pristine = list(self.word) == list(spec["braid"])
+        curves = braid_curves(self.word, self.strands,
+                              key=spec["key"] if pristine else None)
         if self.mirror:
             curves = [[(-x, y, z) for x, y, z in c] for c in curves]
         self.canvas.set_curves(curves)
+        self._refresh_diagram()
+        same = base == self.base_jones
         self.lbl_status.setText(
             f"Jones · {spec['pretty']} · {spec['key']} · "
-            f"{'镜像' if self.mirror else '标准'} · "
-            f"由辫子 {spec['braid']} 生成"
-        )
+            f"{'镜像' if self.mirror else '标准'} · 辫长 {len(self.word)} · "
+            + ("✓ 结型不变" if same else "✗ 结型已改变"))
 
 
 MainWindow = JonesApp
