@@ -446,7 +446,7 @@ def _torus_params(word, strands):
     return None
 
 
-def torus_curve(p, q, sign=1, samples=520, major=2.0, minor=0.72):
+def torus_curve(p, q, sign=1, samples=900, major=2.0, minor=0.72):
     """Classic (p, q) torus knot: winds p times around the axis, q times the tube."""
     pts = []
     for i in range(samples):
@@ -460,7 +460,7 @@ def torus_curve(p, q, sign=1, samples=520, major=2.0, minor=0.72):
 TORUS_KEYS = {"3_1": (2, 3), "5_1": (2, 5), "7_1": (2, 7), "8_19": (3, 4)}
 
 
-def braid_curves(word, strands, per_step=20, major=2.10, minor=0.66,
+def braid_curves(word, strands, per_step=30, major=2.10, minor=0.66,
                  over=0.09, key=None):
     """Closed braid laid on a torus surface.
 
@@ -508,16 +508,22 @@ def braid_curves(word, strands, per_step=20, major=2.10, minor=0.66,
         a, b = i, i + 1
         sa, sb = slots.index(a), slots.index(b)
         over_strand = sa if sign > 0 else sb
-        for s in (sa, sb):
+        for s in range(n):
             start = slots[s]
-            target = b if start == a else a
+            if s == sa or s == sb:
+                target = b if start == a else a
+                bump_sign = 1.0 if s == over_strand else -1.0
+            else:
+                target = start
+                bump_sign = 0.0
             for j in range(1, per_step + 1):
                 t = j / per_step
                 e = _smooth(t)
                 slot = start + (target - start) * e
                 u = (k + t) / total
-                bump = (over * (1.0 if s == over_strand else -1.0)
-                        * math.sin(math.pi * t))
+                # every strand is sampled through every step: skipping the
+                # idle strands would join two crossings with a straight chord
+                bump = (over * bump_sign * math.sin(math.pi * t) ** 2)
                 paths[s].append(point(slot, u, bump))
         slots[sa], slots[sb] = b, a
 
@@ -533,8 +539,42 @@ def braid_curves(word, strands, per_step=20, major=2.10, minor=0.66,
             seen.add(s)
             comp.extend(paths[s])
             s = final_slot[s]
-        components.append(_dedupe(comp))
+        components.append(_smooth_closed(_chaikin(_dedupe(comp), 2), 8, 0.38))
     return _normalise(components)
+
+
+def _smooth_closed(pts, iterations=8, factor=0.38):
+    """Laplacian smoothing on a closed polyline (rounds hard corners)."""
+    for _ in range(iterations):
+        count = len(pts)
+        out = []
+        for i in range(count):
+            ax, ay, az = pts[i - 1]
+            bx, by, bz = pts[i]
+            cx, cy, cz = pts[(i + 1) % count]
+            out.append((bx + factor * ((ax + cx) * 0.5 - bx),
+                        by + factor * ((ay + cy) * 0.5 - by),
+                        bz + factor * ((az + cz) * 0.5 - bz)))
+        pts = out
+    return pts
+
+
+def _chaikin(pts, iterations=2):
+    """Corner-cutting smoothing (closed polyline), keeps the curve close."""
+    for _ in range(iterations):
+        out = []
+        count = len(pts)
+        for i in range(count):
+            ax, ay, az = pts[i]
+            bx, by, bz = pts[(i + 1) % count]
+            out.append((0.75 * ax + 0.25 * bx,
+                        0.75 * ay + 0.25 * by,
+                        0.75 * az + 0.25 * bz))
+            out.append((0.25 * ax + 0.75 * bx,
+                        0.25 * ay + 0.75 * by,
+                        0.25 * az + 0.75 * bz))
+        pts = out
+    return pts
 
 
 def _dedupe(pts, eps=1e-9):

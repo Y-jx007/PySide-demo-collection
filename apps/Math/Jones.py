@@ -127,8 +127,8 @@ def format_polynomial(poly):
     return text
 
 
-def _tube_one(points, radius=0.07, sides=28, scale=1.0, turns=None):
-    """One closed curve -> three twisted hemp strands around it."""
+def _tube_one(points, radius=0.052, sides=40, scale=1.0, turns=None, strands=5):
+    """One closed curve -> several thin twisted hemp strands around it."""
     pts = np.asarray(points, dtype=np.float64) * scale
     n = len(pts)
     tangents = np.roll(pts, -1, axis=0) - np.roll(pts, 1, axis=0)
@@ -148,16 +148,19 @@ def _tube_one(points, radius=0.07, sides=28, scale=1.0, turns=None):
     u = np.repeat(u, sides, axis=1)
     v = np.repeat(angles[None, :], n, axis=0) / (2.0 * math.pi)
 
-    core_r = radius * 0.47
-    strand_r = radius * 0.54
     if turns is None:
-        # keep the fibre density roughly constant as the curve grows
-        turns = max(10.0, 23.0 * n / 240.0)
+        # twist density per unit arc length, independent of the sampling
+        length = float(np.sum(np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)))
+        turns = max(8, int(round(length * 2.4)))
+
+    core_r = radius * 0.55
+    # thin filaments packed around the core without overlapping
+    strand_r = core_r * math.sin(math.pi / strands) * 0.80
 
     all_verts, all_normals, all_uvs, all_idx, all_strand = [], [], [], [], []
     offset = 0
-    for k in range(3):
-        theta = 2.0 * math.pi * (turns * u[:, 0] + k / 3.0)
+    for k in range(strands):
+        theta = 2.0 * math.pi * (turns * u[:, 0] + k / strands)
         e1 = (normals * np.cos(theta)[:, None]
               + binormals * np.sin(theta)[:, None])
         e2 = (-normals * np.sin(theta)[:, None]
@@ -169,20 +172,23 @@ def _tube_one(points, radius=0.07, sides=28, scale=1.0, turns=None):
         normals_s = offs / max(strand_r, 1e-9)
         all_verts.append(verts.reshape(-1, 3))
         all_normals.append(normals_s.reshape(-1, 3))
-        uv = np.stack((u, v + k / 3.0), axis=-1)
+        uv = np.stack((u, v + k / strands), axis=-1)
         all_uvs.append(uv.reshape(-1, 2))
         all_strand.append(np.full(n * sides, k, dtype=np.int32))
-        idx = []
-        for i in range(n):
-            ni = (i + 1) % n
-            for j in range(sides):
-                nj = (j + 1) % sides
-                a = offset + i * sides + j
-                b = offset + i * sides + nj
-                c = offset + ni * sides + nj
-                d = offset + ni * sides + j
-                idx.extend(((a, b, c), (a, c, d)))
-        all_idx.append(np.asarray(idx, dtype=np.uint32).reshape(-1, 3))
+        # vectorised quad -> two triangles
+        ring = np.arange(sides)
+        ring_next = (ring + 1) % sides
+        rows = np.arange(n)
+        rows_next = (rows + 1) % n
+        base_a = offset + rows[:, None] * sides
+        base_b = offset + rows_next[:, None] * sides
+        a = base_a + ring[None, :]
+        b = base_a + ring_next[None, :]
+        c = base_b + ring_next[None, :]
+        d = base_b + ring[None, :]
+        tri1 = np.stack((a, b, c), axis=-1).reshape(-1, 3)
+        tri2 = np.stack((a, c, d), axis=-1).reshape(-1, 3)
+        all_idx.append(np.concatenate((tri1, tri2)).astype(np.uint32))
         offset += n * sides
 
     return (np.concatenate(all_verts).astype(np.float32),
@@ -192,11 +198,11 @@ def _tube_one(points, radius=0.07, sides=28, scale=1.0, turns=None):
             np.concatenate(all_strand))
 
 
-def tube_mesh(points, radius=0.07, sides=28):
+def tube_mesh(points, radius=0.052, sides=40):
     return _tube_one(points, radius=radius, sides=sides, scale=0.62)
 
 
-def tube_mesh_multi(curves, radius=0.07, sides=28):
+def tube_mesh_multi(curves, radius=0.052, sides=40):
     """Tube for every link component, merged into one mesh."""
     parts = [_tube_one(c, radius=radius, sides=sides, scale=1.0) for c in curves]
     parts = [p for p in parts if p is not None]
@@ -295,10 +301,12 @@ class JonesCanvas(ShaderMeshCanvas):
         N = normalize(N + (0.44 * fibre + 0.22 * fine) * B
                         + 0.14 * (grain - 0.5) * T);
 
-        int sid = int(clamp(v_strand + 0.5, 0.0, 2.0));
+        int sid = int(clamp(v_strand + 0.5, 0.0, 4.0));
         vec3 albedo = vec3(0.44, 0.29, 0.16);
         if (sid == 1) albedo = vec3(0.37, 0.23, 0.12);
         if (sid == 2) albedo = vec3(0.50, 0.34, 0.19);
+        if (sid == 3) albedo = vec3(0.41, 0.26, 0.14);
+        if (sid == 4) albedo = vec3(0.47, 0.31, 0.17);
         albedo *= 0.68 + 0.32 * fibre;
 
         float rough = 0.90 + 0.07 * grain + 0.04 * fine;
