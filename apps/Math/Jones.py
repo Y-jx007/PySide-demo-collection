@@ -127,7 +127,7 @@ def format_polynomial(poly):
     return text
 
 
-def _tube_one(points, radius=0.052, sides=40, scale=1.0, turns=None, strands=5):
+def _tube_one(points, radius=0.052, sides=40, scale=1.0, turns=None, strands=7):
     """One closed curve -> several thin twisted hemp strands around it."""
     pts = np.asarray(points, dtype=np.float64) * scale
     n = len(pts)
@@ -153,11 +153,12 @@ def _tube_one(points, radius=0.052, sides=40, scale=1.0, turns=None, strands=5):
         length = float(np.sum(np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)))
         turns = max(10, int(round(length * 3.6)))
 
-    # Solid rope: outer filaments sit tangent to each other and to a central
-    # core filament, so there are no see-through gaps when the rope bends.
-    pitch_r = radius / (1.0 + math.sin(math.pi / strands))
-    strand_r = pitch_r * math.sin(math.pi / strands)
-    core_r = max(pitch_r - strand_r, radius * 0.12)
+    # Solid rope: filaments overlap slightly so the grooves stay shallow and
+    # the silhouette stays round even when the whole rope is only a few pixels.
+    overlap = 1.15
+    pitch_r = radius / (1.0 + overlap * math.sin(math.pi / strands))
+    strand_r = pitch_r * overlap * math.sin(math.pi / strands)
+    core_r = max(pitch_r - strand_r, radius * 0.10)
 
     all_verts, all_normals, all_uvs, all_idx, all_strand = [], [], [], [], []
     offset = 0
@@ -268,6 +269,22 @@ class JonesCanvas(ShaderMeshCanvas):
         return fract(p.x * p.y);
     }
 
+    float hash31(vec3 p) {
+        p = fract(p * 0.3183099 + vec3(0.11, 0.27, 0.39));
+        p *= 17.0;
+        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+    }
+
+    float vnoise(vec3 x) {
+        vec3 i = floor(x);
+        vec3 f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(hash31(i + vec3(0, 0, 0)), hash31(i + vec3(1, 0, 0)), f.x),
+                       mix(hash31(i + vec3(0, 1, 0)), hash31(i + vec3(1, 1, 0)), f.x), f.y),
+                   mix(mix(hash31(i + vec3(0, 0, 1)), hash31(i + vec3(1, 0, 1)), f.x),
+                       mix(hash31(i + vec3(0, 1, 1)), hash31(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+    }
+
     float D_GGX(float NoH, float a) {
         float a2 = a * a;
         float d = NoH * NoH * (a2 - 1.0) + 1.0;
@@ -282,7 +299,7 @@ class JonesCanvas(ShaderMeshCanvas):
     }
 
     vec3 pbr_light(vec3 N, vec3 V, vec3 L, vec3 radiance,
-                   vec3 albedo, float rough, vec3 F0) {
+                   vec3 albedo, float rough, vec3 F0, float spec_mask) {
         vec3 H = normalize(L + V);
         float NoL = max(dot(N, L), 0.0);
         float NoV = max(dot(N, V), 1e-4);
@@ -292,7 +309,7 @@ class JonesCanvas(ShaderMeshCanvas):
         vec3 F = F0 + (1.0 - F0) * pow(1.0 - VoH, 5.0);
         vec3 spec = F * D_GGX(NoH, a) * V_Smith(NoV, NoL, a);
         vec3 diffuse = albedo * (1.0 - F) / 3.14159265;
-        return (diffuse + spec) * radiance * NoL;
+        return (diffuse + spec * spec_mask) * radiance * NoL;
     }
 
     void main() {
@@ -306,38 +323,73 @@ class JonesCanvas(ShaderMeshCanvas):
         float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
         vec3 T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) / max(det, 1e-5));
         vec3 B = normalize(cross(N, T));
-        float fibre = sin(6.2831853 * (v_uv.x * 300.0 + v_uv.y * 17.0));
-        float fine = sin(6.2831853 * (v_uv.x * 760.0 - v_uv.y * 53.0));
-        float grain = hash21(floor(v_uv * vec2(900.0, 90.0)));
-        N = normalize(N + (0.44 * fibre + 0.22 * fine) * B
-                        + 0.14 * (grain - 0.5) * T);
+        // Screen-space footprint of the procedural detail: each octave is
+        // faded out once it approaches one cycle per pixel, which removes the
+        // moire seen from a distance while keeping the grit up close.
+        float foot_uv = max(fwidth(v_uv.x) * 6.2831853, 1e-7);
+        float foot_w = max(max(fwidth(v_world.x), fwidth(v_world.y)),
+                           fwidth(v_world.z)) + 1e-7;
 
-        int sid = int(clamp(v_strand + 0.5, 0.0, 4.0));
+        float c1 = 240.0, c2 = 620.0, c3 = 1400.0;
+        // irregular fibre spacing: a low-frequency world noise wobbles the phase
+        float wobble = 0.55 * (vnoise(v_world * 26.0) - 0.5);
+        float f1 = sin(6.2831853 * (v_uv.x * c1 + v_uv.y * 13.0 + wobble));
+        float f2 = sin(6.2831853 * (v_uv.x * c2 - v_uv.y * 41.0 + 1.7 * wobble));
+        float f3 = sin(6.2831853 * (v_uv.x * c3 + v_uv.y * 89.0));
+        float a1 = clamp(1.45 - foot_uv * c1, 0.0, 1.0);
+        float a2 = clamp(1.45 - foot_uv * c2, 0.0, 1.0);
+        float a3 = clamp(1.45 - foot_uv * c3, 0.0, 1.0);
+
+        float n1 = vnoise(v_world * 52.0) - 0.5;
+        float n2 = vnoise(v_world * 180.0) - 0.5;
+        float n3 = vnoise(v_world * 430.0) - 0.5;
+        float b1 = clamp(1.45 - foot_w * 52.0, 0.0, 1.0);
+        float b2 = clamp(1.45 - foot_w * 180.0, 0.0, 1.0);
+        float b3 = clamp(1.45 - foot_w * 430.0, 0.0, 1.0);
+
+        float fibre = f1 * a1;
+        float fine = f2 * a2 + 0.6 * f3 * a3;
+        float grain = n1 * b1 + 0.65 * n2 * b2 + 0.35 * n3 * b3;
+        // ridge profile: 0 in the grooves, 1 on the fibre crests
+        float ridge = pow(0.5 + 0.5 * fibre, 1.5);
+
+        N = normalize(N + (1.10 * fibre + 0.42 * fine + 1.40 * grain) * B
+                        + (0.60 * n2 * b2 + 0.40 * n3 * b3) * T);
+
+        int sid = int(clamp(v_strand + 0.5, 0.0, 6.0));
         vec3 albedo = vec3(0.44, 0.29, 0.16);
         if (sid == 1) albedo = vec3(0.37, 0.23, 0.12);
         if (sid == 2) albedo = vec3(0.50, 0.34, 0.19);
         if (sid == 3) albedo = vec3(0.41, 0.26, 0.14);
         if (sid == 4) albedo = vec3(0.47, 0.31, 0.17);
-        albedo *= 0.68 + 0.32 * fibre;
+        if (sid == 5) albedo = vec3(0.39, 0.25, 0.13);
+        if (sid == 6) albedo = vec3(0.45, 0.30, 0.16);
+        // fibre ridges darken the grooves, grain breaks up the flat patches
+        float patch = vnoise(v_world * 11.0) - 0.5;
+        albedo *= (0.42 + 0.46 * ridge + 0.20 * grain) * (1.0 + 0.30 * patch);
 
-        float rough = 0.90 + 0.07 * grain + 0.04 * fine;
-        vec3 F0 = vec3(0.035);
+        float rough = 0.90 + 0.07 * (0.5 + n1) + 0.05 * fibre + 0.04 * grain;
+        vec3 F0 = vec3(0.024);
         vec3 color = vec3(0.0);
+
+        // grooves occlude the sheen, so the highlight breaks up between fibres
+        float groove = smoothstep(0.05, 0.85, ridge);
+        float spec_mask = mix(0.30, 1.0, groove) * (0.88 + 0.24 * grain);
 
         vec3 L1 = normalize(vec3(-0.65, 0.70, 0.55));
         vec3 L2 = normalize(vec3(0.62, 0.52, 0.58));
         vec3 L3 = normalize(vec3(0.10, -0.65, 0.35));
         color += pbr_light(N, V, L1, vec3(2.3, 1.75, 1.20),
-                           albedo, rough, F0);
+                           albedo, rough, F0, spec_mask);
         color += pbr_light(N, V, L2, vec3(1.15, 1.25, 1.35),
-                           albedo, rough, F0);
+                           albedo, rough, F0, spec_mask);
         color += pbr_light(N, V, L3, vec3(0.30, 0.34, 0.38),
-                           albedo, rough, F0);
+                           albedo, rough, F0, spec_mask);
 
         // Camera-facing fill opens the dark backside without flattening the form.
         vec3 Lcam = normalize(-V + vec3(0.0, 0.20, 0.0));
         color += pbr_light(N, V, Lcam, vec3(0.42, 0.38, 0.32),
-                           albedo, rough, F0);
+                           albedo, rough, F0, spec_mask);
 
         float hemi = 0.5 + 0.5 * N.y;
         color += albedo * mix(0.10, 0.24, hemi);
