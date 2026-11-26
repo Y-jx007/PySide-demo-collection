@@ -323,38 +323,21 @@ class JonesCanvas(ShaderMeshCanvas):
         float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
         vec3 T = normalize((dpdx * duvdy.y - dpdy * duvdx.y) / max(det, 1e-5));
         vec3 B = normalize(cross(N, T));
-        // Screen-space footprint of the procedural detail: each octave is
-        // faded out once it approaches one cycle per pixel, which removes the
-        // moire seen from a distance while keeping the grit up close.
-        float foot_uv = max(fwidth(v_uv.x) * 6.2831853, 1e-7);
+        // Only non-periodic, world-space detail.  Deliberately NO stripe
+        // pattern: a periodic fibre texture always moires at a distance and
+        // reads as zebra stripes up close.  The braided structure comes from
+        // the filament geometry instead.
         float foot_w = max(max(fwidth(v_world.x), fwidth(v_world.y)),
                            fwidth(v_world.z)) + 1e-7;
+        float n1 = vnoise(v_world * 38.0) - 0.5;
+        float n2 = vnoise(v_world * 150.0) - 0.5;
+        float n3 = vnoise(v_world * 380.0) - 0.5;
+        float b1 = clamp(1.45 - foot_w * 38.0, 0.0, 1.0);
+        float b2 = clamp(1.45 - foot_w * 150.0, 0.0, 1.0);
+        float b3 = clamp(1.45 - foot_w * 380.0, 0.0, 1.0);
+        float grain = n1 * b1 + 0.6 * n2 * b2 + 0.35 * n3 * b3;
 
-        float c1 = 240.0, c2 = 620.0, c3 = 1400.0;
-        // irregular fibre spacing: a low-frequency world noise wobbles the phase
-        float wobble = 0.55 * (vnoise(v_world * 26.0) - 0.5);
-        float f1 = sin(6.2831853 * (v_uv.x * c1 + v_uv.y * 13.0 + wobble));
-        float f2 = sin(6.2831853 * (v_uv.x * c2 - v_uv.y * 41.0 + 1.7 * wobble));
-        float f3 = sin(6.2831853 * (v_uv.x * c3 + v_uv.y * 89.0));
-        float a1 = clamp(1.45 - foot_uv * c1, 0.0, 1.0);
-        float a2 = clamp(1.45 - foot_uv * c2, 0.0, 1.0);
-        float a3 = clamp(1.45 - foot_uv * c3, 0.0, 1.0);
-
-        float n1 = vnoise(v_world * 52.0) - 0.5;
-        float n2 = vnoise(v_world * 180.0) - 0.5;
-        float n3 = vnoise(v_world * 430.0) - 0.5;
-        float b1 = clamp(1.45 - foot_w * 52.0, 0.0, 1.0);
-        float b2 = clamp(1.45 - foot_w * 180.0, 0.0, 1.0);
-        float b3 = clamp(1.45 - foot_w * 430.0, 0.0, 1.0);
-
-        float fibre = f1 * a1;
-        float fine = f2 * a2 + 0.6 * f3 * a3;
-        float grain = n1 * b1 + 0.65 * n2 * b2 + 0.35 * n3 * b3;
-        // ridge profile: 0 in the grooves, 1 on the fibre crests
-        float ridge = pow(0.5 + 0.5 * fibre, 1.5);
-
-        N = normalize(N + (1.10 * fibre + 0.42 * fine + 1.40 * grain) * B
-                        + (0.60 * n2 * b2 + 0.40 * n3 * b3) * T);
+        N = normalize(N + 0.55 * grain * B + 0.30 * n3 * b3 * T);
 
         int sid = int(clamp(v_strand + 0.5, 0.0, 6.0));
         vec3 albedo = vec3(0.44, 0.29, 0.16);
@@ -364,17 +347,16 @@ class JonesCanvas(ShaderMeshCanvas):
         if (sid == 4) albedo = vec3(0.47, 0.31, 0.17);
         if (sid == 5) albedo = vec3(0.39, 0.25, 0.13);
         if (sid == 6) albedo = vec3(0.45, 0.30, 0.16);
-        // fibre ridges darken the grooves, grain breaks up the flat patches
-        float patch = vnoise(v_world * 11.0) - 0.5;
-        albedo *= (0.42 + 0.46 * ridge + 0.20 * grain) * (1.0 + 0.30 * patch);
+        // gentle tonal variation only (no dark grooves)
+        float patch = vnoise(v_world * 10.0) - 0.5;
+        albedo *= (0.94 + 0.10 * grain) * (1.0 + 0.16 * patch);
 
-        float rough = 0.90 + 0.07 * (0.5 + n1) + 0.05 * fibre + 0.04 * grain;
+        float rough = 0.90 + 0.06 * (0.5 + n1) + 0.04 * grain;
         vec3 F0 = vec3(0.024);
         vec3 color = vec3(0.0);
 
-        // grooves occlude the sheen, so the highlight breaks up between fibres
-        float groove = smoothstep(0.05, 0.85, ridge);
-        float spec_mask = mix(0.30, 1.0, groove) * (0.88 + 0.24 * grain);
+        // slight sheen variation, no stripe occlusion
+        float spec_mask = 0.92 + 0.16 * grain;
 
         vec3 L1 = normalize(vec3(-0.65, 0.70, 0.55));
         vec3 L2 = normalize(vec3(0.62, 0.52, 0.58));
