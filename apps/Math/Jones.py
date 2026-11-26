@@ -332,15 +332,22 @@ class JonesCanvas(ShaderMeshCanvas):
         // the filament geometry instead.
         float foot_w = max(max(fwidth(v_world.x), fwidth(v_world.y)),
                            fwidth(v_world.z)) + 1e-7;
+        float n0 = vnoise(v_world * 16.0) - 0.5;   // broad dents
         float n1 = vnoise(v_world * 38.0) - 0.5;
         float n2 = vnoise(v_world * 150.0) - 0.5;
         float n3 = vnoise(v_world * 380.0) - 0.5;
+        float n4 = vnoise(v_world * 820.0) - 0.5;  // fine grit
+        float b0 = clamp(1.45 - foot_w * 16.0, 0.0, 1.0);
         float b1 = clamp(1.45 - foot_w * 38.0, 0.0, 1.0);
         float b2 = clamp(1.45 - foot_w * 150.0, 0.0, 1.0);
         float b3 = clamp(1.45 - foot_w * 380.0, 0.0, 1.0);
-        float grain = n1 * b1 + 0.6 * n2 * b2 + 0.35 * n3 * b3;
+        float b4 = clamp(1.45 - foot_w * 820.0, 0.0, 1.0);
+        float grain = 0.85 * n0 * b0 + n1 * b1 + 0.6 * n2 * b2
+                    + 0.35 * n3 * b3 + 0.18 * n4 * b4;
 
-        N = normalize(N + 0.55 * grain * B + 0.30 * n3 * b3 * T);
+        // non-periodic relief: broad dents + grit, never a regular pattern
+        N = normalize(N + 1.40 * grain * B
+                        + (0.55 * n3 * b3 + 0.30 * n4 * b4) * T);
 
         int sid = int(clamp(v_strand + 0.5, 0.0, 6.0));
         vec3 albedo = vec3(0.44, 0.29, 0.16);
@@ -352,14 +359,14 @@ class JonesCanvas(ShaderMeshCanvas):
         if (sid == 6) albedo = vec3(0.45, 0.30, 0.16);
         // gentle tonal variation only (no dark grooves)
         float patch = vnoise(v_world * 10.0) - 0.5;
-        albedo *= (0.94 + 0.10 * grain) * (1.0 + 0.16 * patch);
+        albedo *= (0.92 + 0.16 * grain) * (1.0 + 0.16 * patch);
 
-        float rough = 0.90 + 0.06 * (0.5 + n1) + 0.04 * grain;
+        float rough = 0.89 + 0.09 * (0.5 + n0) + 0.05 * grain;
         vec3 F0 = vec3(0.024);
         vec3 color = vec3(0.0);
 
         // slight sheen variation, no stripe occlusion
-        float spec_mask = 0.92 + 0.16 * grain;
+        float spec_mask = 0.88 + 0.24 * grain;
 
         vec3 L1 = normalize(vec3(-0.65, 0.70, 0.55));
         vec3 L2 = normalize(vec3(0.62, 0.52, 0.58));
