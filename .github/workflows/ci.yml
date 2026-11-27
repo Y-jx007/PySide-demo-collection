@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Compile all Python files
         run: python -m compileall -q main.py launcher_widgets.py app_runner.py apps_manifest.py manifest_edit.py apps common support tests tools
       - name: Check generated layout and matrix
@@ -23,18 +23,20 @@ jobs:
   windows:
     name: Windows offscreen UI + full tests
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
       MPLBACKEND: Agg
-      RUN_WINDOW_SMOKE: "1"
+      # CI runner 没有 GPU：只 smoke 不依赖 GL/CUDA 的应用；
+      # 完整 41 应用 smoke 在本地用 RUN_WINDOW_SMOKE=1 跑。
+      RUN_WINDOW_SMOKE: "cpu"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
