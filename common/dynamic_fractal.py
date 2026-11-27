@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 import taichi_forge as ti
-from PySide6.QtCore import Qt, QTimer, QRectF
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -164,17 +164,12 @@ class BaseFractalWidget(QWidget):
         return self.view_transform().world_to_screen(x, y)
 
     def get_render_dims(self):
-        """Return (display_w, display_h, render_w, render_h) in device pixels."""
+        """Return (display_w, display_h, render_w, render_h)."""
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
             return None, None, None, None
-        # Render in physical pixels on high-DPI screens.  Rendering at logical
-        # size and letting Qt upscale is what made the fractal look soft.
-        dpr = max(1.0, float(self.devicePixelRatioF()))
-        pw = max(1, int(round(w * dpr)))
-        ph = max(1, int(round(h * dpr)))
         return render_dimensions(
-            pw, ph, self.parent_app.antialias_factor, preview=self._interactive
+            w, h, self.parent_app.antialias_factor, preview=self._interactive
         )
 
     def resizeEvent(self, event):
@@ -224,9 +219,6 @@ class BaseFractalWidget(QWidget):
             buffer = None
         elif buffer is None:
             buffer = array
-        # The target is in physical pixels; tell Qt how large it is in
-        # logical pixels so it is not upscaled again by the high-DPI factor.
-        image.setDevicePixelRatio(max(1.0, float(self.devicePixelRatioF())))
         self.image = image
         self._image_buffer = buffer
         self.needs_recompute = False
@@ -296,17 +288,9 @@ class BaseFractalWidget(QWidget):
             self.compute_image()
         painter = QPainter(self)
         if self.image is not None and not self.image.isNull():
-            # The image is already at physical resolution; do not let Qt
-            # resample it again (smooth upscaling is what looked blurry).
+            # Exact-size bitmap; avoid a second smooth resample.
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-            dpr = max(1.0, float(self.devicePixelRatioF()))
-            iw = self.image.width() / dpr
-            ih = self.image.height() / dpr
-            scale = min(self.width() / max(1.0, iw), self.height() / max(1.0, ih))
-            w, h = iw * scale, ih * scale
-            x = (self.width() - w) * 0.5
-            y = (self.height() - h) * 0.5
-            painter.drawImage(QRectF(x, y, w, h), self.image)
+            painter.drawImage(self.rect(), self.image)
         else:
             painter.fillRect(self.rect(), Qt.black)
         painter.end()
