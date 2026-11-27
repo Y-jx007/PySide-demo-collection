@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 import taichi_forge as ti
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QRectF
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -293,7 +293,14 @@ class BaseFractalWidget(QWidget):
             # The image is already at physical resolution; do not let Qt
             # resample it again (smooth upscaling is what looked blurry).
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-            painter.drawImage(self.rect(), self.image)
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            iw = self.image.width() / dpr
+            ih = self.image.height() / dpr
+            scale = min(self.width() / max(1.0, iw), self.height() / max(1.0, ih))
+            w, h = iw * scale, ih * scale
+            x = (self.width() - w) * 0.5
+            y = (self.height() - h) * 0.5
+            painter.drawImage(QRectF(x, y, w, h), self.image)
         else:
             painter.fillRect(self.rect(), Qt.black)
         painter.end()
