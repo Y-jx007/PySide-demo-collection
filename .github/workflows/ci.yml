@@ -51,4 +51,13 @@ jobs:
           python tools/check_ui_style.py "apps/Cellular Automata/Distill.py"
           python tools/check_ui_style.py apps/Unpolished/MPM2D.py
       - name: Full tests
-        run: python -m unittest discover -s tests -v
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -v 2>&1 | Tee-Object -FilePath test-output.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Select-String -Path test-output.log -Pattern '^(FAIL|ERROR):' | ForEach-Object {
+              Write-Host "::error::$($_.Line)"
+            }
+            exit $code
+          }
