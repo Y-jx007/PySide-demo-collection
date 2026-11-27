@@ -303,7 +303,7 @@ class TwoViewCanvas(QWidget):
 class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Neural CA · 自生长")
+        self.setWindowTitle("Mordvintsev · 神经 CA")
         self.model_dir = str(MODELS_DIR)
         os.makedirs(self.model_dir, exist_ok=True)
 
@@ -870,14 +870,14 @@ class MainWindow(LabWindow):
         bg = np.ones_like(rgb)
         comp = rgb * alpha + bg * (1 - alpha)
         comp_uint8 = (np.clip(comp, 0, 1) * 255).astype(np.uint8)
-        qimg = QImage(comp_uint8.data.tobytes(), w, h, w * 3, QImage.Format_RGB888)
+        qimg = QImage(comp_uint8.data, w, h, w * 3, QImage.Format_RGB888)
         return qimg.copy()
 
     def update_state_display(self):
         if self.current_state is None:
             return
         rgba = self.current_state[0, :, :, :4].cpu().numpy()
-        rgba = np.clip(rgba, 0, 1)
+        np.clip(rgba, 0, 1, out=rgba)
         rgba_uint8 = (rgba * 255).astype(np.uint8)
         qimg = self.rgba_to_qimage(rgba_uint8)
         self.display_widget.set_state_image(qimg)
@@ -887,7 +887,8 @@ class MainWindow(LabWindow):
             self.display_widget.set_target_image(QImage())
             return
         rgba = self.target_tensor[0].permute(1, 2, 0).cpu().numpy()
-        rgba_uint8 = (np.clip(rgba, 0, 1) * 255).astype(np.uint8)
+        np.clip(rgba, 0, 1, out=rgba)
+        rgba_uint8 = (rgba * 255).astype(np.uint8)
         qimg = self.rgba_to_qimage(rgba_uint8)
         self.display_widget.set_target_image(qimg)
 

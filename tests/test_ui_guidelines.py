@@ -29,9 +29,9 @@ class TestUIGuidelines(unittest.TestCase):
 
         expected = {
             "Quasicrystal": ("Math/Quasicrystal.py", "Math"),
-            "Mass Spring": ("Physics/Mass-Spring.py", "Physics"),
+            "Hooke": ("Physics/Mass-Spring.py", "Physics"),
             "Particle Lenia": ("Cellular Automata/Particle Lenia.py", "Cellular Automata"),
-            "Distill": ("Cellular Automata/Distill.py", "Cellular Automata"),
+            "Mordvintsev": ("Cellular Automata/Distill.py", "Cellular Automata"),
         }
         entries = {app["title"]: app for app in apps_manifest.APPS}
         for title, (path, category) in expected.items():

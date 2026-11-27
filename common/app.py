@@ -16,12 +16,38 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import QApplication, QWidget
 
 # 路径约定集中在 common.paths；这里保留同名量，兼容既有导入
 from common.paths import PROJECT_ROOT, STYLE_PATH  # noqa: F401,E402
+
+# 启动器通过这个环境变量把“就绪标记”路径传给子进程。
+READY_ENV = "PYSIDE_TOOLS_READY_FILE"
+
+
+def announce_ready(delay_ms: int = 250) -> bool:
+    """Tell the launcher that this process has a window on screen.
+
+    JIT 编译让“启动要多久”无法预估；子进程在事件循环跑起来后自己写一个带 pid
+    的标记文件，比启动器猜时间可靠。没有设置环境变量时（直接
+    ``python apps/...`` 运行）什么都不做。
+    """
+    marker = os.environ.get(READY_ENV)
+    if not marker:
+        return False
+
+    def _write():
+        try:
+            Path(marker).write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
+
+    QTimer.singleShot(max(0, int(delay_ms)), _write)
+    return True
 
 
 def setup_gl_format(version=(2, 1), *, profile=None, renderable_type=None,
@@ -88,4 +114,5 @@ def run_app(window, *, gl: bool = False, gl_options: dict | None = None,
     if before_exec is not None:
         # 先让窗口/状态栏画出来，再进入事件循环（首帧要 JIT 的 app 用得上）
         before_exec(app)
+    announce_ready()
     return app.exec()

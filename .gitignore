@@ -27,3 +27,8 @@ imgui.ini
 
 # Lenia preset backups
 assets/data/preset_backups/
+
+# Local recovery snapshots (kept in backups/, never as *.bak-* in the tree)
+backups/
+*.bak
+*.bak-*

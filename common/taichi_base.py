@@ -16,8 +16,8 @@ def ensure_taichi():
     if _TAICHI_READY:
         return ti
     try:
-        ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=False)
+        ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=False, advanced_optimization=True)
     except Exception:
-        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=False)
+        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=False, advanced_optimization=True)
     _TAICHI_READY = True
     return ti

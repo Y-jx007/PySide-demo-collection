@@ -3,6 +3,7 @@ from common.qt_base import (LabeledSlider, QBrush, QButtonGroup, QCheckBox, QCol
                             QPainter, QPen, QPixmap, QPoint, QPushButton, QRect, QSplitter, QTabWidget,
                             QVBoxLayout, QWidget, Qt, math, run_app, separator)
 from common.numpy_base import (Image, ImageDraw, ask_save_path, np)
+from common.cpu_fft import fft2_magnitude_db
 import matplotlib.pyplot as plt
 from common.mpl_canvas import MplCanvas
 
@@ -23,9 +24,7 @@ def safe_eval(expr, x, y):
 def calculate_fourier(image_array):
     if np.all(image_array == 0):
         return None
-    f = np.fft.fft2(image_array)
-    fshift = np.fft.fftshift(f)
-    return 20 * np.log(np.abs(fshift) + 1)
+    return fft2_magnitude_db(image_array)
 
 # ── 绘图画布（原逻辑完全不变）────
 class SimpleDrawingCanvas(QWidget):

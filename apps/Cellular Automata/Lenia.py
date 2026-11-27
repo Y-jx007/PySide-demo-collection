@@ -1,24 +1,68 @@
+import threading
+import time
+
+from common.lab_window import LabWindow
 from common.mpl_canvas import MplCanvas
 from common.numpy_base import (np)
-from common.qt_base import (QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage, QInputDialog, QLabel,
-                            QLineEdit, QMainWindow, QMessageBox, QOpenGLWidget, QPainter, QPen, QPoint, QPushButton,
-                            QRect, QScrollArea, QSettings, QSlider, QSplitter, QTabWidget, QTimer, QVBoxLayout,
-                            QWidget, Qt, Signal, os, re, run_app)
+from common.qt_base import (QApplication, QColor, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QImage,
+                            QInputDialog, QLabel, QLineEdit, QMessageBox, QOpenGLWidget, QPainter, QPen,
+                            QPoint, QPushButton, QRect, QScrollArea, QSettings, QSlider, QTabWidget, QTimer,
+                            QVBoxLayout, QWidget, Qt, Signal, re, run_app)
 from common.taichi_base import (ti)
+from common.gpu_fft import TorchFFTConvolver2D
 from matplotlib import cm
+from common.paths import DATA_DIR
+
+# scipy.fft 只在 512+ 的 CPU FFT 后备路径用到；torch 只在 512/1024 的 GPU
+# 路径用到。默认 256 分辨率两条路径都不走，所以按需导入，避免为冷路径付
+# 两秒以上的启动成本（AGENTS.md：重依赖惰性导入）。
+scipy_fft = None
+torch = None
+_torch_lock = threading.Lock()
+_torch_missing = False
+
+
+def _load_torch():
+    """按需导入 torch；没装 torch 时返回 None，让 CPU 路径继续可用。
+
+    加锁是因为后台预热线程和 UI 线程都可能触发导入，两边要看到同一个结果。
+    """
+    global torch, _torch_missing
+    if torch is not None:
+        return torch
+    with _torch_lock:
+        if torch is not None:
+            return torch
+        if _torch_missing:
+            return None
+        try:
+            import torch as _torch_module
+        except ImportError:
+            _torch_missing = True
+            return None
+        torch = _torch_module
+        return torch
+
+
+def _scipy_fft():
+    """按需导入 scipy.fft。"""
+    global scipy_fft
+    if scipy_fft is None:
+        from scipy import fft as _fft
+        scipy_fft = _fft
+    return scipy_fft
 
 # ================== 常量 ==================
-MAX_KERNEL_RADIUS = 50
+MAX_KERNEL_RADIUS = 100
 KERNEL_WINDOW = 2 * MAX_KERNEL_RADIUS + 1
 MAX_KERNEL_ELEMENTS = KERNEL_WINDOW * KERNEL_WINDOW
 
-from common.paths import DATA_DIR
-
 PRESET_FILE = str(DATA_DIR / "lenia_presets.npz")
+_TAICHI_INITIALIZED = False
 
 # ================== 参数元数据 ==================
 PARAM_META = {
-    'R':         {'display': '半径 R',   'slider_range': (1, 50),   'scale': 1.0,  'decimals': 0, 'default': 15},
+    'R':         {'display': '半径 R',   'slider_range': (1, 100),  'scale': 1.0,  'decimals': 0, 'default': 15},
     'num_rings': {'display': '环数',     'slider_range': (1, 6),    'scale': 1.0,  'decimals': 0, 'default': 3},
     'rho':       {'display': 'ρ (中心)', 'slider_range': (0, 100),  'scale': 0.01, 'decimals': 3, 'default': 0.5},
     'omega':     {'display': 'ω (宽度)', 'slider_range': (1, 100),  'scale': 0.01, 'decimals': 3, 'default': 0.15},
@@ -29,8 +73,29 @@ PARAM_META = {
 BETA_META = {'display': '振幅 β', 'slider_range': (0, 100), 'scale': 0.01, 'decimals': 2, 'default': 1.0, 'count': 6}
 
 # 生长函数 / 核函数类型（与 Bert Chan 的 Lenia 原版一致；0 = 本项目早期的高斯环近似，用于兼容旧预设）
-GROWTH_NAMES = ["gaus", "quad4", "trap", "stpz"]
-KERNEL_NAMES = ["bell(旧·高斯环)", "bump4", "quad4", "stpz1/4", "trap1/5", "life"]
+GROWTH_NAMES = ["高斯生长", "四次生长", "梯形生长", "阶跃生长"]
+KERNEL_NAMES = [
+    "高斯环核（旧）",
+    "四次凸包核",
+    "四次核",
+    "方波核",
+    "梯形核",
+    "生命类核",
+]
+KERNEL_FORMULAS = (
+    "K(r)=βi·exp[-(r-ρ)²/(2ω²)]，r=半径/R",
+    "K(r)=exp[4-4/(4r(1-r))]，0<r<1",
+    "K(r)=[4r(1-r)]⁴，0≤r≤1",
+    "K(r)=1，1/4≤r≤3/4；其余 0",
+    "K(r) 为梯形：边缘 0→1→0，中段 1",
+    "K(r)=0.5(r<1/4)，1(1/4≤r≤3/4)，0(r>3/4)",
+)
+GROWTH_FORMULAS = (
+    "G(u)=2·exp[-(u-μ)²/(2σ²)]-1",
+    "G(u)=2·[1-(u-μ)²/(9σ²)]⁴-1，|u-μ|≤3σ；否则 -1",
+    "G(u)：|u-μ|≤σ/2 为 1，到 2σ 线性降到 -1",
+    "G(u)=1，|u-μ|≤σ；否则 -1",
+)
 KERNEL_ALPHA = 4.0  # 原版 kernel_A
 
 
@@ -157,9 +222,13 @@ def _step_kernel(state: ti.template(), new_state: ti.template(),
 # ================== Lenia 模拟封装类 ==================
 class LeniaSimulation:
     def __init__(self, field_size=256):
-        # 每个 Simulation 实例创建前重置 Taichi 上下文（单实例模式）
-        ti.reset()
-        ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True)
+        # 每个 Simulation 实例创建前重置 Taichi 上下文（单实例模式）；
+        # 进程内第一次 init 之前没有运行时可重置，跳过可省一次百毫秒级销毁。
+        global _TAICHI_INITIALIZED
+        if _TAICHI_INITIALIZED:
+            ti.reset()
+        ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=True, advanced_optimization=True)
+        _TAICHI_INITIALIZED = True
 
         self.field_size = field_size
         # 创建所有 Taichi 字段
@@ -175,24 +244,160 @@ class LeniaSimulation:
         self.display_step = max(1, field_size // self.display_size)
         self.display_rgb = ti.field(ti.u8, shape=(self.display_size, self.display_size, 3))
         self.display_lut = ti.field(ti.u8, shape=(256, 3))
+        self._kernel_version = 0
+        self._kernel_crop = None
+        self._kernel_R = 0
+        self._kernel_count_py = 0
+        self._fft_key = None
+        self._fft_kernel = None
+        self._torch_device = None
+        self._torch_state = None
+        self._torch_lut = None
+        self._torch_conv = None
+        if field_size >= 512:
+            torch_module = _load_torch()
+            if torch_module is not None and torch_module.cuda.is_available():
+                self._torch_device = torch_module.device("cuda")
+                self._torch_state = torch_module.empty(
+                    (field_size, field_size), dtype=torch_module.float32,
+                    device=self._torch_device,
+                )
+                self._torch_state.uniform_(0.0, 1.0)
+                self._torch_conv = TorchFFTConvolver2D(self._torch_device)
 
     def set_lut(self, lut):
-        self.display_lut.from_numpy(np.ascontiguousarray(lut, dtype=np.uint8))
+        lut = np.ascontiguousarray(lut, dtype=np.uint8)
+        self.display_lut.from_numpy(lut)
+        if self._torch_state is not None:
+            self._torch_lut = torch.as_tensor(
+                lut, dtype=torch.uint8, device=self._torch_device
+            )
 
     def random_state(self):
+        if self._torch_state is not None:
+            self._torch_state.uniform_(0.0, 1.0)
+            return
         _random_state_kernel(self.state)
 
     def clear_state(self):
+        if self._torch_state is not None:
+            self._torch_state.zero_()
+            return
         _clear_state_kernel(self.state)
 
     def draw_points_batch(self, points: np.ndarray, brush_size: int):
         # points: (N, 3) float32 array
+        if self._torch_state is not None:
+            state = self._torch_state
+            side = state.shape[0]
+            for px, py, value in points:
+                cx = int(px)
+                cy = int(py)
+                x0 = max(0, cx - brush_size)
+                x1 = min(side, cx + brush_size + 1)
+                y0 = max(0, cy - brush_size)
+                y1 = min(side, cy + brush_size + 1)
+                if x0 >= x1 or y0 >= y1:
+                    continue
+                yy = torch.arange(y0, y1, device=self._torch_device)
+                xx = torch.arange(x0, x1, device=self._torch_device)
+                mask = ((xx[None, :] - cx) ** 2
+                        + (yy[:, None] - cy) ** 2) <= brush_size ** 2
+                state[y0:y1, x0:x1][mask] = float(value)
+            return
         _draw_points_batch_kernel(self.state, points, brush_size)
 
     def step(self, mu: float, sigma: float, dt: float, growth_type: int = 0):
+        # 512/1024 且 CUDA 可用时，状态、FFT、growth 全留在 GPU。
+        if self._torch_state is not None:
+            self._step_torch(mu, sigma, dt, growth_type)
+            return
+        # 无 torch 时的 CPU FFT 后备路径。
+        if self.field_size >= 512 and self._kernel_count_py >= 6000:
+            self._step_fft(mu, sigma, dt, growth_type)
+            return
         _step_kernel(self.state, self.new_state,
                      self.kernel_vals, self.kernel_dx, self.kernel_dy,
                      self.kernel_count, mu, sigma, dt, int(growth_type))
+
+    def _step_torch(self, mu: float, sigma: float, dt: float,
+                    growth_type: int):
+        a = self._torch_state
+        conv = self._torch_conv.convolve(a)
+        d = conv - float(mu)
+        if int(growth_type) == 0:
+            g = 2.0 * torch.exp(-(d * d) / (2.0 * sigma * sigma)) - 1.0
+        elif int(growth_type) == 1:
+            k2 = 9.0 * sigma * sigma
+            v = 1.0 - (d * d) / k2
+            g = torch.where(
+                d * d <= k2,
+                2.0 * (v * v) * (v * v) - 1.0,
+                torch.full_like(d, -1.0),
+            )
+        elif int(growth_type) == 2:
+            p = 0.5 * sigma
+            q = 2.0 * sigma
+            r = torch.abs(d)
+            g = torch.where(
+                r <= p,
+                torch.ones_like(d),
+                torch.where(
+                    r <= q,
+                    2.0 * (q - r) / (q - p) - 1.0,
+                    torch.full_like(d, -1.0),
+                ),
+            )
+        else:
+            g = torch.where(
+                torch.abs(d) <= sigma,
+                torch.ones_like(d), torch.full_like(d, -1.0),
+            )
+        self._torch_state = torch.clamp(a + float(dt) * g, 0.0, 1.0)
+
+    def _build_fft_kernel(self):
+        key = (self.field_size, self._kernel_version)
+        if self._fft_key == key and self._fft_kernel is not None:
+            return
+        N = self.field_size
+        R = self._kernel_R
+        K = self._kernel_crop
+        pad = np.zeros((N, N), dtype=np.float32)
+        offsets = np.arange(-R, R + 1)
+        idx = offsets % N
+        pad[np.ix_(idx, idx)] = K
+        self._fft_kernel = _scipy_fft().rfft2(pad, workers=1)
+        self._fft_key = key
+
+    def _step_fft(self, mu: float, sigma: float, dt: float, growth_type: int):
+        self._build_fft_kernel()
+        N = self.field_size
+        a = self.state.to_numpy()
+        fft = _scipy_fft()
+        conv = fft.irfft2(
+            fft.rfft2(a, workers=1) * self._fft_kernel,
+            s=(N, N), workers=1,
+        ).astype(np.float32)
+        d = conv - np.float32(mu)
+        if int(growth_type) == 0:
+            g = 2.0 * np.exp(-(d * d) / (2.0 * sigma * sigma)) - 1.0
+        elif int(growth_type) == 1:
+            k2 = 9.0 * sigma * sigma
+            v = 1.0 - (d * d) / k2
+            g = np.where(d * d <= k2, 2.0 * (v * v) * (v * v) - 1.0, -1.0)
+        elif int(growth_type) == 2:
+            p = 0.5 * sigma
+            q = 2.0 * sigma
+            r = np.abs(d)
+            g = np.where(
+                r <= p, 1.0,
+                np.where(r <= q, 2.0 * (q - r) / (q - p) - 1.0, -1.0),
+            )
+        else:
+            g = np.where(np.abs(d) <= sigma, 1.0, -1.0)
+        self.state.from_numpy(
+            np.ascontiguousarray(np.clip(a + dt * g, 0.0, 1.0), dtype=np.float32)
+        )
 
     def update_kernel(self, R: int, num_rings: int, rho: float, omega: float, betas: list,
                       kernel_type: int = 0):
@@ -250,20 +455,61 @@ class LeniaSimulation:
         self.kernel_dy.from_numpy(_pad(dys, MAX_KERNEL_ELEMENTS, np.int32))
         self.kernel_count[None] = count
 
-    def render_display_numpy(self) -> np.ndarray:
+        # 给 1024 大核的 FFT 分支保存归一化核。直接卷积和 FFT 使用同一个核。
+        crop = K[center - R:center + R + 1,
+                 center - R:center + R + 1].copy()
+        crop_sum = float(crop.sum())
+        if crop_sum < 1e-6:
+            crop_sum = 1.0
+        self._kernel_crop = np.ascontiguousarray(crop / crop_sum, dtype=np.float32)
+        self._kernel_R = R
+        self._kernel_count_py = count
+        self._kernel_version += 1
+        self._fft_key = None
+        self._fft_kernel = None
+        if self._torch_conv is not None:
+            self._torch_conv.set_kernel(
+                self._kernel_crop, R, self.field_size, self._kernel_version
+            )
+
+    def render_display_numpy(self, target=None) -> np.ndarray:
+        if self._torch_state is not None:
+            if self._torch_lut is None:
+                size = int(target or self.display_size)
+                return np.zeros((size, size, 3), dtype=np.uint8)
+            state = self._torch_state
+            size = int(target or self.display_size)
+            if state.shape[0] != size:
+                # Upscale/downscale on the GPU, then colour-map once.  This
+                # avoids a per-frame CPU QImage.scaled() 512 -> 600 cost.
+                state = torch.nn.functional.interpolate(
+                    state[None, None], size=(size, size),
+                    mode="bilinear", align_corners=False,
+                )[0, 0]
+            idx = (torch.clamp(state, 0.0, 1.0) * 255.0).to(torch.long)
+            rgb = self._torch_lut[idx]
+            return rgb.cpu().numpy()
         _render_display_kernel(self.state, self.display_lut,
                                self.display_rgb, self.display_step)
         return self.display_rgb.to_numpy()
 
     def get_state_numpy(self) -> np.ndarray:
+        if self._torch_state is not None:
+            return self._torch_state.cpu().numpy()
         return self.state.to_numpy()
 
     def set_state_numpy(self, arr: np.ndarray):
+        if self._torch_state is not None:
+            self._torch_state = torch.as_tensor(
+                np.ascontiguousarray(arr, dtype=np.float32),
+                dtype=torch.float32, device=self._torch_device,
+            )
+            return
         self.state.from_numpy(arr)
 
     def center_on_activity(self, threshold=0.1):
         """周期性平移使活跃区域质心位于图像中心"""
-        arr = self.state.to_numpy()
+        arr = self.get_state_numpy()
         active = arr > threshold
         if not active.any():
             return
@@ -281,7 +527,7 @@ class LeniaSimulation:
         shift_y = int(round(self.field_size / 2 - cy))
         shift_x = int(round(self.field_size / 2 - cx))
         arr_shifted = np.roll(arr, shift=(shift_y, shift_x), axis=(0, 1))
-        self.state.from_numpy(arr_shifted)
+        self.set_state_numpy(arr_shifted)
 
     def get_kernel_preview(self) -> np.ndarray:
         """返回核预览数组"""
@@ -293,7 +539,7 @@ class LeniaCanvas(QOpenGLWidget):
         super().__init__(parent)
         self.sim = sim
         self.field_size = sim.field_size
-        self.canvas_size = 640
+        self.canvas_size = 600
         self.setFixedSize(self.canvas_size, self.canvas_size)
         self.drawing = False
         self.brush_size = 2
@@ -304,6 +550,7 @@ class LeniaCanvas(QOpenGLWidget):
         self.sim.set_lut(self._lut)
         self._display_img = QImage(self.canvas_size, self.canvas_size, QImage.Format_RGB888)
         self._display_img.fill(Qt.black)
+        self._display_buffer = None
 
         self._draw_queue = []
         self._flush_timer = QTimer(self)
@@ -312,20 +559,25 @@ class LeniaCanvas(QOpenGLWidget):
 
         self.update_display()
 
-    def initializeGL(self):
-        pass
-
     def paintGL(self):
         painter = QPainter(self)
         painter.drawImage(self.rect(), self._display_img)
         painter.end()
 
     def _make_display_image(self):
-        img = np.ascontiguousarray(self.sim.render_display_numpy())
+        img = np.ascontiguousarray(self.sim.render_display_numpy(self.canvas_size))
         fs = img.shape[0]
         src = QImage(img.data, fs, fs, fs * 3, QImage.Format_RGB888)
-        self._display_img = src.scaled(self.canvas_size, self.canvas_size,
-                                       Qt.IgnoreAspectRatio, Qt.FastTransformation)
+        if fs == self.canvas_size:
+            self._display_buffer = img
+            self._display_img = QImage(
+                self._display_buffer.data, fs, fs, fs * 3, QImage.Format_RGB888
+            )
+        else:
+            self._display_img = src.scaled(
+                self.canvas_size, self.canvas_size,
+                Qt.IgnoreAspectRatio, Qt.FastTransformation,
+            )
 
     def update_display(self):
         self._make_display_image()
@@ -420,7 +672,7 @@ class LeniaCanvas(QOpenGLWidget):
 # ================== 核预览 ==================
 class KernelPreview(MplCanvas):
     def __init__(self, parent=None):
-        super().__init__(2.25, 2.25, 80, facecolor=None, fixed_size=True, parent=parent)
+        super().__init__(1.8, 1.8, 100, facecolor=None, fixed_size=True, parent=parent)
         self.fig = self.figure
         self.ax = self.figure.add_subplot(111)
         self.ax.axis('off')
@@ -436,10 +688,13 @@ class KernelPreview(MplCanvas):
 
 
 # ================== 主窗口 ==================
-class LeniaApp(QMainWindow):
+class LeniaApp(LabWindow):
+    gpu_ready = Signal(bool)
+
     def __init__(self):
         super().__init__()
         self.running = False
+        self._gallery_hidden_at = 0.0
 
         # 当前参数值（真实值）
         self.R = PARAM_META['R']['default']
@@ -473,46 +728,145 @@ class LeniaApp(QMainWindow):
         self.kernel_preview.update_preview(self.sim.get_kernel_preview())
         self.update_beta_visibility()
 
+        # 窗口先显示，再把 torch 预热放到后台：默认 256 不阻塞首帧；
+        # 用户第一次切 512/1024 时通常已经预热好，不用白等两秒。
+        self._gpu_preload_started = False
+        self._gpu_ready = None
+        self.gpu_ready.connect(self._on_gpu_ready)
+        QTimer.singleShot(600, self._preload_gpu)
+
+    # ------------------------------------------------------------------
+    # GPU 预热（512/1024 才需要 torch）
+    # ------------------------------------------------------------------
+    def _preload_gpu(self):
+        if self._gpu_preload_started:
+            return
+        self._gpu_preload_started = True
+        threading.Thread(
+            target=self._preload_gpu_worker,
+            name="lenia-gpu-preload",
+            daemon=True,
+        ).start()
+
+    def _preload_gpu_worker(self):
+        module = _load_torch()
+        ok = bool(module is not None and module.cuda.is_available())
+        try:
+            self.gpu_ready.emit(ok)
+        except RuntimeError:          # 窗口已经销毁
+            pass
+
+    def _on_gpu_ready(self, ok):
+        self._gpu_ready = bool(ok)
+        if ok:
+            self.statusBar().showMessage(
+                "GPU 支持已就绪：512/1024 分辨率可直接切换", 4000
+            )
+        else:
+            self.statusBar().showMessage(
+                "未检测到 CUDA：512/1024 将使用 CPU FFT（较慢）", 5000
+            )
+
     def init_ui(self):
         self.setWindowTitle("2D Lenia")
-        self.setGeometry(100, 100, 1060, 720)
+        self.resize(1000, 720)
+        self.setMinimumSize(1000, 720)
 
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setSpacing(4)
-        main_layout.setContentsMargins(4, 4, 4, 4)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
 
-        # 顶部工具栏
+        # 左侧只放模型参数和原理；运行/画笔/网格都放到画布上方。
+        left = QWidget()
+        left.setFixedWidth(330)
+        left_layout = QVBoxLayout(left)
+        left_layout.setSpacing(4)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        kernel_group = QGroupBox("核参数")
+        kf = QFormLayout(kernel_group)
+        kf.setSpacing(3)
+        kf.setContentsMargins(4, 4, 4, 4)
+
+        for key in ['R', 'num_rings', 'rho', 'omega']:
+            meta = PARAM_META[key]
+            slider_val = int(round(getattr(self, key) / meta['scale']))
+            slider, input_widget, row = self._add_param_row(
+                key, meta, slider_val, callback=self.on_param)
+            self.sliders[key] = slider
+            self.inputs[key] = input_widget
+            kf.addRow(row)
+
+        beta_container = self._create_beta_controls()
+        kf.addRow("振幅 β₁-β₆:", beta_container)
+
+        self.kernel_combo = QComboBox()
+        self.kernel_combo.addItems(KERNEL_NAMES)
+        self.kernel_combo.setCurrentIndex(self.kernel_type)
+        self.kernel_combo.currentIndexChanged.connect(self.on_param)
+        kf.addRow("核函数:", self.kernel_combo)
+
+        self.kernel_preview = KernelPreview()
+        kf.addRow("核预览:", self.kernel_preview)
+        left_layout.addWidget(kernel_group)
+
+        growth_group = QGroupBox("生长参数")
+        gf = QFormLayout(growth_group)
+        gf.setSpacing(3)
+        gf.setContentsMargins(4, 4, 4, 4)
+
+        for key in ['mu', 'sigma', 'dt']:
+            meta = PARAM_META[key]
+            slider_val = int(round(getattr(self, key) / meta['scale']))
+            slider, input_widget, row = self._add_param_row(
+                key, meta, slider_val, callback=self.on_growth)
+            self.sliders[key] = slider
+            self.inputs[key] = input_widget
+            gf.addRow(row)
+
+        self.growth_combo = QComboBox()
+        self.growth_combo.addItems(GROWTH_NAMES)
+        self.growth_combo.setCurrentIndex(self.growth_type)
+        self.growth_combo.currentIndexChanged.connect(self.on_growth)
+        gf.addRow("生长函数:", self.growth_combo)
+        left_layout.addWidget(growth_group)
+
+        principle = QGroupBox("原理公式")
+        pv = QVBoxLayout(principle)
+        pv.setContentsMargins(4, 4, 4, 4)
+        pv.setSpacing(2)
+        self.principle_label = QLabel()
+        self.principle_label.setWordWrap(True)
+        self.principle_label.setStyleSheet("color:#4b5563; font-size:9px;")
+        pv.addWidget(self.principle_label)
+        left_layout.addWidget(principle)
+        left_layout.addStretch(1)
+        root.addWidget(left)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+
         tool_bar = QHBoxLayout()
-        for text, slot in [("开始", self.toggle_simulation),
-                           ("随机重置", self.reset_simulation),
+        tool_bar.setSpacing(4)
+        self.run_btn = QPushButton("开始")
+        self.run_btn.clicked.connect(self.toggle_simulation)
+        tool_bar.addWidget(self.run_btn)
+        for text, slot in [("随机重置", self.reset_simulation),
                            ("清空", self.clear_field),
                            ("居中", self.center_view)]:
             btn = QPushButton(text)
             btn.clicked.connect(slot)
             tool_bar.addWidget(btn)
-        tool_bar.addSpacing(10)
         self.gallery_btn = QPushButton("预设")
         self.gallery_btn.clicked.connect(self.open_gallery)
         tool_bar.addWidget(self.gallery_btn)
         tool_bar.addStretch()
-        main_layout.addLayout(tool_bar)
+        right_layout.addLayout(tool_bar)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setHandleWidth(3)
-
-        # 左侧控制面板
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(310)
-        scroll.setMaximumWidth(330)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setSpacing(4)
-        left_layout.setContentsMargins(2, 2, 2, 2)
-
-        # 画笔 + 分辨率 同行
         tools_row = QHBoxLayout()
         tools_row.setSpacing(6)
 
@@ -533,7 +887,7 @@ class LeniaApp(QMainWindow):
         brush_layout.addWidget(lbl_brush)
         brush_layout.addWidget(self.brush_slider, 1)
         brush_layout.addWidget(self.brush_input)
-        tools_row.addWidget(brush_widget)
+        tools_row.addWidget(brush_widget, 1)
 
         res_widget = QWidget()
         res_layout = QHBoxLayout(res_widget)
@@ -547,88 +901,32 @@ class LeniaApp(QMainWindow):
         self.res_combo.currentTextChanged.connect(self.change_resolution)
         res_layout.addWidget(lbl_res)
         res_layout.addWidget(self.res_combo, 1)
-        tools_row.addWidget(res_widget)
+        tools_row.addWidget(res_widget, 1)
+        right_layout.addLayout(tools_row)
 
-        left_layout.addLayout(tools_row)
+        right_layout.addWidget(self.canvas, 0, Qt.AlignHCenter | Qt.AlignTop)
+        root.addWidget(right, 1)
 
-        # 核参数
-        kernel_group = QGroupBox("核参数")
-        kf = QFormLayout(kernel_group)
-        kf.setSpacing(4)
-        kf.setContentsMargins(4, 4, 4, 4)
+        self._update_formula_labels()
+        self.statusBar().showMessage(
+            "就绪 · 左键绘制，右键擦除 · 预设会按当前网格自动缩放"
+        )
 
-        # 利用 PARAM_META 动态生成控件
-        for key in ['R', 'num_rings', 'rho', 'omega']:
-            meta = PARAM_META[key]
-            slider_val = int(round(getattr(self, key) / meta['scale']))
-            slider, input_widget, row = self._add_param_row(key, meta, slider_val,
-                                                            callback=self.on_param)
-            self.sliders[key] = slider
-            self.inputs[key] = input_widget
-            kf.addRow(row)
-
-        beta_container = self._create_beta_controls()
-        kf.addRow("振幅 β₁-β₆:", beta_container)
-
-        self.kernel_combo = QComboBox()
-        self.kernel_combo.addItems(KERNEL_NAMES)
-        self.kernel_combo.setCurrentIndex(self.kernel_type)
-        self.kernel_combo.currentIndexChanged.connect(self.on_param)
-        kf.addRow("核函数:", self.kernel_combo)
-
-        self.kernel_preview = KernelPreview()
-        kf.addRow("核预览:", self.kernel_preview)
-        left_layout.addWidget(kernel_group)
-
-        # 生长参数
-        growth_group = QGroupBox("生长参数")
-        gf = QFormLayout(growth_group)
-        gf.setSpacing(4)
-        gf.setContentsMargins(4, 4, 4, 4)
-
-        for key in ['mu', 'sigma', 'dt']:
-            meta = PARAM_META[key]
-            slider_val = int(round(getattr(self, key) / meta['scale']))
-            slider, input_widget, row = self._add_param_row(key, meta, slider_val,
-                                                            callback=self.on_growth)
-            self.sliders[key] = slider
-            self.inputs[key] = input_widget
-            gf.addRow(row)
-
-        self.growth_combo = QComboBox()
-        self.growth_combo.addItems(GROWTH_NAMES)
-        self.growth_combo.setCurrentIndex(self.growth_type)
-        self.growth_combo.currentIndexChanged.connect(self.on_growth)
-        gf.addRow("生长函数:", self.growth_combo)
-
-        left_layout.addWidget(growth_group)
-
-        # 公式
-        formula_group = QGroupBox("公式")
-        fl = QVBoxLayout(formula_group)
-        fl.setContentsMargins(4, 4, 4, 4)
-        fl.addWidget(QLabel(
-            "<b>卷积：</b> U(x) = Σ K(y-x) A(y) / Σ K(y-x)<br>"
-            "<b>生长 gaus：</b> G(u) = 2·exp(-(u-μ)²/(2σ²)) - 1<br>"
-            "<b>生长 quad4：</b> G(u) = 2·(1-(u-μ)²/(9σ²))⁴ - 1<br>"
-            "<b>更新：</b> A<sub>t+Δt</sub>(x) = clamp(A<sub>t</sub>(x)+Δt·G(U<sub>t</sub>), 0,1)<br>"
-            "<b>核 bell(旧)：</b> β<sub>i</sub>·exp(-(frac-ρ)²/(2ω²))<br>"
-            "<b>核 bump4/quad4：</b> 原版 CoreFunc(frac)·β<sub>i</sub>"
-        ))
-        left_layout.addWidget(formula_group)
-
-        left_layout.addStretch()
-        scroll.setWidget(left)
-        splitter.addWidget(scroll)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(self.canvas)
-        splitter.addWidget(right)
-        splitter.setSizes([330, 640])
-        main_layout.addWidget(splitter, 1)
+    def _update_formula_labels(self):
+        ki = max(0, min(self.kernel_combo.currentIndex(), len(KERNEL_FORMULAS) - 1))
+        gi = max(0, min(self.growth_combo.currentIndex(), len(GROWTH_FORMULAS) - 1))
+        self.kernel_combo.setToolTip(
+            f"{KERNEL_NAMES[ki]}\n{KERNEL_FORMULAS[ki]}"
+        )
+        self.growth_combo.setToolTip(
+            f"{GROWTH_NAMES[gi]}\n{GROWTH_FORMULAS[gi]}"
+        )
+        self.principle_label.setText(
+            "卷积：U(x) = Σ K(y-x)·A(y) / Σ K(y-x)\n"
+            f"核：{KERNEL_FORMULAS[ki]}\n"
+            f"生长：{GROWTH_FORMULAS[gi]}\n"
+            "更新：A ← clip(A + Δt·G(U), 0, 1)"
+        )
 
     def _add_param_row(self, key, meta, slider_value, callback):
         """根据元数据创建滑块+文本框行"""
@@ -721,23 +1019,33 @@ class LeniaApp(QMainWindow):
         for i, lbl in enumerate(self.beta_labels):
             lbl.setText(f"{self.betas[i]:.2f}")
 
+    def _frame_interval(self):
+        return 16 if getattr(self.sim, "_torch_state", None) is not None else 30
+
     def toggle_simulation(self):
         if self.running:
             self.sim_timer.stop()
-            self.sender().setText("开始")
+            self.run_btn.setText("开始")
             self.running = False
+            self.statusBar().showMessage("已暂停 · 左键绘制，右键擦除")
         else:
-            self.sim_timer.start(30)
-            self.sender().setText("暂停")
+            self.sim_timer.start(self._frame_interval())
+            self.run_btn.setText("暂停")
             self.running = True
+            self.statusBar().showMessage(
+                "运行中 · " + ("GPU FFT" if self.sim._torch_state is not None
+                                else "CPU")
+            )
 
     def reset_simulation(self):
         self.sim.random_state()
         self.canvas.update_display()
+        self.statusBar().showMessage("场已随机重置")
 
     def clear_field(self):
         self.sim.clear_state()
         self.canvas.update_display()
+        self.statusBar().showMessage("场已清空")
 
     def run_simulation(self):
         self.sim.step(self.mu, self.sigma, self.dt, self.growth_type)
@@ -750,6 +1058,10 @@ class LeniaApp(QMainWindow):
         new_size = int(new_size_text)
         if new_size == self.sim.field_size:
             return
+        if new_size >= 512 and torch is None:
+            # 后台预热还没完成（或刚好失败）：给用户一个“在干活”的提示。
+            self.statusBar().showMessage("正在启用 GPU 支持（首次约 2 秒）…")
+            QApplication.processEvents()
         was_running = self.running
         if self.running:
             self.sim_timer.stop()
@@ -765,8 +1077,9 @@ class LeniaApp(QMainWindow):
         self.sim.random_state()
         self.canvas.update_display()
         self.kernel_preview.update_preview(self.sim.get_kernel_preview())
+        self.statusBar().showMessage(f"网格已切换为 {new_size}²")
         if was_running:
-            self.sim_timer.start(30)
+            self.sim_timer.start(self._frame_interval())
 
     def update_kernel(self):
         self.sim.update_kernel(self.R, self.num_rings, self.rho, self.omega, self.betas,
@@ -794,6 +1107,7 @@ class LeniaApp(QMainWindow):
             return
         self._read_all_params()
         self._refresh_labels()
+        self._update_formula_labels()
         self.update_beta_visibility()
         self.update_kernel()
 
@@ -802,6 +1116,7 @@ class LeniaApp(QMainWindow):
             return
         self._read_all_params()
         self._refresh_labels()
+        self._update_formula_labels()
 
     def on_brush_change(self):
         size = self.brush_slider.value()
@@ -817,17 +1132,60 @@ class LeniaApp(QMainWindow):
         if hasattr(self, '_gallery_popup') and self._gallery_popup.isVisible():
             self._gallery_popup.hide()
             return
+        # Qt.Popup 会在点击外部时先自行隐藏；如果这个点击正好落在“预设”
+        # 按钮上，不要再立刻打开一个新弹层。
+        if time.monotonic() - self._gallery_hidden_at < 0.2:
+            return
         gallery = PresetGallery(self)
-        btn_rect = self.gallery_btn.rect()
-        bottom_left = self.gallery_btn.mapToGlobal(QPoint(0, btn_rect.height()))
-        gallery.move(bottom_left)
         gallery.show()
-        # 变宽后可能超出屏幕，夹回来
-        screen = gallery.screen().availableGeometry()
-        x = min(gallery.x(), screen.right() - gallery.width() - 8)
-        y = min(gallery.y(), screen.bottom() - gallery.height() - 8)
-        gallery.move(max(screen.left() + 8, x), max(screen.top() + 8, y))
+        self._center_gallery(gallery)
+        # showEvent 可能再调整弹层尺寸，事件循环后按最终尺寸再居中一次。
+        QTimer.singleShot(0, lambda: self._center_gallery(gallery))
+        gallery.raise_()
         self._gallery_popup = gallery
+
+    def _center_gallery(self, gallery):
+        if not gallery.isVisible():
+            return
+        # 居中到图像，而不是挂在“预设”按钮下方跑出窗口。
+        canvas_tl = self.canvas.mapToGlobal(QPoint(0, 0))
+        x = canvas_tl.x() + (self.canvas.width() - gallery.width()) // 2
+        y = canvas_tl.y() + (self.canvas.height() - gallery.height()) // 2
+        window = self.frameGeometry()
+        x = max(window.left() + 8,
+                min(x, window.right() - gallery.width() - 8))
+        y = max(window.top() + 8,
+                min(y, window.bottom() - gallery.height() - 8))
+        screen = gallery.screen().availableGeometry()
+        x = max(screen.left() + 8, min(x, screen.right() - gallery.width() - 8))
+        y = max(screen.top() + 8, min(y, screen.bottom() - gallery.height() - 8))
+        gallery.move(x, y)
+
+    @staticmethod
+    def _resize_preset_state(state, target):
+        """把预设状态按环面周期双线性重采样到当前网格。"""
+        arr = np.asarray(state, dtype=np.float32)
+        if arr.ndim != 2:
+            raise ValueError("Lenia preset state must be 2-D")
+        if arr.shape == (target, target):
+            return np.ascontiguousarray(arr)
+        h, w = arr.shape
+        ys = (np.arange(target, dtype=np.float32) + 0.5) * h / target - 0.5
+        xs = (np.arange(target, dtype=np.float32) + 0.5) * w / target - 0.5
+        y0 = np.floor(ys).astype(np.int64)
+        x0 = np.floor(xs).astype(np.int64)
+        wy = (ys - y0).astype(np.float32)[:, None]
+        wx = (xs - x0).astype(np.float32)[None, :]
+        y0 %= h
+        x0 %= w
+        y1 = (y0 + 1) % h
+        x1 = (x0 + 1) % w
+        return np.ascontiguousarray(
+            arr[y0[:, None], x0[None, :]] * (1.0 - wy) * (1.0 - wx)
+            + arr[y0[:, None], x1[None, :]] * (1.0 - wy) * wx
+            + arr[y1[:, None], x0[None, :]] * wy * (1.0 - wx)
+            + arr[y1[:, None], x1[None, :]] * wy * wx
+        )
 
     def _apply_preset_data(self, data):
         params = data['params']
@@ -842,25 +1200,20 @@ class LeniaApp(QMainWindow):
             params = list(params[:16])
         R, rings, rho, omega, *rest = params
         betas = rest[:6]
-        mu, sigma, dt, field_size = rest[6], rest[7], rest[8], int(rest[9])
+        mu, sigma, dt = rest[6], rest[7], rest[8]
         growth_type, kernel_type = int(rest[10]), int(rest[11])
+        source_size = int(data['state'].shape[0])
+        target_size = self.sim.field_size
+        resolution_scale = target_size / max(1, source_size)
 
         was_running = self.running
         if self.running:
             self.sim_timer.stop()
 
-        if field_size != self.sim.field_size:
-            self.sim = LeniaSimulation(field_size)
-            self.sim.set_lut(self.canvas._lut)
-            self.canvas.sim = self.sim
-            self.canvas.set_field_size(field_size)
-            self.canvas._lut = (cm.cubehelix(np.linspace(0, 1, 256))[:, :3] * 255).astype(np.uint8)
-            self.sim.draw_points_batch(np.zeros((1, 3), dtype=np.float32), 1)
-            self.res_combo.blockSignals(True)
-            self.res_combo.setCurrentText(str(field_size))
-            self.res_combo.blockSignals(False)
-
-        self.R = int(R)
+        # Lenia 的核半径 R 以网格像素为单位；换分辨率时 R 必须按比例缩放，
+        # 否则 256 下成形的参数到了 512 会变成“半径减半”的另一种动力学。
+        self.R = max(1, min(PARAM_META['R']['slider_range'][1],
+                            int(round(float(R) * resolution_scale))))
         self.num_rings = int(rings)
         self.rho = float(rho)
         self.omega = float(omega)
@@ -882,18 +1235,24 @@ class LeniaApp(QMainWindow):
         self._batch_update = False
 
         self._refresh_labels()
+        self._update_formula_labels()
         self.update_beta_visibility()
 
-        self.sim.set_state_numpy(data['state'])
+        self.sim.set_state_numpy(
+            self._resize_preset_state(data['state'], target_size)
+        )
         self.update_kernel()
         self.canvas.update_display()
+        self.statusBar().showMessage(
+            f"已加载预设 · 状态 {source_size}² → 当前 {target_size}²"
+        )
 
         if was_running:
-            self.sim_timer.start(30)
+            self.sim_timer.start(self._frame_interval())
 
 
 class PresetGallery(QWidget):
-    """下拉画廊：网格排列预设，双击加载但保持打开，点击外部关闭"""
+    """预设画廊：单击选择，双击加载并关闭；再点“预设”按钮也关闭。"""
     class Thumbnail(QWidget):
         clicked = Signal(str)
 
@@ -965,11 +1324,14 @@ class PresetGallery(QWidget):
             self.clicked.emit('\0' + self.name)
 
     class GridWidget(QWidget):
+        GAP = 4
+
         def __init__(self, cell_size, parent=None):
             super().__init__(parent)
             self.cell_size = cell_size
             self.cols = 1
             self._thumbnails = []
+            self.setStyleSheet("background: #ffffff;")
 
         def set_layout_data(self, cols, thumb_data, cell_size=None, reuse=False):
             if cell_size:
@@ -982,14 +1344,29 @@ class PresetGallery(QWidget):
                     w.setParent(None)
                     w.deleteLater()
             self._thumbnails = thumb_data
-            for w, r, c in self._thumbnails:
+            size = max(1, self.cell_size - self.GAP)
+            for w, _, _ in self._thumbnails:
                 w.setParent(self)
-                w.setFixedSize(self.cell_size, self.cell_size)
-                w.move(c * self.cell_size, r * self.cell_size)
+                w.setFixedSize(size, size)
                 w.show()
+            self._place_children()
             rows = max((r for _, r, _ in self._thumbnails), default=0) + 1
             self.setMinimumSize(cols * self.cell_size, rows * self.cell_size)
             self.updateGeometry()
+
+        def _place_children(self):
+            if not self._thumbnails:
+                return
+            grid_w = self.cols * self.cell_size
+            offset = max(0, (self.width() - grid_w) // 2)
+            half = self.GAP // 2
+            for w, r, c in self._thumbnails:
+                w.move(offset + c * self.cell_size + half,
+                       r * self.cell_size + half)
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._place_children()
 
         def paintEvent(self, event):
             super().paintEvent(event)
@@ -1020,10 +1397,15 @@ class PresetGallery(QWidget):
         super().__init__()
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setObjectName("presetGallery")
+        self.setStyleSheet(
+            "QWidget#presetGallery { background: #ffffff;"
+            " border: 1px solid #b8bec8; border-radius: 6px; }"
+        )
         self.app = app_window
         self._presets = {}
         self._selected = None
-        self._cell_size = 100
+        self._cell_size = 92
         self._grids = []
         self._family_filter = None
         self._rings_filter = None
@@ -1033,11 +1415,22 @@ class PresetGallery(QWidget):
         self._pending_scroll = []
         self._restore_state()
 
-        self.resize(662, 560)
+        self.resize(600, 600)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(0)
-        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        title_label = QLabel("预设库")
+        title_label.setStyleSheet("font-size: 15px; font-weight: 600;")
+        header.addWidget(title_label)
+        hint = QLabel("单击选择 · 双击加载并关闭 · 再点预设关闭")
+        hint.setStyleSheet("color: #6b7280; font-size: 9px;")
+        header.addWidget(hint)
+        header.addStretch()
+        main_layout.addLayout(header)
 
         tb = QHBoxLayout()
         tb.setContentsMargins(0, 0, 0, 4)
@@ -1056,7 +1449,7 @@ class PresetGallery(QWidget):
         self._refresh_content()
 
     MAX_COLS = 6
-    CELL_SIZE = 100
+    CELL_SIZE = 92
 
     def _restore_state(self):
         s = self._settings
@@ -1099,6 +1492,7 @@ class PresetGallery(QWidget):
 
     def hideEvent(self, e):
         self._save_state()
+        self.app._gallery_hidden_at = time.monotonic()
         super().hideEvent(e)
 
     def closeEvent(self, e):
@@ -1135,6 +1529,10 @@ class PresetGallery(QWidget):
         sc.setWidgetResizable(True)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sc.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        sc.setStyleSheet(
+            "QScrollArea { background: #ffffff; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: #ffffff; }"
+        )
         grid = self.GridWidget(self._cell_size)
         sc.setWidget(grid)
         lay.addWidget(sc, 1)
@@ -1237,11 +1635,11 @@ class PresetGallery(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        # 宽度按「六列 × 100px + 边距与滚动条」给足，窗口再大也不拉伸格子
+        # 与 600×600 画布同尺寸；不再按内容宽度撑出窗口。
         parent = self.app
         if parent is not None:
-            w = max(480, min(parent.width() - 60, self.MAX_COLS * self.CELL_SIZE + 62))
-            h = max(380, min(parent.height() - 110, 720))
+            w = max(480, min(parent.width() - 60, 600))
+            h = max(380, min(parent.height() - 110, 600))
             if (self.width(), self.height()) != (w, h):
                 self.resize(w, h)
         self._restore_scroll()
@@ -1256,6 +1654,8 @@ class PresetGallery(QWidget):
             real = name[1:]
             if real in self._presets:
                 self.app._apply_preset_data(self._presets[real])
+                self.app.statusBar().showMessage(f"已加载预设：{real}")
+                self.hide()
             return
         self._selected = name
         for entry in self._grids:

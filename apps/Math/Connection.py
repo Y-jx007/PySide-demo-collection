@@ -3,9 +3,9 @@
 
 Two interactive qualities are deliberate:
 
-* the dragged point follows the pointer through a critically damped spring,
-  so it accelerates and settles smoothly at any frame rate instead of
-  lagging behind the cursor and snapping to it when the button is released;
+* the trail is extended immediately while dragging, so the line is live under
+  the pointer; the critically damped spring is only used for click-to-travel
+  and the final settling, never to delay the drawn line;
 * the ambient field carries a smooth length envelope, so the arrows grow and
   shrink continuously while the point travels, and the covariant derivative
   shows both the turning and the stretching of the field.
@@ -23,7 +23,8 @@ from common.qt_base import (
 )
 from PySide6.QtCore import QElapsedTimer
 from PySide6.QtGui import QPainterPath
-from common.gpu_surface import Camera3D, GpuSurface, draw_quads, unit
+from common.free_camera import FreeCamera
+from common.gpu_surface import GpuSurface, draw_quads, unit
 from support.math.connection import (
     SURFACES, ambient_directions, field_envelope, make_surface,
     oriented_angle, parallel_transport,
@@ -46,7 +47,8 @@ class ConnectionCanvasBase:
     PAPER_GRAIN = 2         # per-face jitter in shading levels
     MESH_CPU = (64, 54)     # quads; dense enough that the grid never shows
     MESH_GPU = (132, 110)   # the GPU can afford a much finer sheet
-    PATH_MAX_POINTS = 400   # path samples kept for drawing
+    PATH_MAX_POINTS = 4000  # drawing samples; no longer a short trail limit
+    PATH_MAX_RAW = 120000   # only pathological sessions are trimmed
     BASE_SNAP = 0.12        # world units: pressing this near the base snaps to it
     CLOSE_TOL = 0.10        # world units: this near the start closes the loop
     CLOSE_HINT = 0.30       # world units: show where the loop started
@@ -55,7 +57,9 @@ class ConnectionCanvasBase:
         super().__init__(parent)
         self.setFixedSize(600, 600)
         self.window = window
-        self.camera = Camera3D()
+        self.camera = FreeCamera(
+            target=(0.0, 0.0, 0.0), distance=4.0, yaw=-58.0, pitch=20.0
+        )
         self.surface = make_surface("球面")
         self._gpu = GpuSurface.create()
         self.mesh_size = self.MESH_GPU if self._gpu is not None else self.MESH_CPU
@@ -81,8 +85,6 @@ class ConnectionCanvasBase:
         self.path_len = 0.0
         self.holonomy = None
         self.closure = None
-        self.nabla = None
-        self.nabla_vec = None
         self.ambient = ambient_directions(self.count)
         self.dragging_point = False
         self.dragging_camera = False
@@ -94,6 +96,7 @@ class ConnectionCanvasBase:
         self._path_cache_head = None
         self._path_cache_n = 0
         self._path_cache_stride = 1
+        self._path_cache_indices = []
         self._path_vis = []
 
         self._target_uv = None
@@ -127,8 +130,6 @@ class ConnectionCanvasBase:
         self.path_len = 0.0
         self.holonomy = None
         self.closure = None
-        self.nabla = None
-        self.nabla_vec = None
         self.ambient = ambient_directions(self.count)
         self.field_len = self._field_scale(self.p_uv)
         self._publish()
@@ -154,8 +155,6 @@ class ConnectionCanvasBase:
     def set_mode(self, mode):
         base = self.base_uv if self.base_locked else None
         self.mode = mode
-        self.nabla = None
-        self.nabla_vec = None
         self.reset_session(base)
 
     def set_base_locked(self, locked):
@@ -165,7 +164,6 @@ class ConnectionCanvasBase:
 
     def set_field_amp(self, percent):
         self.field_amp = min(max(float(percent) / 100.0, 0.0), 0.85)
-        self.nabla_vec = None
         self.field_len = self._field_scale(self.p_uv)
         self._publish()
         self.update()
@@ -189,21 +187,6 @@ class ConnectionCanvasBase:
         scale = self.FIELD_GAIN * self._field_scale(uv)
         return [scale * (f - float(f @ n) * n) for f in self.ambient]
 
-    def _ambient_derivative(self, du, dv):
-        norm = math.hypot(du, dv)
-        if norm < 1e-9:
-            return None
-        eps = 2e-3
-        u1, v1 = self.surface.wrap_uv(
-            self.p_uv[0] + du / norm * eps,
-            self.p_uv[1] + dv / norm * eps,
-        )
-        v0 = self._ambient_vectors(self.p_uv)[0]
-        v1 = self._ambient_vectors((u1, v1))[0]
-        n = self.surface.normal(*self.p_uv)
-        d = (v1 - v0) / eps
-        return d - float(d @ n) * n
-
     # ---------- painting ----------
     def _paint_overlays(self, painter):
         """Everything that sits on top of the surface image."""
@@ -215,8 +198,6 @@ class ConnectionCanvasBase:
             self._draw_vectors(painter, ghost=True)
         if self.show_normal:
             self._draw_normal(painter)
-        if self.nabla_vec is not None and self.mode == "向量场":
-            self._draw_nabla(painter)
         if self.mode == "平行移动" or self.base_locked:
             self._draw_start_marker(painter)
         if self.mode == "平行移动":
@@ -262,7 +243,7 @@ class ConnectionCanvasBase:
 
     def _surface_pixmap(self):
         key = (
-            self.surface.name, round(self.camera.yaw, 2), round(self.camera.pitch, 2),
+            self.surface.name, *self.camera.orientation_key(3),
             round(self.camera.zoom, 3), self.width(), self.height(),
         )
         if self._surface_cache is not None and key == self._surface_cache_key:
@@ -359,15 +340,14 @@ class ConnectionCanvasBase:
     def _path_screen(self):
         """Projected path plus which samples still face the camera.
 
-        Both lists are cached between frames; the camera or a longer path
-        invalidates them, and only new samples are projected while dragging.
+        The cache is extended incrementally for both stride 1 and the sampled
+        case.  Rebuilding on every new point made long paths visibly stutter.
         """
         head = self.path[0]
         count = len(self.path)
         stride = max(1, int(math.ceil(count / float(self.PATH_MAX_POINTS))))
         camera_key = (
-            round(self.camera.yaw, 2), round(self.camera.pitch, 2),
-            round(self.camera.zoom, 3), stride,
+            *self.camera.orientation_key(3), round(self.camera.zoom, 3), stride,
         )
         cached = self._path_cache
         if (
@@ -376,16 +356,17 @@ class ConnectionCanvasBase:
             or self._path_cache_head != head
             or count < self._path_cache_n
         ):
-            sampled = self.path[::stride]
-            if stride > 1 and sampled[-1] != self.path[-1]:
-                sampled = list(sampled) + [self.path[-1]]
+            sampled_indices = list(range(0, count, stride))
+            if sampled_indices[-1] != count - 1:
+                sampled_indices.append(count - 1)
             project = self.camera.project
             w, h, eye = self.width(), self.height(), self.camera.eye
             point_at = self.surface.point
             normal_at = self._mesh_normal
             cached = []
             visible = []
-            for u, v in sampled:
+            for index in sampled_indices:
+                u, v = self.path[index]
                 p = point_at(u, v)
                 cached.append(project(p, w, h)[0])
                 visible.append(float(normal_at(u, v) @ (eye - p)) > 0.0)
@@ -395,16 +376,26 @@ class ConnectionCanvasBase:
             self._path_cache_head = head
             self._path_cache_n = count
             self._path_cache_stride = stride
+            self._path_cache_indices = sampled_indices
             return cached
-        if count > self._path_cache_n and self._path_cache_stride == 1:
+
+        if count > self._path_cache_n:
             project = self.camera.project
             w, h, eye = self.width(), self.height(), self.camera.eye
             point_at = self.surface.point
             normal_at = self._mesh_normal
-            for u, v in self.path[self._path_cache_n:]:
+            indices = self._path_cache_indices
+            last_index = indices[-1]
+            start = ((last_index // stride) + 1) * stride
+            new_indices = list(range(start, count, stride))
+            if not new_indices or new_indices[-1] != count - 1:
+                new_indices.append(count - 1)
+            for index in new_indices:
+                u, v = self.path[index]
                 p = point_at(u, v)
                 cached.append(project(p, w, h)[0])
                 self._path_vis.append(float(normal_at(u, v) @ (eye - p)) > 0.0)
+                indices.append(index)
             self._path_cache_n = count
         return cached
 
@@ -539,24 +530,14 @@ class ConnectionCanvasBase:
         n = self.surface.normal(*self.p_uv)
         self._draw_arrow(painter, p, p + n * 0.30, QColor(110, 120, 130, 150), 1.0, 5.0)
 
-    def _draw_nabla(self, painter):
-        p = self.surface.point(*self.p_uv)
-        n = self.surface.normal(*self.p_uv)
-        vec = self.nabla_vec
-        if vec is None:
-            return
-        length = float(np.linalg.norm(vec))
-        if length < 1e-9:
-            return
-        vec = vec / length * 0.34
-        self._draw_arrow(painter, p + n * 0.010, p + vec + n * 0.010, QColor(218, 66, 52), 2.5, 8.0)
-
     def _draw_start_marker(self, painter):
         """Dashed ring on the base point (always, while it is pinned)."""
         near = self.closure is not None and self.closure <= self.CLOSE_HINT
         if not (self.base_locked or near):
             return
         uv = self.base_uv if self.base_locked else self.initial_uv
+        if not self.surface.faces_camera(uv[0], uv[1], self.camera.eye):
+            return
         q, _ = self.camera.project(
             self.surface.point(*uv), self.width(), self.height()
         )
@@ -569,6 +550,7 @@ class ConnectionCanvasBase:
         if self.holonomy is None or len(self.initial_comps) == 0:
             return
         uv = self.initial_uv
+        front = self.surface.faces_camera(uv[0], uv[1], self.camera.eye)
         p0 = self.surface.point(*uv)
         n = self.surface.normal(*uv)
         e1, e2 = self.surface.tangent_basis(*uv)
@@ -586,7 +568,10 @@ class ConnectionCanvasBase:
             q3 = p0 + radius * (math.cos(a) * e1 + math.sin(a) * e2) + n * 0.008
             q, _ = self.camera.project(q3, self.width(), self.height())
             pts.append(q)
-        tick = QPen(QColor(206, 96, 40, 150), 1.0, Qt.DashLine)
+        tick = QPen(
+            QColor(206, 96, 40, 150 if front else 70),
+            1.0, Qt.DashLine,
+        )
         painter.setPen(tick)
         painter.setBrush(Qt.NoBrush)
         for angle in (a0, a0 + sweep):
@@ -595,8 +580,12 @@ class ConnectionCanvasBase:
             qi, _ = self.camera.project(inner + n * 0.008, self.width(), self.height())
             qo, _ = self.camera.project(outer + n * 0.008, self.width(), self.height())
             painter.drawLine(qi, qo)
-        color = QColor(206, 96, 40, 235)
-        painter.setPen(QPen(color, 2.1))
+        color = QColor(206, 96, 40, 235 if front else 85)
+        painter.setPen(QPen(
+            color, 2.1,
+            Qt.SolidLine if front else Qt.DashLine,
+            Qt.RoundCap, Qt.RoundJoin,
+        ))
         painter.setBrush(Qt.NoBrush)
         painter.drawPolyline(QPolygonF(pts))
         painter.setPen(Qt.NoPen)
@@ -623,6 +612,8 @@ class ConnectionCanvasBase:
         ]))
 
     def _draw_point(self, painter):
+        if not self.surface.faces_camera(*self.p_uv, self.camera.eye):
+            return
         p = self.surface.point(*self.p_uv)
         q, _ = self.camera.project(p, self.width(), self.height())
         painter.setPen(QPen(QColor(30, 42, 54), 1.5))
@@ -656,8 +647,6 @@ class ConnectionCanvasBase:
         self.path_len = 0.0
         self.holonomy = None
         self.closure = None
-        self.nabla = None
-        self.nabla_vec = None
         self.ambient = ambient_directions(self.count)
         self.field_len = self._field_scale(uv)
         self._publish()
@@ -672,21 +661,27 @@ class ConnectionCanvasBase:
         ))
         if dist < 1e-7:
             return
+        steps = max(2, min(32, int(dist / 0.02) + 1))
         if self.mode == "平行移动":
-            steps = max(4, min(32, int(dist / 0.02) + 1))
             self.comps = parallel_transport(
-                self.surface, (u0, v0), (un, vn), self.comps, steps=steps
+                self.surface, (u0, v0), (un, vn), self.comps,
+                steps=max(4, steps),
             )
-            self.nabla = None
-            self.nabla_vec = None
-        else:
-            self.nabla_vec = self._ambient_derivative(du, dv)
         self.path_len += dist
         self.p_uv = (un, vn)
         if dist > 2e-3 or len(self.path) < 2:
+            # Fast pointer moves must still follow the surface: insert samples
+            # along the chart segment instead of drawing one long screen chord.
+            for k in range(1, steps):
+                t = k / float(steps)
+                self.path.append(self.surface.wrap_uv(
+                    u0 + du * t, v0 + dv * t
+                ))
             self.path.append(self.p_uv)
-        if len(self.path) > 2400:
-            self.path = self.path[-2400:]
+        if len(self.path) > self.PATH_MAX_RAW:
+            # Safety valve for pathological sessions only.  The old 2400-point
+            # cut made the trail visibly lose its tail after ~60 units.
+            self.path = self.path[-self.PATH_MAX_RAW:]
         self.field_len = self._field_scale(self.p_uv)
         if self.mode == "平行移动":
             self._update_holonomy()
@@ -816,12 +811,22 @@ class ConnectionCanvasBase:
             self._start_glide()
         self.dragging_point = True
 
+    def _drag_to(self, uv):
+        """Extend the path to the pointer now, not on the next glide tick."""
+        uv = self.surface.wrap_uv(*uv)
+        self._glide.stop()
+        self._target_uv = uv
+        self._finish_pending = False
+        self._velocity[:] = 0.0
+        self._advance(uv)
+        self.update()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             uv = self._pick_uv(event.position())
             if uv is not None:
                 self._start_stroke(uv)
-                self.update()
+                self._drag_to(uv)
         elif event.button() == Qt.RightButton:
             self.dragging_camera = True
             self.last_mouse = event.position()
@@ -830,16 +835,12 @@ class ConnectionCanvasBase:
         if self.dragging_point and event.buttons() & Qt.LeftButton:
             uv = self._pick_uv(event.position())
             if uv is not None:
-                self._target_uv = uv
-                self._finish_pending = False
-                self._start_glide()
+                self._drag_to(uv)
         elif self.dragging_camera and event.buttons() & Qt.RightButton:
             if self.last_mouse is not None:
                 dx = event.position().x() - self.last_mouse.x()
                 dy = event.position().y() - self.last_mouse.y()
-                self.camera.yaw += dx * 0.45
-                self.camera.pitch = max(-85.0, min(85.0, self.camera.pitch + dy * 0.45))
-                self.camera.update()
+                self.camera.rotate(dx, dy, 0.45)
                 self.last_mouse = event.position()
                 self.update()
 
@@ -886,7 +887,7 @@ class ConnectionCanvas(ConnectionCanvasBase, SquareCanvas):
 class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("联络 · 协变导数")
+        self.setWindowTitle("Christoffel · 联络与协变导数")
         self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
         self.canvas = ConnectionCanvas(self)
         self.init_ui()
@@ -978,7 +979,7 @@ class MainWindow(LabWindow):
         for label in (self.metric_label, self.holonomy_label, self.uv_label, self.field_label):
             label.setStyleSheet("color:#56616c;")
             ig.addWidget(label)
-        note = QLabel("左键拖动点　右键旋转　滚轮缩放\n平行移动：长度不变，方向转 holonomy\n向量场：红箭头 = ∇u v")
+        note = QLabel("左键拖动点　右键自由旋转　滚轮缩放\n平行移动：闭合后显示 holonomy（背面为虚线）\n向量场：箭头 = 环境方向投影到切平面")
         note.setStyleSheet("color:#7a828c;")
         note.setWordWrap(True)
         ig.addWidget(note)

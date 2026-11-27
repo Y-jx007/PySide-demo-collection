@@ -2,7 +2,6 @@ from common.qt_base import (ColorButton, QColor, QComboBox, QFileDialog, QFormLa
                             QLabel, QMainWindow, QMessageBox, QPainter, QPixmap, QPushButton, QSpinBox, QTextEdit,
                             QThread, QVBoxLayout, QWidget, Qt, Signal, run_app, time)
 from common.numpy_base import (np)
-from common.numba_base import (jit)
 
 # 经典 IFS 分形数据
 IFS_FRACTALS = {
@@ -46,7 +45,6 @@ IFS_FRACTALS = {
 }
 
 
-@jit(nopython=True)
 def generate_ifs_points(transforms, probabilities, iterations, cancel_flag):
     points = np.zeros((iterations, 2), dtype=np.float64)
     x, y = 0.0, 0.0
@@ -216,8 +214,9 @@ class FractalWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IFS 分形生成器")
-        self.setGeometry(100, 100, 1000, 660)
+        self.setWindowTitle("Barnsley · IFS 分形")
+        self.setMinimumSize(1000, 720)
+        self.setGeometry(100, 100, 1000, 720)
         self.worker = None
 
         self.color_start = QColor(218, 247, 166)
@@ -231,13 +230,14 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
         self.fractal_widget = FractalWidget()
+        self.fractal_widget.setFixedSize(640, 640)
 
         panel = QWidget()
-        panel.setFixedWidth(310)
+        panel.setFixedWidth(330)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(6)
         panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -259,7 +259,8 @@ class MainWindow(QMainWindow):
     def create_fractal_selection(self, layout):
         group = QGroupBox("分形选择")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(4)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(10, 8, 10, 8)
         self.fractal_combo = QComboBox()
         self.fractal_combo.addItems(IFS_FRACTALS.keys())
         self.fractal_combo.currentTextChanged.connect(self.on_fractal_change)
@@ -269,7 +270,8 @@ class MainWindow(QMainWindow):
     def create_parameters_section(self, layout):
         group = QGroupBox("参数")
         form = QFormLayout()
-        form.setSpacing(3)
+        form.setSpacing(6)
+        form.setContentsMargins(10, 8, 10, 8)
 
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1000, 1000000)
@@ -308,7 +310,8 @@ class MainWindow(QMainWindow):
     def create_transform_section(self, layout):
         group = QGroupBox("变换参数")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(4)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(10, 8, 10, 8)
         hint = QLabel("每行 a,b,c,d,e,f,概率；概率可以不用凑成 1")
         hint.setStyleSheet("color:#888;")
         hint.setWordWrap(True)
@@ -322,6 +325,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("操作")
         hbox = QHBoxLayout(group)
         hbox.setSpacing(6)
+        hbox.setContentsMargins(10, 8, 10, 8)
         self.generate_btn = QPushButton("生成")
         self.generate_btn.clicked.connect(self.generate_fractal)
         self.reset_btn = QPushButton("恢复预设")
@@ -336,7 +340,8 @@ class MainWindow(QMainWindow):
     def create_stats_section(self, layout):
         group = QGroupBox("统计")
         form = QFormLayout()
-        form.setSpacing(3)
+        form.setSpacing(6)
+        form.setContentsMargins(10, 8, 10, 8)
         self.lbl_points = QLabel("–")
         self.lbl_transforms = QLabel("–")
         self.lbl_time = QLabel("–")

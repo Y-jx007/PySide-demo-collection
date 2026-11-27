@@ -46,6 +46,17 @@ _LUT_CACHE = {}
 _DISK_CACHE = {}
 
 
+def _star_cache_path(width, height, seed, stars=True):
+    """Disk cache for the (slow to build) procedural sky."""
+    try:
+        from common.paths import RUNTIME_DIR
+    except Exception:  # pragma: no cover - imported outside the project
+        return None
+    kind = "stars" if stars else "neb"
+    return (RUNTIME_DIR / "cache" /
+            f"starfield_{int(width)}x{int(height)}_{int(seed)}_{kind}_v2.npy")
+
+
 # --------------------------------------------------------------------------- #
 # Basic geometry and exact geodesics
 # --------------------------------------------------------------------------- #
@@ -299,7 +310,8 @@ def doppler_factor(r_emit, b_z, distance, M=1.0):
     denom = ut * (1.0 - omega * float(b_z))
     if denom <= 1e-9:
         return 0.0
-    return math.sqrt(f_cam) / denom
+    # g = nu_cam / nu_emit = 1 / (sqrt(f_cam) u^t (1 - Omega b_z)).
+    return 1.0 / (math.sqrt(f_cam) * denom)
 
 
 # --------------------------------------------------------------------------- #
@@ -366,17 +378,25 @@ def _smoothstep(a, b, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-def build_starfield(width=2048, height=1024, seed=7):
+def build_starfield(width=2048, height=1024, seed=7, stars=True):
     """Return a linear-HDR equirectangular star field texture.
 
     The texture is deterministic for a given seed and contains a faint
     Milky-Way band, dust lanes and about 24k stars with Planck colours.
     """
     width, height = int(width), int(height)
-    key = (width, height, int(seed))
+    key = (width, height, int(seed), bool(stars))
     cached = _STAR_CACHE.get(key)
     if cached is not None:
         return cached
+    cache_path = _star_cache_path(width, height, seed, stars)
+    if cache_path is not None and cache_path.exists():
+        try:
+            image = np.load(cache_path)
+            _STAR_CACHE[key] = image
+            return image
+        except (OSError, ValueError):
+            pass
 
     rng = np.random.default_rng(int(seed))
     vv, uu = np.mgrid[0:height, 0:width]
@@ -424,63 +444,86 @@ def build_starfield(width=2048, height=1024, seed=7):
                             (height, width, 3)).copy()
     image += base
 
-    lut = blackbody_lut()
-    count = 11000
-    # A third of the stars follow the Galactic band, the rest are isotropic.
-    n_band = count * 2 // 3
-    z = rng.uniform(-1.0, 1.0, size=count)
-    phi = rng.uniform(0.0, TAU, size=count)
-    root = np.sqrt(np.maximum(0.0, 1.0 - z * z))
-    sx = root * np.cos(phi)
-    sy = root * np.sin(phi)
-    sz = z
-    helper = _unit([0.0, 0.0, 1.0]) if abs(mw_n[2]) < 0.9 else _unit([1.0, 0.0, 0.0])
-    e1 = _unit(np.cross(mw_n, helper))
-    e2 = np.cross(mw_n, e1)
-    alpha = rng.uniform(0.0, TAU, size=n_band)
-    offset = rng.normal(0.0, 0.16, size=n_band)
-    band_dirs = (np.cos(alpha)[:, None] * e1
-                 + np.sin(alpha)[:, None] * e2
-                 + offset[:, None] * mw_n)
-    band_dirs /= np.linalg.norm(band_dirs, axis=1, keepdims=True)
-    sx[:n_band] = band_dirs[:, 0]
-    sy[:n_band] = band_dirs[:, 1]
-    sz[:n_band] = band_dirs[:, 2]
+    if stars:
+        lut = blackbody_lut()
+        count = 11000
+        # A third of the stars follow the Galactic band, the rest are isotropic.
+        n_band = count * 2 // 3
+        z = rng.uniform(-1.0, 1.0, size=count)
+        phi = rng.uniform(0.0, TAU, size=count)
+        root = np.sqrt(np.maximum(0.0, 1.0 - z * z))
+        sx = root * np.cos(phi)
+        sy = root * np.sin(phi)
+        sz = z
+        helper = _unit([0.0, 0.0, 1.0]) if abs(mw_n[2]) < 0.9 else _unit([1.0, 0.0, 0.0])
+        e1 = _unit(np.cross(mw_n, helper))
+        e2 = np.cross(mw_n, e1)
+        alpha = rng.uniform(0.0, TAU, size=n_band)
+        offset = rng.normal(0.0, 0.16, size=n_band)
+        band_dirs = (np.cos(alpha)[:, None] * e1
+                     + np.sin(alpha)[:, None] * e2
+                     + offset[:, None] * mw_n)
+        band_dirs /= np.linalg.norm(band_dirs, axis=1, keepdims=True)
+        sx[:n_band] = band_dirs[:, 0]
+        sy[:n_band] = band_dirs[:, 1]
+        sz[:n_band] = band_dirs[:, 2]
 
-    lon_s = np.arctan2(sy, sx)
-    lat_s = np.arcsin(np.clip(sz, -1.0, 1.0))
-    px = (lon_s / TAU + 0.5) * width - 0.5
-    py = (0.5 - lat_s / math.pi) * height - 0.5
+        lon_s = np.arctan2(sy, sx)
+        lat_s = np.arcsin(np.clip(sz, -1.0, 1.0))
+        px = (lon_s / TAU + 0.5) * width - 0.5
+        py = (0.5 - lat_s / math.pi) * height - 0.5
 
-    brightness = 0.008 + 1.45 * rng.random(count) ** 8.0
-    temperature = np.exp(rng.normal(math.log(6500.0), 0.55, size=count))
-    temperature = np.clip(temperature, 2200.0, 24000.0)
-    lti = np.clip((np.log(temperature / BB_TMIN) /
-                   math.log(BB_TMAX / BB_TMIN)) * (BB_N - 1), 0, BB_N - 1)
-    i0 = np.floor(lti).astype(np.int32)
-    i1 = np.minimum(BB_N - 1, i0 + 1)
-    f = (lti - i0)[:, None]
-    colours = lut[i0] * (1.0 - f) + lut[i1] * f
-    sigma = 0.42 + 0.38 * rng.random(count)
-    for idx in range(count):
-        cx, cy = px[idx], py[idx]
-        ix, iy = int(math.floor(cx)), int(math.floor(cy))
-        amp = float(brightness[idx])
-        sig = float(sigma[idx])
-        col = colours[idx]
+        brightness = 0.008 + 1.45 * rng.random(count) ** 8.0
+        temperature = np.exp(rng.normal(math.log(6500.0), 0.55, size=count))
+        temperature = np.clip(temperature, 2200.0, 24000.0)
+        lti = np.clip((np.log(temperature / BB_TMIN) /
+                       math.log(BB_TMAX / BB_TMIN)) * (BB_N - 1), 0, BB_N - 1)
+        i0 = np.floor(lti).astype(np.int32)
+        i1 = np.minimum(BB_N - 1, i0 + 1)
+        f = (lti - i0)[:, None]
+        colours = lut[i0] * (1.0 - f) + lut[i1] * f
+        sigma = 0.42 + 0.38 * rng.random(count)
+        ix = np.floor(px).astype(np.int64)
+        iy = np.floor(py).astype(np.int64)
+        # Vectorised splat: fold the 5x5 sprite into flat indices and let
+        # bincount accumulate.  The old per-star Python loop cost ~1.7 s at
+        # 2048x1024; this is ~10x faster and is cached on disk afterwards.
+        index_parts = []
+        weight_parts = []
+        colour_parts = []
         for oy in range(-2, 3):
             yy = iy + oy
-            if yy < 0 or yy >= height:
+            ok_y = (yy >= 0) & (yy < height)
+            if not ok_y.any():
                 continue
-            wy = math.exp(-0.5 * (yy - cy) ** 2 / (sig * sig))
+            wy = np.exp(-0.5 * (yy - py) ** 2 / (sigma * sigma))
             for ox in range(-2, 3):
                 xx = (ix + ox) % width
-                wx = math.exp(-0.5 * (ix + ox - cx) ** 2 / (sig * sig))
-                w = wx * wy
-                if w > 1e-4:
-                    image[yy, xx] += col * (amp * w)
+                wx = np.exp(-0.5 * (ix + ox - px) ** 2 / (sigma * sigma))
+                w = wx * wy * brightness
+                keep = ok_y & (w > 1e-4)
+                if not keep.any():
+                    continue
+                index_parts.append((yy[keep] * width + xx[keep]).astype(np.int64))
+                weight_parts.append(w[keep])
+                colour_parts.append(colours[keep])
+        if index_parts:
+            flat = np.concatenate(index_parts)
+            weights = np.concatenate(weight_parts)
+            cols = np.concatenate(colour_parts)
+            acc = np.empty((height * width, 3), dtype=np.float64)
+            for c in range(3):
+                acc[:, c] = np.bincount(flat, weights=weights * cols[:, c],
+                                        minlength=height * width)
+            image += acc.reshape(height, width, 3).astype(np.float32)
 
     image = np.clip(image, 0.0, 50.0).astype(np.float32)
+    if cache_path is not None:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(cache_path, image)
+        except OSError:
+            pass
     _STAR_CACHE[key] = image
     return image
 
@@ -799,6 +842,7 @@ class LensingRenderer:
         self._star_np = None
         self._lut_np = None
         self._tex_np = None
+        self._sky_stars = True
         self._ready = False
 
     @property
@@ -814,7 +858,8 @@ class LensingRenderer:
             raise RuntimeError(
                 "Taichi 初始化失败：" + (_TI_ERROR or "未知错误")
             )
-        self._star_np = build_starfield(*self.star_size, seed=self.seed)
+        self._star_np = build_starfield(
+            *self.star_size, seed=self.seed, stars=self._sky_stars)
         self._lut_np = blackbody_lut()
         sw, sh = self.star_size
         self._star_field = ti.Vector.field(3, ti.f32, shape=(sh, sw))

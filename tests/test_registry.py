@@ -34,14 +34,14 @@ class TestRegistry(unittest.TestCase):
 
     def test_unpolished_is_marked_as_an_experimental_field(self):
         note = apps_manifest.category_note("Unpolished")
-        self.assertTrue(note.strip(), "实验田需要一句说明")
-        self.assertIn("实验田", apps_manifest.category_label("Unpolished"))
-        self.assertNotIn("实验田", apps_manifest.category_label("Math"))
+        self.assertTrue(note.strip(), "实验需要一句说明")
+        self.assertIn("实验", apps_manifest.category_label("Unpolished"))
+        self.assertNotIn("实验", apps_manifest.category_label("Math"))
         self.assertEqual(apps_manifest.category_note("Math"), "")
         # 启动器标签、生成的矩阵和 README 用的是同一份说法
-        self.assertIn("实验田", apps_manifest.app_matrix_markdown())
+        self.assertIn("实验", apps_manifest.app_matrix_markdown())
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as handle:
-            self.assertIn("实验田", handle.read())
+            self.assertIn("实验", handle.read())
 
     def test_app_paths_and_categories(self):
         for app in apps_manifest.APPS:
@@ -53,7 +53,7 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(len({a["path"] for a in apps_manifest.APPS}), len(apps_manifest.APPS))
 
     def test_covers_exist_and_are_valid(self):
-        exemplars = {"Quasicrystal", "Mass Spring", "Particle Lenia"}
+        exemplars = {"Quasicrystal", "Hooke", "Particle Lenia"}
         for app in apps_manifest.APPS:
             path = apps_manifest.thumbnail_path(app["path"], ROOT)
             self.assertTrue(path.exists(), str(path))
@@ -65,8 +65,8 @@ class TestRegistry(unittest.TestCase):
     def test_exemplars_are_polished(self):
         entries = {app["title"]: app for app in apps_manifest.APPS}
         self.assertEqual(entries["Quasicrystal"]["category"], "Math")
-        self.assertEqual(entries["Mass Spring"]["category"], "Physics")
-        for title in ("Quasicrystal", "Mass Spring"):
+        self.assertEqual(entries["Hooke"]["category"], "Physics")
+        for title in ("Quasicrystal", "Hooke"):
             self.assertNotIn("Unpolished/", entries[title]["path"])
         self.assertEqual(entries["Particle Lenia"]["category"], "Cellular Automata")
 
@@ -76,7 +76,7 @@ class TestRegistry(unittest.TestCase):
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
         self.assertIn("应用矩阵", text)
-        self.assertIn("实验田", text)
+        self.assertIn("实验", text)
         for app in apps_manifest.APPS:
             self.assertIn(f"**{app['title']}**", text)
 

@@ -418,7 +418,7 @@ class SnowMapView(QWidget):
 class SnowApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("雪花生长 Reiter Snowflake")
+        self.setWindowTitle("Reiter · 雪花生长")
         self.setGeometry(120, 70, 1120, 800)
 
         self.grid_size = 420

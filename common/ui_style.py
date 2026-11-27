@@ -47,6 +47,7 @@ def canonicalise(source):
 
 
 TWO_VIEW_MARKER = 'UI_LAYOUT = "two_view"'
+DARK_CANVAS_MARKER = 'UI_THEME = "dark_canvas"'
 TWO_VIEW_REQUIRED = (
     "setMinimumSize(",
     "resize(",
@@ -89,6 +90,11 @@ def check_app_ui(app_path):
     two_view = TWO_VIEW_MARKER in source
     required = TWO_VIEW_REQUIRED if two_view else REQUIRED
     forbidden = TWO_VIEW_FORBIDDEN if two_view else FORBIDDEN
+    if DARK_CANVAS_MARKER in source:
+        # A documented scientific dark canvas (UI_GUIDELINES.md, line 76).
+        required = tuple(
+            token for token in required if token != "background-color: #ffffff"
+        )
     for token in required:
         if token not in source:
             issues.append(f"缺少约定: {token}")

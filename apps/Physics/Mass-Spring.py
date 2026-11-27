@@ -121,7 +121,7 @@ class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
         self.setStyleSheet("background-color: #ffffff;")
-        self.setWindowTitle("质点-弹簧")
+        self.setWindowTitle("Hooke · 弹簧网络")
         self.sim = MassSpring()
         self.sim.reset("悬索桥")
         self.canvas = SpringCanvas(self.sim)
@@ -263,7 +263,7 @@ class MainWindow(LabWindow):
 
     def _save(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存质点-弹簧", "mass-spring.png", "PNG (*.png)"
+            self, "保存Hooke · 弹簧网络", "mass-spring.png", "PNG (*.png)"
         )
         if not path:
             return

@@ -1,105 +1,85 @@
 from common.field_canvas import ArrayCanvas
+from common.lab_window import LabWindow
 from common.numpy_base import (np)
 from common.qt_base import (ColorButton, FPSCounter, LabeledSlider, QCheckBox, QColor, QComboBox, QFormLayout,
                             QGroupBox, QHBoxLayout, QLabel, QLineF, QMainWindow, QPen, QPushButton, QScrollArea,
                             QSpinBox, QTimer, QVBoxLayout, QWidget, Qt, run_app)
 
-# ==================== 经典预设图案 ====================
-# '.' 或 ' ' 表示死亡，其余字符表示存活
-PRESETS = {
-    "滑翔机 Glider": [
-        ".O.",
-        "..O",
-        "OOO",
-    ],
-    "轻型飞船 LWSS": [
-        ".O..O",
-        "....O",
-        "O...O",
-        ".OOOO",
-    ],
-    "高斯帕滑翔机枪 Gosper Gun": [
-        "........................O...........",
-        "......................O.O...........",
-        "............OO......OO............OO",
-        "...........O...O....OO............OO",
-        "OO........O.....O...OO..............",
-        "OO........O...O.OO....O.O...........",
-        "..........O.....O.......O...........",
-        "...........O...O....................",
-        "............OO......................",
-    ],
-    "脉冲星 Pulsar": [
-        "..OOO...OOO..",
-        ".............",
-        "O....O.O....O",
-        "O....O.O....O",
-        "O....O.O....O",
-        "..OOO...OOO..",
-        ".............",
-        "..OOO...OOO..",
-        "O....O.O....O",
-        "O....O.O....O",
-        "O....O.O....O",
-        ".............",
-        "..OOO...OOO..",
-    ],
-    "R 五连 R-pentomino": [
-        ".OO",
-        "OO.",
-        ".O.",
-    ],
-    "橡子 Acorn": [
-        ".O.....",
-        "...O...",
-        "OO..OOO",
-    ],
-    "顽固分子 Diehard": [
-        "......O.",
-        "OO......",
-        ".O...OOO",
-    ],
-    "无限增长 Infinite Growth": [
-        "OOO.O",
-        "O....",
-        "...OO",
-        ".OO.O",
-        "O.O.O",
-    ],
-    "蜂巢 Beehive": [
-        ".OO.",
-        "O..O",
-        ".OO.",
-    ],
-    "面包 Loaf": [
-        ".OO.",
-        "O..O",
-        ".O.O",
-        "..O.",
-    ],
-    "闪光灯 Blinker": [
-        "OOO",
-    ],
-    "蟾蜍 Toad": [
-        ".OOO",
-        "OOO.",
-    ],
-    "方块 Block": [
-        "OO",
-        "OO",
-    ],
-    "飞船队 Fleet": [
-        ".O..O......",
-        "....O......",
-        "O...O......",
-        ".OOOO......",
-        "...........",
-        "......O..O.",
-        ".........O.",
-        "......O...O",
-        "......OOOO.",
-    ],
-}
+# ==================== 预设库 ====================
+# 运行时只读取 assets/data/conway_presets.npz；这里不含任何硬编码图案。
+from dataclasses import dataclass
+
+from common.paths import DATA_DIR
+
+_PRESET_PATH = DATA_DIR / "conway_presets.npz"
+
+
+@dataclass(frozen=True)
+class LifePreset:
+    key: str
+    short: str
+    name: str
+    category: str
+    period: str
+    rows: tuple[str, ...]
+    cells: int
+    width: int
+    height: int
+    author: str
+    description: str
+    source: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.short}  ·  {self.period}"
+
+
+def _load_presets():
+    with np.load(_PRESET_PATH, allow_pickle=False) as data:
+        keys = [str(v) for v in data["keys"]]
+        shorts = [str(v) for v in data["shorts"]]
+        names = [str(v) for v in data["names"]]
+        categories = [str(v) for v in data["categories"]]
+        periods = [str(v) for v in data["periods"]]
+        authors = [str(v) for v in data["authors"]]
+        descriptions = [str(v) for v in data["descriptions"]]
+        sources = [str(v) for v in data["sources"]]
+        order = tuple(str(v) for v in data["category_order"])
+        label_keys = [str(v) for v in data["category_labels_keys"]]
+        label_values = [str(v) for v in data["category_labels_values"]]
+        default = str(data["default"][0])
+        presets = {}
+        for i, key in enumerate(keys):
+            grid = np.asarray(data[f"preset_{key}"], dtype=bool)
+            rows = tuple(
+                "".join("O" if cell else "." for cell in row)
+                for row in grid
+            )
+            presets[key] = LifePreset(
+                key=key,
+                short=shorts[i],
+                name=names[i],
+                category=categories[i],
+                period=periods[i],
+                rows=rows,
+                cells=int(grid.sum()),
+                width=grid.shape[1],
+                height=grid.shape[0],
+                author=authors[i],
+                description=descriptions[i],
+                source=sources[i],
+            )
+    return presets, order, dict(zip(label_keys, label_values)), default
+
+
+PRESETS, CATEGORY_ORDER, CATEGORY_LABELS, DEFAULT_PRESET = _load_presets()
+
+
+def presets_for(category: str | None = None):
+    """Presets in archive order, optionally filtered by category."""
+    if not category:
+        return list(PRESETS.values())
+    return [p for p in PRESETS.values() if p.category == category]
 
 
 class LifeAutomaton:
@@ -341,11 +321,12 @@ class LifeCanvas(ArrayCanvas):
 
 
 # ==================== 主窗口 ====================
-class MainWindow(QMainWindow):
+class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("生命游戏 Conway's Game of Life")
-        self.setGeometry(120, 60, 1120, 860)
+        self.resize(1000, 720)
+        self.setMinimumSize(1000, 720)
 
         self.grid_width = 400
         self.grid_height = 400
@@ -364,8 +345,8 @@ class MainWindow(QMainWindow):
         self.stats_timer.timeout.connect(self.update_stats)
         self.stats_timer.start(500)
 
-        # 默认放一个高斯帕滑翔机枪，打开就能看到东西
-        self.automaton.place_pattern(PRESETS["高斯帕滑翔机枪 Gosper Gun"],
+        # 默认放高斯帕滑翔机枪，打开就能看到东西
+        self.automaton.place_pattern(PRESETS[DEFAULT_PRESET].rows,
                                      self.grid_width // 2, self.grid_height // 2)
         self.canvas.invalidate()
         self.update_stats()
@@ -375,11 +356,11 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setContentsMargins(6, 6, 6, 6)
+        root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
 
         panel = QWidget()
-        panel.setFixedWidth(270)
+        panel.setFixedWidth(330)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(6)
         panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -397,8 +378,15 @@ class MainWindow(QMainWindow):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setAlignment(Qt.AlignCenter)
+        self.scroll_area.setFixedSize(640, 640)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet(
+            "QScrollArea { border: none; background: #ffffff; }"
+            "QScrollArea > QWidget > QWidget { background: #ffffff; }"
+        )
         self.scroll_area.setWidget(self.canvas)
-        root.addWidget(self.scroll_area, 1)
+        root.addWidget(self.scroll_area)
 
         # 统计放到状态栏，面板留给操作
         self.lbl_status = QLabel("就绪")
@@ -408,15 +396,39 @@ class MainWindow(QMainWindow):
         self.lbl_fps = QLabel("帧率 –")
         for lbl in (self.lbl_generation, self.lbl_population, self.lbl_fps):
             self.statusBar().addPermanentWidget(lbl)
+        QTimer.singleShot(0, self._center_canvas)
+
+    def _center_canvas(self):
+        viewport = self.scroll_area.viewport()
+        self.scroll_area.horizontalScrollBar().setValue(
+            max(0, (self.canvas.width() - viewport.width()) // 2)
+        )
+        self.scroll_area.verticalScrollBar().setValue(
+            max(0, (self.canvas.height() - viewport.height()) // 2)
+        )
 
     def _build_preset_group(self, layout):
         group = QGroupBox("预设图案")
         vbox = QVBoxLayout(group)
         vbox.setSpacing(4)
 
+        category_row = QHBoxLayout()
+        category_row.setSpacing(4)
+        category_row.addWidget(QLabel("类别"))
+        self.preset_category_combo = QComboBox()
+        self.preset_category_combo.addItem("全部", None)
+        for category in CATEGORY_ORDER:
+            label = CATEGORY_LABELS.get(category, category)
+            self.preset_category_combo.addItem(label, category)
+        category_row.addWidget(self.preset_category_combo, 1)
+        vbox.addLayout(category_row)
+
         self.preset_combo = QComboBox()
-        self.preset_combo.addItems(list(PRESETS.keys()))
         vbox.addWidget(self.preset_combo)
+
+        self.preset_category_combo.currentIndexChanged.connect(self._refresh_preset_list)
+        self.preset_combo.currentIndexChanged.connect(self._update_preset_tooltip)
+        self._refresh_preset_list(select=DEFAULT_PRESET)
 
         row = QHBoxLayout()
         row.setSpacing(4)
@@ -436,6 +448,30 @@ class MainWindow(QMainWindow):
         vbox.addLayout(row2)
 
         layout.addWidget(group)
+
+    def _refresh_preset_list(self, *args, select=None):
+        category = self.preset_category_combo.currentData()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        for preset in presets_for(category):
+            self.preset_combo.addItem(preset.label, preset.key)
+        self.preset_combo.blockSignals(False)
+        if self.preset_combo.count() == 0:
+            self.preset_combo.setToolTip("")
+            return
+        index = self.preset_combo.findData(select) if select else 0
+        self.preset_combo.setCurrentIndex(max(0, index))
+        self._update_preset_tooltip()
+
+    def _update_preset_tooltip(self, *args):
+        preset = PRESETS.get(self.preset_combo.currentData())
+        if preset is None:
+            self.preset_combo.setToolTip("")
+            return
+        self.preset_combo.setToolTip(
+            f"{preset.name}\n{preset.category} · {preset.period}\n"
+            f"{preset.description}\n{preset.source}"
+        )
 
     def _build_sim_group(self, layout):
         group = QGroupBox("模拟")
@@ -512,22 +548,22 @@ class MainWindow(QMainWindow):
         self.size_spin.editingFinished.connect(self.apply_grid_size)
         form.addRow("边长", self.size_spin)
 
-        hint = QLabel("滚轮缩放，中键拖动")
-        hint.setStyleSheet("color: #888;")
-        form.addRow("", hint)
+        tip_label = QLabel("滚轮缩放，中键拖动")
+        tip_label.setStyleSheet("color: #888;")
+        form.addRow("操作", tip_label)
 
         layout.addWidget(group)
 
     # ---------- 操作 ----------
     def place_preset(self):
-        name = self.preset_combo.currentText()
-        rows = PRESETS.get(name)
-        if not rows:
+        preset = PRESETS.get(self.preset_combo.currentData())
+        if preset is None:
             return
-        self.automaton.place_pattern(rows, self.grid_width // 2, self.grid_height // 2)
+        self.automaton.place_pattern(preset.rows,
+                                     self.grid_width // 2, self.grid_height // 2)
         self.canvas.invalidate()
         self.update_stats()
-        self.lbl_status.setText(f"已放置：{name}")
+        self.lbl_status.setText(f"已放置：{preset.name}")
 
     def random_fill(self):
         self.automaton.randomize(0.28)
@@ -568,17 +604,20 @@ class MainWindow(QMainWindow):
             self.timer.start(max(1, 1000 // value))
 
     def set_zoom(self, value):
-        self.cell_size = value
-        self.zoom_by(0)
+        self._set_zoom_size(value)
 
     def zoom_by(self, delta):
-        new_size = max(1, min(20, self.cell_size + delta))
-        if new_size != self.cell_size:
-            self.cell_size = new_size
-            self.zoom_slider.blockSignals(True)
-            self.zoom_slider.setValue(new_size)
-            self.zoom_slider.blockSignals(False)
-            self.zoom_label.setText(f"{new_size}px")
+        self._set_zoom_size(self.cell_size + delta)
+
+    def _set_zoom_size(self, value):
+        value = max(1, min(20, int(value)))
+        if value == self.cell_size:
+            self._apply_canvas_size()
+            return
+        self.cell_size = value
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(value)
+        self.zoom_slider.blockSignals(False)
         self._apply_canvas_size()
 
     def _apply_canvas_size(self):

@@ -16,7 +16,7 @@ from support.fractals.fractal_kernels import (
     render_mandelbrot,
 )
 
-ti.init(arch=ti.gpu, offline_cache=True)
+ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
 INFO_TEXT = (
     "左键 切换实时更新 · 中键 拖拽 · 滚轮 缩放\n"
@@ -197,7 +197,7 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
     def on_parameters_changed(self):
         self.max_iterations = self.iter_spin.value()
         self.escape_radius = self.radius_spin.value()
-        self.mark_all_dirty()
+        self.mark_all_dirty(preview=True)
 
     def set_fixed_positions(self):
         if self.mouse_pos[0] >= 0 and self.left_widget is not None:

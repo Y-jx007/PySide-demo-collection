@@ -7,6 +7,23 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
+# 交互进行中先用 1x 采样出预览；停手后由 QTimer 触发一次全质量精修。
+PREVIEW_ANTIALIAS = 1
+PREVIEW_REFINE_MS = 180
+
+
+def render_dimensions(width, height, antialias, *, preview=False):
+    """Return (display_w, display_h, render_w, render_h).
+
+    During interaction the canvas renders one sample per pixel, which is
+    roughly an order of magnitude cheaper than the selected AA factor; the
+    refine pass restores full quality once the user stops.
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    aa = PREVIEW_ANTIALIAS if preview else max(1, int(antialias))
+    return width, height, width * aa, height * aa
+
 
 @dataclass(frozen=True)
 class ViewTransform:
@@ -74,9 +91,17 @@ class BaseFractalWidget(QWidget):
         self.is_dragging = False
         self.last_drag_pos = None
         self.taichi_field = None
+        self._field_cache = {}
         self.image = None
         self._image_buffer = None
         self.needs_recompute = True
+
+        # 交互预览：拖拽/缩放/拖参数时先画 1x，停手 PREVIEW_REFINE_MS 后精修。
+        self._interactive = False
+        self._refine_timer = QTimer(self)
+        self._refine_timer.setSingleShot(True)
+        self._refine_timer.setInterval(PREVIEW_REFINE_MS)
+        self._refine_timer.timeout.connect(self._end_preview)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._on_timer)
@@ -93,8 +118,28 @@ class BaseFractalWidget(QWidget):
             self.update()
 
     def shutdown(self):
-        """Stop the repaint timer; called by the owning window on close."""
+        """Stop the repaint/refine timers; called by the owning window on close."""
+        self._refine_timer.stop()
         self.timer.stop()
+
+    # ---------- interaction preview ----------
+    @property
+    def interactive(self) -> bool:
+        return self._interactive
+
+    def request_preview(self):
+        """Draw a cheap 1x preview now; refine at full quality when idle."""
+        self._interactive = True
+        self.needs_recompute = True
+        self._refine_timer.start()
+        self.update()
+
+    def _end_preview(self):
+        if not self._interactive:
+            return
+        self._interactive = False
+        self.needs_recompute = True
+        self.update()
 
     # ---------- subclass hook ----------
     def compute_image(self):
@@ -123,27 +168,45 @@ class BaseFractalWidget(QWidget):
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
             return None, None, None, None
-        aa = max(1, int(self.parent_app.antialias_factor))
-        return w, h, w * aa, h * aa
+        return render_dimensions(
+            w, h, self.parent_app.antialias_factor, preview=self._interactive
+        )
 
     def ensure_taichi_field(self, render_w, render_h):
-        if self.taichi_field is None or self.taichi_field.shape != (render_h, render_w):
-            self.taichi_field = ti.field(dtype=ti.u32, shape=(render_h, render_w))
+        # 预览（1x）与精修（AA）尺寸不同；缓存最近两个尺寸，避免每次开始
+        # 交互都重新分配几十 MB 的 field（分配 + 首次写入约几十毫秒）。
+        key = (render_h, render_w)
+        field = self._field_cache.get(key)
+        if field is None:
+            field = ti.field(dtype=ti.u32, shape=key)
+            if len(self._field_cache) >= 2:
+                self._field_cache.pop(next(iter(self._field_cache)))
+            self._field_cache[key] = field
+        self.taichi_field = field
 
     def field_to_image(self, render_w, render_h, target_w, target_h):
-        arr = self.taichi_field.to_numpy()
-        buffer = arr.tobytes()
-        image = QImage(buffer, render_w, render_h, render_w * 4, QImage.Format_RGB32)
+        array = self.taichi_field.to_numpy()
+        buffer = None
+        try:
+            # QImage 只是一层视图，必须把缓冲区保活到下一次绘制；这里直接持有
+            # numpy 数组，省掉一遍 tobytes()。
+            image = QImage(
+                array.data, render_w, render_h, render_w * 4, QImage.Format_RGB32
+            )
+        except TypeError:                      # 极少数 PySide 版本不接受 buffer
+            buffer = array.tobytes()
+            image = QImage(
+                buffer, render_w, render_h, render_w * 4, QImage.Format_RGB32
+            )
         if (render_w, render_h) != (target_w, target_h):
             image = image.scaled(
                 target_w, target_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
             )
-            new_buffer = None
-        else:
-            # QImage does not copy the buffer; keep it alive with the widget.
-            new_buffer = buffer
+            buffer = None
+        elif buffer is None:
+            buffer = array
         self.image = image
-        self._image_buffer = new_buffer
+        self._image_buffer = buffer
         self.needs_recompute = False
 
     # ---------- mouse and view interaction ----------
@@ -170,12 +233,13 @@ class BaseFractalWidget(QWidget):
             self.view_center[0] -= dx * transform.scale_x
             self.view_center[1] -= dy * transform.scale_y
             self.last_drag_pos = current_pos
-            self.needs_recompute = True
+            self.request_preview()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MiddleButton:
             self.is_dragging = False
             self.setCursor(Qt.ArrowCursor)
+            self._refine_timer.start()
 
     def wheelEvent(self, event):
         mouse_real, mouse_imag = self.screen_to_world(
@@ -189,7 +253,7 @@ class BaseFractalWidget(QWidget):
         self.view_center[1] = (
             mouse_imag - (mouse_imag - self.view_center[1]) * zoom_factor
         )
-        self.needs_recompute = True
+        self.request_preview()
 
     def update_mouse_position(self, event):
         if self.parent_app:

@@ -155,8 +155,14 @@ class TestDiskPhysics(unittest.TestCase):
         self.assertGreater(approaching, receding)
         self.assertGreater(approaching, 1.0)
         self.assertLess(receding, 1.0)
-        # At b_z = 0 only the gravitational part remains.
-        self.assertLess(L.doppler_factor(10.0, 0.0, 46.0), 1.0)
+        # At b_z = 0 only the gravitational part remains; the exact value is
+        # 1/(sqrt(f_cam) u^t), not sqrt(f_cam)/u^t.
+        expected = 1.0 / (
+            math.sqrt(1.0 - 2.0 / 46.0)
+            * (1.0 / math.sqrt(1.0 - 3.0 / 10.0))
+        )
+        self.assertAlmostEqual(L.doppler_factor(10.0, 0.0, 46.0),
+                               expected, places=12)
 
     def test_blackbody_colours_move_from_red_to_blue(self):
         cool = L.blackbody_rgb(3000.0)
@@ -222,22 +228,22 @@ class TestRendererConfiguration(unittest.TestCase):
 
 class TestLensingUI(unittest.TestCase):
     def test_app_follows_the_shared_ui_contract(self):
-        path = os.path.join(ROOT, "apps", "Physics", "Lensing.py")
+        path = os.path.join(ROOT, "apps", "Unpolished", "Lensing.py")
         issues = check_app_ui(path)
         self.assertEqual(issues, [], issues)
 
     def test_app_is_in_the_manifest_and_layout(self):
         import apps_manifest
         entries = {app["path"]: app for app in apps_manifest.APPS}
-        self.assertIn("Physics/Lensing.py", entries)
-        self.assertEqual(entries["Physics/Lensing.py"]["category"], "Physics")
+        self.assertIn("Unpolished/Lensing.py", entries)
+        self.assertEqual(entries["Unpolished/Lensing.py"]["category"], "Unpolished")
         layout = os.path.join(ROOT, "runtime", "launcher_layout.json")
         if os.path.exists(layout):
             import json
             with open(layout, encoding="utf-8") as handle:
                 data = json.load(handle)
             paths = {p for cat in data["categories"] for p in cat["apps"]}
-            self.assertIn("Physics/Lensing.py", paths)
+            self.assertIn("Unpolished/Lensing.py", paths)
 
 
 if __name__ == "__main__":

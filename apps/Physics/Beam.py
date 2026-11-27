@@ -259,7 +259,7 @@ class ImplicitBeam:
     # ---------- Taichi：单元应力与失效 ----------
     def _init_taichi(self):
         ti.reset()
-        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=True)
+        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=True, advanced_optimization=True)
         self.t_dis = ti.field(ti.f32, 2 * self.n_nodes)
         self.t_stress = ti.field(ti.f32, self.n_elem)
         self.t_broken = ti.field(ti.i32, self.n_elem)
@@ -574,7 +574,7 @@ class SweepChart(QWidget):
 class BeamApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("横梁承重 · Taichi 实时破坏模拟")
+        self.setWindowTitle("Euler–Bernoulli · 实时梁破坏")
         self.setGeometry(140, 90, 1180, 700)
 
         self.material = "松木"
@@ -670,7 +670,7 @@ class BeamApp(QMainWindow):
         pv.setSpacing(8)
         pv.setContentsMargins(0, 0, 0, 0)
 
-        title = QLabel("横梁承重")
+        title = QLabel("Euler–Bernoulli 梁")
         tf = title.font()
         tf.setPointSize(13)
         tf.setBold(True)

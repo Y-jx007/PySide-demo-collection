@@ -99,7 +99,8 @@ class NLSE:
     """Periodic box, complex field, split-step Fourier time stepping."""
 
     def __init__(self, size=192, extent=32.0, dt=0.02, seed=7, saturation=60.0,
-                 model="饱和", kappa=0.02, two_photon=0.0, saturable_loss=0.0):
+                 model="饱和", kappa=0.02, two_photon=0.0, saturable_loss=0.0,
+                 backend="numpy"):
         self.n = int(size)
         self.extent = float(extent)
         self.dx = self.extent / self.n
@@ -123,11 +124,131 @@ class NLSE:
         wave = 2.0 * np.pi * np.fft.fftfreq(self.n, d=self.dx)
         kx, ky = np.meshgrid(wave, wave, indexing="xy")
         self.K2 = kx ** 2 + ky ** 2
-        self.psi = np.zeros((self.n, self.n), dtype=np.complex128)
+        self._psi = np.zeros((self.n, self.n), dtype=np.complex128)
+        self._torch_psi = None
+        self._psi_dirty = False
+        self._intensity_cache = None
         self._dispersion = None
         self._dispersion_dt = None
+        # torch 后端是可选的：默认 NumPy；enable_torch() 之后 step() 走 GPU FFT。
+        # 状态仍以 NumPy 的 self.psi 为准，每步只做一次 H2D/D2H 往返
+        # （192² complex128 约 0.6 MB，实测远小于 NumPy FFT 的收益）。
+        self.backend = backend
+        self._torch = None
+        self._torch_warm = False
+        self._torch_device = None
+        self._torch_disp = None
+        self._torch_disp_dt = None
         self.steps = 0
         self.reset("单束", 0.6, 0.01)
+
+    # ---------- 可选 torch 后端 ----------
+    @property
+    def torch_ready(self):
+        """True only after warm_torch(): the first UI step must not compile plans."""
+        return self._torch is not None and self._torch_warm
+
+    @property
+    def psi(self):
+        """NumPy view of the field; syncs from GPU only when it is dirty."""
+        if self._torch_psi is not None and self._psi_dirty:
+            self._psi = self._torch_psi.detach().cpu().numpy().astype(
+                np.complex128, copy=False)
+            self._psi_dirty = False
+        return self._psi
+
+    @psi.setter
+    def psi(self, value):
+        self._psi = np.asarray(value, dtype=np.complex128)
+        self._torch_psi = None
+        self._psi_dirty = False
+        self._intensity_cache = None
+
+    def enable_torch(self, device=None):
+        """启用 torch FFT 后端；没有 torch 时保持 NumPy，返回是否成功。"""
+        if self._torch is not None:
+            return True
+        try:
+            import torch
+        except ImportError:
+            return False
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._torch = torch
+        self._torch_device = torch.device(device)
+        self._torch_disp = None
+        self._torch_disp_dt = None
+        self._torch_warm = False
+        self._torch_lut = None
+        self._torch_lut_key = None
+        return True
+
+    def warm_torch(self):
+        """在后台线程把 cuFFT plan / CUDA kernel 预热掉，避免切换瞬间卡 UI。
+
+        用同尺寸的 zeros 跑一个完整子步（结果丢弃）；不碰 self._psi，
+        因此主线程这期间仍可安全地走 NumPy。
+        """
+        if self._torch is None:
+            return False
+        torch = self._torch
+        dummy = torch.zeros((self.n, self.n), dtype=torch.complex128,
+                            device=self._torch_device)
+        self._torch_advance(dummy, 1)
+        if self._torch_device.type == "cuda":
+            torch.cuda.synchronize(self._torch_device)
+        self._torch_warm = True
+        return True
+
+    def _torch_dispersion(self):
+        if self._torch_disp is None or self._torch_disp_dt != self.dt:
+            self._torch_disp = self._torch.as_tensor(
+                self.dispersion_operator(), dtype=self._torch.complex128,
+                device=self._torch_device,
+            )
+            self._torch_disp_dt = self.dt
+        return self._torch_disp
+
+    def _response_torch(self, intensity):
+        torch = self._torch
+        if self.model == "高阶 Kerr":
+            return torch.clamp(1.0 - self.kappa * intensity, 0.0, 1.0)
+        return 1.0 / (1.0 + intensity / self.saturation)
+
+    def _torch_advance(self, psi, count):
+        torch = self._torch
+        dispersion = self._torch_dispersion()
+        half = 0.5 * self.dt
+
+        def half_step(psi):
+            intensity = psi.abs() ** 2
+            theta = half * intensity * self._response_torch(intensity)
+            psi = psi * (torch.cos(theta) + 1j * torch.sin(theta))
+            if self.two_photon:
+                psi = psi * torch.exp(-0.5 * self.two_photon * half * intensity)
+            if self.saturable_loss:
+                psi = psi * torch.exp(
+                    -0.5 * half * self.saturable_loss
+                    / (1.0 + intensity / (0.02 * self.saturation))
+                )
+            return psi
+
+        for _ in range(int(count)):
+            psi = half_step(psi)
+            psi = torch.fft.ifft2(torch.fft.fft2(psi) * dispersion)
+            psi = half_step(psi)
+        return psi
+
+    def _step_torch(self, count):
+        torch = self._torch
+        if self._torch_psi is None:
+            self._torch_psi = torch.as_tensor(
+                self._psi, dtype=torch.complex128, device=self._torch_device)
+        self._torch_psi = self._torch_advance(self._torch_psi, count)
+        self._psi_dirty = True
+        self._intensity_cache = None
+        self.steps += int(count)
+        return None
 
     # ---------- 初始条件 ----------
     def reset(self, preset="单束", amplitude=0.6, noise=0.01):
@@ -186,6 +307,12 @@ class NLSE:
         return 1.0 / (1.0 + intensity / self.saturation)
 
     def step(self, count=1):
+        """Advance ``count`` Strang steps (torch backend if enabled, else NumPy)."""
+        if self.backend == "torch" and self.torch_ready:
+            return self._step_torch(count)
+        return self._step_numpy(count)
+
+    def _step_numpy(self, count=1):
         """One Strang step: half of the cubic term, all of the dispersion.
 
         The nonlinear half step is written as cos + i sin instead of
@@ -231,7 +358,13 @@ class NLSE:
 
     # ---------- 观测量 ----------
     def intensity(self):
-        return np.abs(self.psi) ** 2
+        if self._torch_psi is not None and self._psi_dirty:
+            if self._intensity_cache is None:
+                self._intensity_cache = (
+                    self._torch_psi.abs().pow(2).detach().cpu().numpy()
+                )
+            return self._intensity_cache
+        return np.abs(self._psi) ** 2
 
     def power(self):
         return float(np.sum(self.intensity()) * self.dx * self.dx)
@@ -249,7 +382,45 @@ class NLSE:
         return float(np.sqrt(np.sum(intensity * r2) / total))
 
     def render(self, palette=PALETTE, log=True):
+        if self.torch_ready and self._torch_psi is not None:
+            try:
+                return self._render_torch(palette=palette, log=log)
+            except Exception:
+                pass
         return apply_palette(self.intensity(), palette=palette, log=log)
+
+    def _render_torch(self, palette=PALETTE, log=True, gamma=0.7,
+                      percentile=99.5, floor_db=30.0):
+        """GPU palette mapping: no 640² CPU sort/index pass per frame."""
+        torch = self._torch
+        key = (palette, round(float(gamma), 4))
+        if self._torch_lut is None or self._torch_lut_key != key:
+            self._torch_lut = torch.as_tensor(
+                palette_lut(palette, gamma=gamma), dtype=torch.uint8,
+                device=self._torch_device)
+            self._torch_lut_key = key
+        field = self._torch_psi.abs() ** 2
+        sample = field[::4, ::4].flatten()
+        k = max(1, min(sample.numel(),
+                       int(percentile / 100.0 * (sample.numel() - 1)) + 1))
+        reference = torch.kthvalue(sample, k).values
+        ref = float(reference)
+        if ref <= 0.0:
+            ref = float(field.max())
+        if ref <= 0.0:
+            rgb = torch.full((self.n, self.n, 3),
+                             PALETTES[palette][0][1][0], dtype=torch.uint8,
+                             device=self._torch_device)
+            return rgb.cpu().numpy()
+        ratio = torch.clamp(field / ref, min=1e-12, max=1.0)
+        if log:
+            db = 10.0 * torch.log10(ratio)
+            norm = torch.clamp((db + floor_db) / floor_db, 0.0, 1.0)
+        else:
+            norm = torch.clamp(field / ref, 0.0, 1.0) ** gamma
+        index = torch.clamp(norm * 255.0, 0.0, 255.0).to(torch.long)
+        rgb = self._torch_lut[index]
+        return rgb.cpu().numpy()
 
     def spectrum(self, floor_db=40.0):
         """|FFT|² in dB relative to the peak, as a float image in [0, 1].

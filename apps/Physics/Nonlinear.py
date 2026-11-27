@@ -495,8 +495,13 @@ class OpticsCanvas(ArrayCanvas):
         self.setCursor(Qt.CrossCursor)
         self.window = window
         self.mode = MODES[0]
-        self.space = NLSE()
-        self.time = TemporalNLSE()
+        # 直接在启动时就要 GPU：384² 比原来的 192² 细一倍，画面不再靠放大糊上去。
+        self.space = NLSE(size=640, backend="torch")
+        self.time = TemporalNLSE(backend="torch")
+        self.torch_ok = self._prepare_torch()
+        if not self.torch_ok:
+            # 没有 torch 时 640² 的 NumPy 步进不可接受，退回原来的 192²。
+            self.space = NLSE(size=192, backend="torch")
         self.doubling = SHGMap()
         self.sfg = SFGMap()
         self.pulse = PulseSHG()
@@ -505,6 +510,19 @@ class OpticsCanvas(ArrayCanvas):
         self.process = "倍频"
         self.log_view = False
         self.space_view = "场"
+
+    def _prepare_torch(self):
+        """在窗口出现之前把 torch / cuFFT 全部预热好，运行期不再切换后端。"""
+        try:
+            import torch  # noqa: F401 - 启动期一次性 import
+        except ImportError:
+            return False
+        try:
+            ok_space = self.space.enable_torch() and self.space.warm_torch()
+            ok_time = self.time.enable_torch() and self.time.warm_torch()
+            return bool(ok_space and ok_time)
+        except Exception:
+            return False
 
     def render_frame(self):
         if self.mode == "时间孤子":
@@ -626,6 +644,7 @@ class OpticsCanvas(ArrayCanvas):
 
 
 class MainWindow(LabWindow):
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("非线性光学 · 自聚焦 / 孤子 / 倍频")

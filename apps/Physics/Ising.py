@@ -5,7 +5,7 @@ from common.numpy_base import (np)
 from common.taichi_base import (ti)
 from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_FLOAT, GL_LUMINANCE, GL_NEAREST, GL_QUADS, GL_RGB, GL_TEXTURE_2D, GL_UNSIGNED_BYTE, glTexSubImage2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, glBegin, glBindTexture, glClear, glEnable, glEnd, glGenTextures, glLoadIdentity, glTexCoord2f, glTexImage2D, glTexParameteri, glVertex2f, glViewport)
 
-ti.init(arch=ti.gpu, offline_cache=True)
+ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
 # ── 序参量曲线组件 ──────────────────────────
 class OrderParameterWidget(QWidget):

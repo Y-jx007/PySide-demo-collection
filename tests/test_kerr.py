@@ -62,6 +62,21 @@ class TestKerrInitialConditions(unittest.TestCase):
             self.assertAlmostEqual(Theta, (sigma * st["vth"]) ** 2, places=8)
             self.assertGreater(st["E"], 0.0)
 
+    def test_doppler_asymmetry_survives_the_phi_contraction(self):
+        # x=+/-0.2 are mirror pixels; the physical photon's p_phi must differ
+        # in sign and the redshift must differ by ~1.4x (the old code used
+        # p^phi and produced identical g on both sides).
+        st_l = K._camera_initial(46.0, math.radians(84.0), 0.0, 0.75,
+                                 -0.2, 0.0, 32.0, 0.45)
+        st_r = K._camera_initial(46.0, math.radians(84.0), 0.0, 0.75,
+                                 0.2, 0.0, 32.0, 0.45)
+        self.assertGreater(abs(st_l["L_ph"]), 1.0)
+        self.assertLess(st_r["L_ph"], 0.0)
+        g_l = K.kerr_redshift(6.0, st_l["E_ph"], st_l["L_ph"], 0.75, 0.45)
+        g_r = K.kerr_redshift(6.0, st_r["E_ph"], st_r["L_ph"], 0.75, 0.45)
+        self.assertGreater(g_l / g_r, 1.25)
+        self.assertGreater(g_l / g_r, 1.3)
+
     def test_prograde_disk_redshift_is_finite(self):
         st = K._camera_initial(46.0, math.radians(84.0), 0.0, 0.8,
                                0.1, 0.0, 32.0)
@@ -100,7 +115,7 @@ class TestKerrRayTracer(unittest.TestCase):
 
 class TestKerrApp(unittest.TestCase):
     def test_app_uses_kerr_and_exposes_spin(self):
-        path = os.path.join(ROOT, "apps", "Physics", "Lensing.py")
+        path = os.path.join(ROOT, "apps", "Unpolished", "Lensing.py")
         with open(path, encoding="utf-8") as handle:
             source = handle.read()
         self.assertIn("KerrConfig", source)
@@ -112,7 +127,7 @@ class TestKerrApp(unittest.TestCase):
     def test_cover_and_manifest(self):
         import apps_manifest
         entry = next(a for a in apps_manifest.APPS
-                     if a["path"] == "Physics/Lensing.py")
+                     if a["path"] == "Unpolished/Lensing.py")
         self.assertIn("Kerr", entry["title"])
         self.assertIn("Kerr", entry["description"])
         cover = os.path.join(ROOT, "assets", "thumbnails", "Lensing.png")

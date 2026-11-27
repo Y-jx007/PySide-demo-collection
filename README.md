@@ -1,6 +1,6 @@
 # PySide 绘图工具集 — 数学与物理可视化
 
-一个基于 **PySide6 + Taichi + OpenGL** 的交互式数学/物理可视化工具集，包含 36 个可独立运行的应用。
+一个基于 **PySide6 + Taichi + OpenGL** 的交互式数学/物理可视化工具集，包含 41 个可独立运行的应用。
 
 ## 界面预览
 
@@ -18,9 +18,10 @@
 | **Cplot** | 复变函数幅角图，基于 [cplot](https://github.com/nschloe/cplot) |
 | **Traveler** | 遗传算法求解旅行商问题 |
 | **Lorenz** | 三维洛伦兹吸引子可视化 |
-| **Stigmergy** | 间接通信（stigmergy）两种模型：**黏菌**用三向嗅探 + 信息素沉积自发形成静脉状输运网络；**蚁群**有巢穴与食物，蚂蚁在觅食/返程两态间切换，沿途留下两种信息素，最终收敛出通往食物的蚁道。左键拖拽投放食物、右键擦除，Shift+左键设置蚁巢 |
+| **Grassé** | 间接通信（stigmergy）两种模型：**黏菌**用三向嗅探 + 信息素沉积自发形成静脉状输运网络；**蚁群**有巢穴与食物，蚂蚁在觅食/返程两态间切换，沿途留下两种信息素，最终收敛出通往食物的蚁道。左键拖拽投放食物、右键擦除，Shift+左键设置蚁巢 |
 | **Quasicrystal** | 二维准晶：平面波实空间 + 傅里叶衍射（7 重 / 14 个一级峰），支持对数强度与衍射缩放 |
-| **Connection** | 曲面上的联络：平滑跟随的测地点、可固定的基点、随位置连续变化的向量场长度、协变导数 ∇u v 与回到基点的 holonomy；曲面由 GPU 渲染，画布其余部分仍用 QPainter |
+| **Jones** | 扭结不变量：3D 扭结、Kauffman bracket、Jones 多项式、镜像手性 |
+| **Christoffel** | 曲面上的联络：实时拖动的测地点、可固定的基点、随位置连续变化的向量场长度、协变导数 ∇u v 与回到基点的 holonomy；曲面由 GPU 渲染，画布其余部分仍用 QPainter |
 
 ### Physics
 
@@ -28,13 +29,13 @@
 |------|------|
 | **Schrödinger** | Runge-Kutta 模拟二维量子波包演化 |
 | **Turing** | Gray-Scott 等反应扩散系统 |
-| **Beam** | 横梁承重：欧拉-伯努利梁有限元，应力超材料强度即断裂，可扫描承重与梁高/梁长的关系 |
+| **Euler–Bernoulli** | 横梁承重：欧拉-伯努利梁有限元，应力超材料强度即断裂，可扫描承重与梁高/梁长的关系 |
 | **Ising** | 二维伊辛模型，参考 [Ising.js](https://mattbierbaum.github.io/ising.js/) |
 | **Maxwell** | 二维麦克斯韦-玻尔兹曼速率分布 |
 | **Navier-Stokes** | 2D Q9 格子 Boltzmann 模拟卡门涡街，参考 [LBM_Taichi](https://github.com/hietwll/LBM_Taichi) |
-| **Bremsstrahlung** | 变速圆周电子：真实推迟 Liénard-Wiechert 辐射场，按加速度平行/垂直分量显示轫致（红）与同步（蓝），远场 FFT 频谱加色叠加 |
-| **Kerr–Newman Lensing** | Kerr–Newman 零测地线逐像素 RK4：**自旋 a/M 与电荷 Q/M 可调**、参考系拖曳、D 形阴影、光子环、透镜化星场；中性 Keplerian 薄盘做 g⁴ 多普勒增亮与 Planck 色移 |
-| **Mass Spring** | 质点-弹簧网络：重力、阻尼、固定点与鼠标交互，悬索桥 / 网 / 链 / 随机四种预设 |
+| **Liénard–Wiechert** | 变速圆周电子：真实推迟 Liénard-Wiechert 辐射场，按加速度平行/垂直分量显示轫致（红）与同步（蓝），远场 FFT 频谱加色叠加 |
+| **Kerr–Newman** | Kerr–Newman 零测地线逐像素 RK4：**自旋 a/M ∈ [−0.99, 0.99]、电荷 Q/M ∈ [−0.99, 0.99]、质量、星密可调；自动相机环绕**、参考系拖曳、D 形阴影、光子环、透镜化星场；中性 Keplerian 薄盘做 g⁴ 多普勒增亮与 Planck 色移 |
+| **Hooke** | 质点-弹簧网络：重力、阻尼、固定点与鼠标交互，悬索桥 / 网 / 链 / 随机四种预设 |
 | **Nonlinear** | 非线性光学三合一，一个下拉切换：**空间自聚焦**（Kerr 自聚焦、坍缩、涡旋破裂、调制不稳定性；动量谱；饱和 / χ⁽⁵⁾ / 双光子吸收；两能级布居与振子 P(E) 双视图）、**时间孤子**（自相位调制展宽、N=2 呼吸、N≥3 分裂的水落图）、**倍频**（χ⁽²⁾ 三过程：倍频 / 和频 / 差频，相位匹配图用墨青色阶，周期极化折成共振）、**四波混频**（共轭增益 vs Δk）、时间域**拉曼自频移**、**饱和吸收**，以及脉冲倍频的群速度走离 |
 
 ### Fractals
@@ -45,23 +46,26 @@
 | **Mandelbrot-Julia** | 双画布 Mandelbrot / Julia 集，支持自定义函数 |
 | **Newton** | Newton / Nova 分形 |
 | **Lindenmayer** | L-System 分形 |
-| **IFS** | 迭代函数系统分形 |
-| **Logistic** | Lyapunov 分形与分叉图 |
+| **Barnsley** | 迭代函数系统分形 |
+| **May** | Lyapunov 分形与分叉图 |
+| **DLA** | 扩散限制凝聚：随机游走、黏附、屏蔽生长与质量–半径维数 |
 
 ### Cellular Automata
 
 | 应用 | 说明 |
 |------|------|
 | **Lenia** | 连续元胞自动机，参考 [Lenia](https://chakazul.github.io/Lenia/JavaScript/Lenia.html) |
-| **Conway** | 生命游戏，14 个经典预设（滑翔机枪、脉冲星等）、残影轨迹、滚轮缩放 |
-| **Distill** | 神经网络元胞自动机，参考 [Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)，需要 PyTorch |
-| **Snowflake** | Reiter 雪花生长模型，六重对称枝晶，参考 [Reiter 2005](http://www.patarnott.com/pdf/SnowCrystalGrowth.pdf) |
+| **Conway** | 生命游戏，32 个 LifeWiki 标准预设（静物、振荡子、飞船、长寿者、枪、喷气机，按类别筛选）、残影轨迹、滚轮缩放 |
+| **Mordvintsev** | 神经网络元胞自动机，参考 [Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)，需要 PyTorch |
+| **Reiter** | Reiter 雪花生长模型，六重对称枝晶，参考 [Reiter 2005](http://www.patarnott.com/pdf/SnowCrystalGrowth.pdf) |
 | **Particle Lenia** | 粒子化 Lenia：两级环核 + 短程排斥 + 惯性，圆盘 / 环 / 链 / 随机四种初始；参考 [Particle Lenia](https://znah.net/lenia/) |
+| **NaSch** | Nagel–Schreckenberg 交通流：加速/减速/随机刹车，空间–时间图显示堵车波与流量统计 |
+| **BTW** | Bak–Tang–Wiesenfeld 沙堆：自组织临界性、雪崩与中央落沙 |
 
-### Unpolished（实验田）
+### Unpolished（实验）
 
-> 这一栏是**实验田**：允许依赖额外数据（Circulation、Erosion）、外设（Noise），或接口与界面仍在改（KAM、MPM2D、Caustic）。
-> 不承诺与其他分类同等的完善度，但同样要通过 `tools/check_ui_style.py` 与测试；启动器里的分类条也带 **实验田** 标记。
+> 这一栏是**实验**：允许依赖额外数据（Circulation、Erosion）、外设（Noise）、额外框架（Diffusion 需要 torch），或接口与界面仍在改（KAM、MPM2D、Caustic）。
+> 不承诺与其他分类同等的完善度，但同样要通过 `tools/check_ui_style.py` 与测试；启动器里的分类条也带 **实验** 标记。
 
 | 应用 | 说明 |
 |------|------|
@@ -71,6 +75,7 @@
 | **MPM2D** | 2D MLS-MPM 材料演示：固体（弹性）/ 雪（塑性）/ 液体（J 驱动压力）/ 沙子，鼠标可倾倒材料；白底 960×640 实验室界面 |
 | **Noise** | 环境噪声：A 计权声级、L10/L50/L90、1/f 斜率、小时/长期历史（需要 sounddevice + matplotlib） |
 | **KAM** | 标准映射频率图 + 行星轨道 + 太阳–木星 CRTBP Poincaré 截面：Taichi GPU 并行实时计算，拖动 K 全分辨率刷新；行星轨道用 J2000 轨道要素与真实进动速率（时间加速）；截面来自真实三体积分，显示 KAM 环面、岛链与混沌海 |
+| **Diffusion** | 二维扩散模型：时间条件 MLP、DDPM/DDIM 采样、生成轨迹与训练损失（需要 torch） |
 
 ## Noise
 
@@ -92,7 +97,7 @@ Noise 用麦克风实时统计环境噪声：
 pip install -r requirements.txt
 ```
 
-Distill 需要额外的 PyTorch：
+Mordvintsev 需要额外的 PyTorch：
 
 ```bash
 pip install -r requirements-distill.txt
@@ -106,11 +111,13 @@ pip install -r requirements-distill.txt
 python main.py
 ```
 
-主界面左侧分类按“胶卷”排列：左键拖动任意胶片可横向滑动，右键拖动卡片调整顺序和分类。跨分类拖动时，应用文件会一起挪到 `apps/<新分类>/`，
+主界面左侧分类按“纸质陈列柜”排列：左键拖动任意展柜可横向滑动，右键拖动卡片调整顺序和分类。跨分类拖动时，应用文件会一起挪到 `apps/<新分类>/`，
 并同步改写 `apps_manifest.py` 里的 `path` / `category`（应用正在运行或目标处有同名文件时会拒绝这次拖动）。
 卡片顺序与所在分类保存在 `runtime/launcher_layout.json`（已加入 `.gitignore`）。
 
 主界面会为每个应用启动**独立子进程**，因此可以同时打开多个应用，互不影响 Taichi / OpenGL / PyTorch 运行时；关闭主界面时会一并关闭子进程。
+
+子进程就绪后会在 `runtime/ready/` 写一个带 pid 的标记，启动器据此把状态从“启动中”切到“已就绪”（不再用固定 6 秒猜）；stdout/stderr 追加写入 `runtime/logs/`，超过 2 MB 轮转一份 `.prev`，崩溃后仍能查看上一次的记录。
 
 单独运行某个应用：
 
@@ -123,11 +130,11 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ## 技术栈
 
 - **GUI**：PySide6 (Qt for Python)
-- **GPU 计算**：Taichi（`taichi-forge` fork）
+- **GPU 计算**：Taichi Forge 0.7（`taichi-forge` fork）
 - **JIT**：Numba
 - **3D 渲染**：OpenGL（PyOpenGL）
 - **数值计算**：NumPy、SciPy、mpmath
-- **深度学习**：PyTorch（仅 Distill）
+- **深度学习**：PyTorch（仅 Mordvintsev）
 - **图像**：Pillow、matplotlib
 
 ## 项目结构
@@ -163,7 +170,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 │   ├── Fractals/            # IFS / Lindenmayer / Logistic / Mandelbrot / Newton /
 │   │                        #   Quaternion Julia / Snowflake
 │   ├── Cellular Automata/   # Conway / Distill / Lenia / Particle Lenia
-│   └── Unpolished/          # 实验田：Caustic / Circulation / Erosion / MPM2D
+│   └── Unpolished/          # 实验：Caustic / Circulation / Diffusion / Erosion / MPM2D
 ├── support/                 # 应用专用支撑模块（按分类分目录，供 app 与测试导入）
 │   ├── physics/             # circulation_data / kam_crtbp / kam_standard_map / kam_taichi / mass_spring /
 │   │                        #   particle_lenia / quasicrystal / solar_system_orbits / lienard_wiechert / lw_taichi /
@@ -173,7 +180,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ├── assets/                  # 资源目录（应用启动时读取；Lenia 保存预设会回写 data/）
 │   ├── data/                # worldelev / wind_real / worldmask / czm_* / lenia_presets
 │   ├── presets/             # turing/fk_map.png、snowflake_alpha/、snowflake_terrain/
-│   ├── models/              # Distill 预训练 .pth
+│   ├── models/              # Mordvintsev 预训练 .pth
 │   ├── thumbnails/          # 启动器卡片缩略图
 │   └── style.qss            # 统一 QSS（可选：run_app(stylesheet=True) 时自动加载）
 ├── runtime/                 # 运行期产物（不入库）：logs/、launcher_layout.json、imgui.ini
@@ -186,7 +193,7 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 
 ## UI 规范
 
-新增或重构应用必须遵循 [docs/UI_GUIDELINES.md](docs/UI_GUIDELINES.md)：960×640 最小窗口、330 左侧分组面板、600×600 白色无边框画布、无左栏标题/副标题/图标、520×520 纯图像封面。样板应用为 Quasicrystal、Mass-Spring、Particle Lenia。**双视图应用**（两张并列图像，如 Distill）是明确例外：标记 `UI_LAYOUT = "two_view"`，控制区放在顶部，使用宽幅双画布，不套 330 左栏/600 方画布，推荐 1040×740、最小 1000×700；两个预览各加 2px 中性色边框，像素网格用最近邻放大（SmoothPixmapTransform=False）。提交前可运行 `python tools/check_ui_style.py apps/<分类>/<应用>.py`，测试会检查样板应用的结构与封面。
+新增或重构应用必须遵循 [docs/UI_GUIDELINES.md](docs/UI_GUIDELINES.md)：960×640 最小窗口、330 左侧分组面板、600×600 白色无边框画布、无左栏标题/副标题/图标、520×520 纯图像封面。样板应用为 Quasicrystal、Hooke、Particle Lenia。**双视图应用**（两张并列图像，如 Mordvintsev）是明确例外：标记 `UI_LAYOUT = "two_view"`，控制区放在顶部，使用宽幅双画布，不套 330 左栏/600 方画布，推荐 1040×740、最小 1000×700；两个预览各加 2px 中性色边框，像素网格用最近邻放大（SmoothPixmapTransform=False）。提交前可运行 `python tools/check_ui_style.py apps/<分类>/<应用>.py`，测试会检查样板应用的结构与封面。
 
 新应用可以直接生成骨架：`python tools/new_app.py Math/Matrix --title Matrix --description "2×2 线性变换"`
 会写出符合规范的 app 文件、插入清单条目、重新生成 `APP_MATRIX.md`，并离屏渲染一张 520×520 封面（`--no-cover` 可跳过）。
@@ -197,15 +204,15 @@ python app_runner.py "apps/Fractals/Mandelbrot.py"
 ## 公共组件（common/）
 
 各 app 原先都在自己文件里重写同一批样板代码，现已抽到 common/ 下。
-Math 9 个、Physics 9 个、Unpolished 6 个、Fractals 7 个、Cellular Automata 4 个应用都已改用统一的
-`run_app` 入口；Mass Spring 也改为 PySide 画布 + Taichi 内核，统一左侧 330px 分组面板 + 右侧 600px 白色画布 + 状态栏。
+Math 9 个、Physics 9 个、Unpolished 8 个、Fractals 8 个、Cellular Automata 7 个应用都已改用统一的
+`run_app` 入口；Hooke 也改为 PySide 画布 + Taichi 内核，统一左侧 330px 分组面板 + 右侧 600px 白色画布 + 状态栏。
 画布层也统一了：matplotlib 画布（`MplCanvas`）覆盖 Fourier / Cplot / Noise / Lenia 核预览，
 numpy 图像画布（`ArrayCanvas`）覆盖 Erosion / Circulation / Conway / Snowflake。
 其余替换按需推进（`ndarray_to_qimage` 覆盖 Erosion /
 Bremsstrahlung / Caustic / Circulation；`LabeledSlider` 覆盖 Beam / Erosion / Schrödinger /
 Bremsstrahlung / Navier-Stokes / KAM / Noise / Circulation / Quaternion Julia /
-Conway / Snowflake / Particle Lenia / Distill，共 60 余个滑块；
-`FPSCounter` 覆盖 Erosion / Schrödinger / Conway，`StoppableThread` 覆盖 KAM / Distill）：
+Conway / Reiter / Particle Lenia / Mordvintsev，共 60 余个滑块；
+`FPSCounter` 覆盖 Erosion / Schrödinger / Conway，`StoppableThread` 覆盖 KAM / Mordvintsev）：
 
 | 组件 | 位置 | 替代掉的重复代码 |
 | --- | --- | --- |
@@ -245,7 +252,7 @@ if __name__ == "__main__":
 
 ### Kerr–Newman 带电旋转黑洞光线追踪
 
-Kerr–Newman Lensing 不是把黑洞画成贴图，而是对画布上的每个像素反向积分一条 Kerr–Newman 零测地线。取 G = c = 1、M = 1，自旋 a = J/M 和电荷 Q/M 由界面滑杆调节，并要求 a²+Q²<1；a=Q=0 退化为史瓦西黑洞。Boyer–Lindquist 度规为
+Kerr–Newman 不是把黑洞画成贴图，而是对画布上的每个像素反向积分一条 Kerr–Newman 零测地线。取 G = c = 1、M = 1，自旋 a = J/M（可正可负，负值代表反向旋转）和电荷 Q/M（可正可负）由界面滑杆调节，并要求 a²+Q²<1；a=Q=0 退化为史瓦西黑洞。Boyer–Lindquist 度规为
 
 ~~~text
 Sigma = r^2 + a^2 cos^2(theta)
@@ -265,7 +272,7 @@ R(r) = H^2 - Delta [(L-a)^2 + Q_c]
 Theta(theta) = Q_c + a^2 cos^2(theta) - L^2 cot^2(theta)
 ~~~
 
-Taichi kernel 用经典 RK4 在仿射参数 lambda 中同时积分 r、theta、phi、v_r、v_theta；相机是零角动量观测者（ZAMO）的局部正交标架。吸积盘是赤道面内的中性顺行圆轨道薄盘；对 Q≠0，角速度由赤道度规的圆轨道条件数值给出，ISCO 由圆轨道能量极小值数值求解并在界面显示：
+GPU kernel 在 Kerr–Schild 笛卡尔坐标中用经典 RK4 积分 x、y、z、p_x、p_y、p_z；极轴没有 1/sin²θ 坐标奇点（BL 版本会在画面中心留下一根假的竖直噪声柱）。相机仍是零角动量观测者（ZAMO）的局部正交标架，BL→KS 用 dT = dt + (2r−Q²)/Δ dr、dψ = dφ + (a/Δ) dr，盘交点处 r = √(x²+y²−a²)、φ = ψ − atan2(a,r) − ∫a/Δ dr。CPU 参考解（trace_kerr）仍用下面的 BL 分离方程。吸积盘是赤道面内的中性**相对自旋顺行**圆轨道薄盘：a<0 时 Ω<0，盘的纹理转向和多普勒亮侧随之翻转；对 Q≠0，角速度由赤道度规的圆轨道条件数值给出，ISCO 由圆轨道能量极小值数值求解并在界面显示：
 
 ~~~text
 Omega = (-g_tphi,r + sqrt(g_tphi,r^2 - g_tt,r g_phiphi,r)) / g_phiphi,r
@@ -276,7 +283,7 @@ g     = 1 / [ u^t (E_ph - Omega L_ph) ]
 
 E_ph、L_ph 取相机处物理光子方向（局部 -n）的守恒量，所以多普勒增亮、引力红移和参考系拖曳同时生效；强度按 g^4 增亮，颜色取 gT_emit 的 Planck 黑体色。关掉吸积盘就是纯 Kerr–Newman 星场：自旋和电荷都会改变阴影轮廓、光子环与背景星场的透镜弧。
 
-默认 600×600、800 步、步长约 0.02 M，在 CUDA 上约 15–20 ms/帧；自旋、电荷、距离、倾角、视场、盘内/外缘、温度、不透明度、曝光和盘亮度都可实时调节。自旋与电荷同时增大时，界面会自动把 Q 压到 a²+Q²<1 的允许范围。鼠标拖动采用与 Connection 相同的轨道相机：相机绕黑洞旋转并始终看向它，所以黑洞保持在画面中心；水平拖动改变方位角，向下拖动抬高相机，倾角可转到盘面下方。滚轮改变视场。
+默认 640×640 画布、800 步、步长约 0.02 M，在 CUDA 上约 20–25 ms/帧（600²，Kerr–Schild 积分）；自旋、电荷、质量、倾角、视场（5–120°）、盘内/外缘、温度、不透明度、曝光、盘亮度、星光和星密都可实时调节；盘亮度 0.01–2.00、曝光 0.05–4.00×、星光 0–400%、温度 1500–30000 K、星密 0.5–3.0×。控制页内容较多时窗口放大到 **1000×720**、画布 **640×640**（见 `docs/UI_GUIDELINES.md` §2.1），不使用滚动条。自旋和电荷滑块都**始终可拖动**；a²+Q² 超限时双向联动：拖自旋会调整电荷，拖电荷会调整自旋，不会把电荷滑块卡住。预设里新增「逆行」（a<0）和「负电荷」（Q<0）。「重置时间」只把吸积盘的时间相位归零，不改变任何参数、相机角度或预设；「自动环绕」复选框让相机绕黑洞自动旋转（与盘的暂停/播放独立）；状态栏右下角显示的是实时帧率（fps），不再显示毫秒。质量 M 连续可调（10^6–10^10 M☉），通过等效 FOV 改变黑洞的**视在大小**，并按固定吸积率缩放盘温 T∝M^(-1/4)；界面同时显示 r_g、r+ 的 AU 值。几何比例本身仍以 M 为单位。左侧「平面图」标签页显示赤道面上的事件视界、顺行/逆行光子环、顺行/逆行 ISCO、IBCO 和盘的内外缘；OSCO 在纯 Kerr–Newman 中没有有限值（稳定圆轨道延伸到无穷），图例里明确标注。页面内自带自旋、电荷、内外缘和盘开关，拖动时平面图实时更新，并与控制页双向同步。鼠标拖动采用与 Connection 相同的轨道相机：相机绕黑洞旋转并始终看向它，所以黑洞保持在画面中心；水平拖动改变方位角，向下拖动抬高相机，倾角可转到盘面下方。滚轮改变视场。
 
 > 深色画布是必要的科学可视化例外：阴影、光子环和星场的对比度就是本页的展示对象；窗口、参数面板和控件仍遵循统一的白色实验室风格。
 
@@ -318,6 +325,7 @@ CZM 帧选择带一阶滞后：张开 τ≈240 min、闭合 τ≈900 min；降�
   - taichi_base：Taichi；numba_base：Numba；opengl_base：OpenGL；mp_base：mpmath；custom_base：custom_function / dynamic_fractal。
 - 纯 Qt 应用不再导入 Taichi/OpenGL；所有 app 的公共冒烟测试仍通过。
 - 所有 ti.init 已启用 offline_cache；Cplot 的 cplot/matplotlib 改为首次绘图时导入。
+- Numba 的磁盘缓存改到 `runtime/numba_cache`（只读安装退回系统临时目录），只读部署下 Arnold / Lloyd / Traveler / Maxwell / Logistic 也能启动。
 
 ## 开发与测试
 
@@ -333,6 +341,7 @@ python -m unittest discover -s tests -v
 - `app_runner.py` 存在
 - Circulation 的 ETOPO1 海拔、2015–2024 逐月真实风场，以及旧合成气压场的南极低压回归
 - Erosion 的两层土壤水质量平衡、Voronoi CZM 场与降雨闭合滞后
+- Kerr–Newman：负自旋/正负电荷的度规与共转盘、顺/逆行光子环、顺/逆行 ISCO、IBCO、电荷滑块双向联动、平面图联动、自动环绕、质量/星密控制和更宽的亮度范围
 
 CI 见 `.github/workflows/ci.yml`：静态编译 + manifest 测试，以及在 Windows 上安装依赖后的导入冒烟测试。
 
@@ -390,9 +399,9 @@ python tools/search_lenia_presets.py --trials 300 --save
 
 ## 已知限制
 
-- Unpolished 是实验田：默认不配缩略图（Noise 例外，保留界面预览），依赖数据/外设或接口仍在改的应用放在这里；
+- Unpolished 是实验：默认不配缩略图（Noise 例外，保留界面预览），依赖数据/外设或接口仍在改的应用放在这里；
   分类备注统一写在 `apps_manifest.CATEGORY_NOTES`，启动器、`docs/APP_MATRIX.md` 与 README 用同一份说法。
-- 分形渲染仍在 GUI 线程同步计算；4x 抗锯齿 + 高迭代次数时缩放会短暂卡顿。
+- 分形渲染仍在 GUI 线程同步：拖动/缩放/拖参数时先出 1x 预览（约 10–40 ms），停手 180 ms 后按所选 AA 精修一次；4x + 高迭代的精修帧仍会有一次短暂停顿。
 - `eval` / `exec` 用于用户自定义表达式，仅应输入本地可信内容，不构成安全沙箱。
 
 ## License

@@ -1,5 +1,5 @@
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -94,15 +94,16 @@ class SimulationViewer(QWidget):
         self.gl_widget = TextureGLWidget(
             image_provider=lambda: self.sim.get_image(self.display_mode)
         )
-        self.gl_widget.setMinimumSize(480, 480)
-        self.gl_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.gl_widget.setFixedSize(640, 640)
+        self.gl_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(6)
+        self.main_layout = main_layout
 
         self.param_panel_layout = QVBoxLayout()
-        self.param_panel_layout.setContentsMargins(0, 0, 0, 0)
+        self.param_panel_layout.setContentsMargins(8, 4, 8, 0)
         self.param_panel_layout.setSpacing(8)
         left_widget = QWidget()
         left_widget.setLayout(self.param_panel_layout)
@@ -121,17 +122,31 @@ class SimulationViewer(QWidget):
         main_layout.addWidget(self.param_scroll, 0)
         main_layout.addWidget(self.gl_widget, 1)
 
-        self.timer = QTimer()
-        self.timer.timeout.connect(self._on_timer)
-        self.timer.start(30)
+        # 连续循环：每帧渲染完成后由 frameSwapped 驱动下一步。
+        # 没有固定 30 ms 定时器；节奏由显示刷新/交换链决定。
+        self.gl_widget.frameSwapped.connect(self._on_frame_swapped)
+        self.gl_widget.update()
 
     # 提供给面板调用的方法
     def set_display_modes(self, modes: list):
         if modes:
             self.display_mode = modes[0]
 
+    def set_top_widget(self, widget):
+        """Place a mode/size toolbar above the square canvas."""
+        self.main_layout.removeWidget(self.gl_widget)
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+        right_layout.addWidget(widget)
+        right_layout.addWidget(self.gl_widget, 0, Qt.AlignHCenter | Qt.AlignTop)
+        self.main_layout.addWidget(right, 1)
+
     def toggle_play(self):
         self.is_playing = not self.is_playing
+        if self.is_playing:
+            self.gl_widget.update()
 
     def reset_sim(self):
         self.sim.reset('default')
@@ -148,17 +163,21 @@ class SimulationViewer(QWidget):
         if path and qimg.save(path):
             QMessageBox.information(self, "保存成功", f"已保存至:\n{path}")
 
-    def _on_timer(self):
-        # 最小化/隐藏时不要继续烧 GPU；重新显示后自动恢复。
-        if not self.isVisible() or self.isMinimized():
+    def _on_frame_swapped(self):
+        # 最小化/隐藏时不要继续烧 GPU；重新显示后由 showEvent 恢复。
+        if not self.is_playing or not self.isVisible() or self.isMinimized():
             return
+        for _ in range(self.steps_per_frame):
+            self.sim.step()
+        self.gl_widget.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
         if self.is_playing:
-            for _ in range(self.steps_per_frame):
-                self.sim.step()
             self.gl_widget.update()
 
     def closeEvent(self, event):
-        self.timer.stop()
+        self.is_playing = False
         super().closeEvent(event)
 
 
@@ -283,8 +302,10 @@ def create_equation_group(title, html, compact=False):
     lb.setTextFormat(Qt.RichText)
     layout = QVBoxLayout()
     if compact:
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(6, 3, 6, 3)
         lb.setStyleSheet("font-size: 11px;")
+    else:
+        layout.setContentsMargins(8, 6, 8, 6)
     layout.addWidget(lb)
     group.setLayout(layout)
     return group
@@ -294,9 +315,11 @@ def create_param_group(sim, param_defs, compact=False):
     """参数分组框，param_defs: [(label, vmin, vmax, vdef, scale, attr), ...]"""
     group = QGroupBox("模拟参数")
     layout = QVBoxLayout()
-    layout.setSpacing(0 if compact else 1)
+    layout.setSpacing(1 if compact else 3)
     if compact:
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(6, 3, 6, 3)
+    else:
+        layout.setContentsMargins(8, 6, 8, 6)
     sliders = {}
     for label, vmin, vmax, vdef, scale, attr in param_defs:
         w, sld, edt = make_slider_row(label, vmin, vmax, vdef, scale, sim, attr, compact=compact)
@@ -306,41 +329,7 @@ def create_param_group(sim, param_defs, compact=False):
     return group, sliders
 
 
-def create_init_group(sim, viewer, pattern_options, presets_list, preset_callback, reset_mapping):
-    """初始条件分组框"""
-    group = QGroupBox("初始条件")
-    layout = QVBoxLayout()
-    pat_row = QHBoxLayout()
-    pat_row.addWidget(QLabel("初始模式:"))
-    pattern_combo = QComboBox()
-    pattern_combo.addItems(pattern_options)
-    pat_row.addWidget(pattern_combo)
-    layout.addLayout(pat_row)
-
-    if presets_list:
-        pres_row = QHBoxLayout()
-        pres_row.addWidget(QLabel("预设:"))
-        preset_combo = QComboBox()
-        preset_combo.addItems(presets_list)
-        preset_combo.currentIndexChanged.connect(preset_callback)
-        pres_row.addWidget(preset_combo)
-        layout.addLayout(pres_row)
-
-    group.setLayout(layout)
-
-    def custom_reset():
-        pattern = pattern_combo.currentText()
-        sim.reset(reset_mapping.get(pattern, 'random'))
-        viewer.gl_widget.update()
-    viewer.reset_sim = custom_reset
-
-    return group, pattern_combo, preset_combo if presets_list else None
-
-
-def create_control_group(viewer):
-    """播放/暂停、步数、保存"""
-    group = QGroupBox("控制")
-    layout = QVBoxLayout()
+def _play_control_rows(viewer):
     steps_row = QHBoxLayout()
     steps_row.addWidget(QLabel("每帧步数:"))
     steps_slider = QSlider(Qt.Horizontal)
@@ -350,24 +339,104 @@ def create_control_group(viewer):
     steps_slider.valueChanged.connect(
         lambda v: (viewer.set_steps_per_frame(v), steps_label.setText(str(v)))
     )
-    steps_row.addWidget(steps_slider)
+    steps_row.addWidget(steps_slider, 1)
     steps_row.addWidget(steps_label)
-    layout.addLayout(steps_row)
 
     btn_row = QHBoxLayout()
-    play_btn = QPushButton("暂停" if viewer.is_playing else "播放")
+    btn_row.setSpacing(6)
+    play_btn = QPushButton("暂停" if viewer.is_playing else "开始")
     reset_btn = QPushButton("重置")
+    save_btn = QPushButton("保存")
     def toggle_play():
         viewer.toggle_play()
-        play_btn.setText("暂停" if viewer.is_playing else "播放")
+        play_btn.setText("暂停" if viewer.is_playing else "开始")
     play_btn.clicked.connect(toggle_play)
     reset_btn.clicked.connect(viewer.reset_sim)
-    btn_row.addWidget(play_btn)
-    btn_row.addWidget(reset_btn)
-    layout.addLayout(btn_row)
-
-    save_btn = QPushButton("保存图像")
     save_btn.clicked.connect(viewer.save_image)
-    layout.addWidget(save_btn)
+    for button in (play_btn, reset_btn, save_btn):
+        btn_row.addWidget(button, 1)
+    return steps_row, btn_row
+
+
+def create_init_group(sim, viewer, pattern_options, presets_list,
+                      preset_callback, reset_mapping, merge_control=False):
+    """初始条件分组框；merge_control=True 时与播放控制合并。"""
+    group = QGroupBox("初始化与控制" if merge_control else "初始条件")
+    layout = QVBoxLayout()
+    layout.setContentsMargins(8, 6, 8, 6)
+    layout.setSpacing(6)
+
+    pattern_combo = QComboBox()
+    pattern_combo.addItems(pattern_options)
+    preset_combo = None
+    if merge_control:
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        row.addWidget(QLabel("初始模式:"))
+        row.addWidget(pattern_combo, 1)
+        if presets_list:
+            row.addSpacing(4)
+            row.addWidget(QLabel("预设:"))
+            preset_combo = QComboBox()
+            preset_combo.addItems(presets_list)
+            preset_combo.currentIndexChanged.connect(preset_callback)
+            row.addWidget(preset_combo, 1)
+        layout.addLayout(row)
+    else:
+        pat_row = QHBoxLayout()
+        pat_row.addWidget(QLabel("初始模式:"))
+        pat_row.addWidget(pattern_combo)
+        layout.addLayout(pat_row)
+        if presets_list:
+            pres_row = QHBoxLayout()
+            pres_row.addWidget(QLabel("预设:"))
+            preset_combo = QComboBox()
+            preset_combo.addItems(presets_list)
+            preset_combo.currentIndexChanged.connect(preset_callback)
+            pres_row.addWidget(preset_combo)
+            layout.addLayout(pres_row)
+
+    group.setLayout(layout)
+
+    def custom_reset():
+        pattern = pattern_combo.currentText()
+        sim.reset(reset_mapping.get(pattern, 'random'))
+        viewer.gl_widget.update()
+    viewer.reset_sim = custom_reset
+
+    if merge_control:
+        steps_row, btn_row = _play_control_rows(viewer)
+        layout.addLayout(steps_row)
+        layout.addLayout(btn_row)
+
+    return group, pattern_combo, preset_combo if presets_list else None
+
+
+def create_control_group(viewer):
+    """播放/暂停、步数、保存"""
+    group = QGroupBox("控制")
+    layout = QVBoxLayout()
+    layout.setContentsMargins(8, 6, 8, 6)
+    layout.setSpacing(6)
+    steps_row, btn_row = _play_control_rows(viewer)
+    layout.addLayout(steps_row)
+    layout.addLayout(btn_row)
+    group.setLayout(layout)
+    return group
+
+    btn_row = QHBoxLayout()
+    btn_row.setSpacing(6)
+    play_btn = QPushButton("暂停" if viewer.is_playing else "开始")
+    reset_btn = QPushButton("重置")
+    save_btn = QPushButton("保存")
+    def toggle_play():
+        viewer.toggle_play()
+        play_btn.setText("暂停" if viewer.is_playing else "开始")
+    play_btn.clicked.connect(toggle_play)
+    reset_btn.clicked.connect(viewer.reset_sim)
+    save_btn.clicked.connect(viewer.save_image)
+    for button in (play_btn, reset_btn, save_btn):
+        btn_row.addWidget(button, 1)
+    layout.addLayout(btn_row)
     group.setLayout(layout)
     return group

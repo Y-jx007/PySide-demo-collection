@@ -6,7 +6,7 @@ nephroid_geometric.py — 反射焦散 = 肾形线
 import math
 import numpy as np
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGroupBox, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QSlider, QPushButton, QSizePolicy
 )
 from PySide6.QtGui import (
@@ -15,6 +15,8 @@ from PySide6.QtGui import (
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
 
 from common.app import run_app
+from common.lab_window import LabWindow
+from common.qt_base import LabeledSlider
 from common.imaging import ndarray_to_qimage
 
 
@@ -63,8 +65,8 @@ class MainView(QWidget):
         self.state = state
         self._density = None
         self._density_key = None
-        self.setMinimumSize(680, 620)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setFixedSize(640, 640)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.setStyleSheet(f"background: {BG.name()};")
 
     def _bounds(self):
@@ -389,109 +391,122 @@ class MainView(QWidget):
 
 
 # =====================================================================
-class MainWindow(QMainWindow):
+class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("反射焦散 = 肾形线")
-        self.resize(1200, 820)
+        self.resize(1000, 720)
+        self.setMinimumSize(1000, 720)
 
-        self.state = {'R': 1.0, 'theta': 4*math.pi/3, 'n_rays': 15000}
-
-        central = QWidget()
-        central.setStyleSheet(f"background: {PANEL.name()};")
-        vl = QVBoxLayout(central)
-        vl.setContentsMargins(0, 0, 0, 0); vl.setSpacing(0)
-        vl.addWidget(self._header())
+        self.state = {"R": 1.0, "theta": 4 * math.pi / 3, "n_rays": 15000}
         self.view = MainView(self.state)
-        vl.addWidget(self.view, 1)
-        self.setCentralWidget(central)
-
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.setInterval(30)
         self.playing = False
 
-    def _header(self):
-        w = QWidget()
-        # 用 ID 选择器限定范围：无选择器的 QSS 会漏给子控件，每个标签/滑块
-        # 都会多出一条 1px 下边框（截图里那些零碎的短横线）
-        w.setObjectName("causticHeader")
-        w.setStyleSheet(
-            f"#causticHeader {{ background: {PANEL.name()};"
-            f" border-bottom: 1px solid {BORDER.name()}; }}")
-        w.setFixedHeight(58)
-        hl = QHBoxLayout(w); hl.setContentsMargins(24, 10, 24, 10); hl.setSpacing(10)
+        root = QWidget()
+        layout = QHBoxLayout(root)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
-        lbl_t = QLabel("θ")
-        lbl_t.setStyleSheet("color: #3a4a6a; font-size: 13px;")
-        hl.addWidget(lbl_t)
+        panel = QWidget()
+        panel.setFixedWidth(330)
+        side = QVBoxLayout(panel)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(8)
 
-        self.sld = QSlider(Qt.Horizontal)
-        self.sld.setRange(1812, 3588)
-        self.sld.setValue(2400)
-        self.sld.setFixedWidth(260)
-        self.sld.valueChanged.connect(self._on_theta)
-        hl.addWidget(self.sld)
+        params = QGroupBox("焦散参数")
+        pv = QVBoxLayout(params)
+        pv.setSpacing(6)
+        self.theta = LabeledSlider(
+            "θ", 1812, 3588, 2400,
+            formatter=lambda v: f"{v / 10:.1f}°", label_width=34,
+        )
+        self.radius = LabeledSlider(
+            "R", 60, 150, 100,
+            formatter=lambda v: f"{v / 100:.2f}", label_width=34,
+        )
+        self.theta.bind(self._on_theta)
+        self.radius.bind(self._on_radius)
+        pv.addWidget(self.theta)
+        pv.addWidget(self.radius)
+        side.addWidget(params)
 
-        self.theta_label = QLabel("240.0°")
-        self.theta_label.setAlignment(Qt.AlignCenter); self.theta_label.setFixedWidth(72)
-        self.theta_label.setStyleSheet(
-            "color: #2a3a5a; font-size: 12px; font-family: monospace;"
-            f" background: white; padding: 3px 6px; border-radius: 4px;"
-            f" border: 1px solid {BORDER.name()};")
-        hl.addWidget(self.theta_label)
-
-        hl.addSpacing(24)
-
-        lbl_r = QLabel("R")
-        lbl_r.setStyleSheet("color: #3a4a6a; font-size: 13px;")
-        hl.addWidget(lbl_r)
-
-        self.r_sld = QSlider(Qt.Horizontal)
-        self.r_sld.setRange(60, 150); self.r_sld.setValue(100)
-        self.r_sld.setFixedWidth(100)
-        self.r_sld.valueChanged.connect(self._on_radius)
-        hl.addWidget(self.r_sld)
-
-        self.r_label = QLabel("1.00"); self.r_label.setFixedWidth(40)
-        self.r_label.setStyleSheet("color: #2a3a5a; font-size: 12px; font-family: monospace;")
-        hl.addWidget(self.r_label)
-
-        hl.addStretch()
-
-        self.play_btn = QPushButton("▶ 播放"); self.play_btn.setFixedWidth(88)
-        self.play_btn.setStyleSheet(
-            "QPushButton { background: #5a7aa8; color: white; border: none;"
-            " padding: 6px 10px; border-radius: 4px; font-size: 12px; }"
-            "QPushButton:hover { background: #6a8ab8; }"
-            "QPushButton:pressed { background: #4a6a98; }")
+        controls = QGroupBox("控制")
+        ch = QHBoxLayout(controls)
+        self.play_btn = QPushButton("播放")
+        self.reset_btn = QPushButton("重置")
         self.play_btn.clicked.connect(self._toggle_play)
-        hl.addWidget(self.play_btn)
+        self.reset_btn.clicked.connect(self._reset)
+        ch.addWidget(self.play_btn)
+        ch.addWidget(self.reset_btn)
+        side.addWidget(controls)
 
-        return w
+        info = QGroupBox("说明")
+        iv = QVBoxLayout(info)
+        text_label = QLabel(
+            "平行光照射球形反射面，反射线的包络形成肾形焦散线。\n"
+            "θ 改变光源方向，R 改变反射球半径；播放会连续扫角。"
+        )
+        text_label.setWordWrap(True)
+        iv.addWidget(text_label)
+        side.addWidget(info)
+        side.addStretch(1)
+
+        layout.addWidget(panel)
+        layout.addWidget(self.view)
+        layout.addStretch(1)
+        self.setCentralWidget(root)
+
+        self.statusBar().showMessage(
+            "R=1.00 · θ=240.0° · 15,000 条射线 · 暂停"
+        )
 
     def _on_theta(self, v):
-        self.state['theta'] = v*math.pi/1800.0
-        self.theta_label.setText(f"{v/10.0:.1f}°")
+        self.state["theta"] = v * math.pi / 1800.0
         self.view.update()
+        self._update_status()
 
     def _on_radius(self, v):
-        self.state['R'] = v/100.0
-        self.r_label.setText(f"{self.state['R']:.2f}")
+        self.state["R"] = v / 100.0
         self.view.invalidate()
         self.view.update()
+        self._update_status()
+
+    def _update_status(self):
+        state = "播放" if self.playing else "暂停"
+        self.statusBar().showMessage(
+            f"R={self.state['R']:.2f} · θ={self.theta.slider.value() / 10:.1f}°"
+            f" · {self.state['n_rays']:,} 条射线 · {state}"
+        )
 
     def _toggle_play(self):
         self.playing = not self.playing
         if self.playing:
-            self.play_btn.setText("⏸ 暂停"); self.timer.start()
+            self.play_btn.setText("暂停")
+            self.timer.start()
         else:
-            self.play_btn.setText("▶ 播放"); self.timer.stop()
+            self.play_btn.setText("播放")
+            self.timer.stop()
+        self._update_status()
+
+    def _reset(self):
+        self.timer.stop()
+        self.playing = False
+        self.play_btn.setText("播放")
+        self.theta.setValue(2400)
+        self.radius.setValue(100)
+        self.state.update(R=1.0, theta=4 * math.pi / 3, n_rays=15000)
+        self.view.invalidate()
+        self.view.update()
+        self._update_status()
 
     def _tick(self):
-        v = self.sld.value() + 10
-        if v > 3588: v = 1812
-        self.sld.setValue(v)
+        v = self.theta.slider.value() + 10
+        if v > 3588:
+            v = 1812
+        self.theta.setValue(v)
 
 
 if __name__ == "__main__":

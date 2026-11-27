@@ -19,6 +19,6 @@ class SquareCanvas(QWidget):
 class LabWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("background-color: #ffffff;")
+        self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
         self.setMinimumSize(960, 640)
         self.resize(960, 640)

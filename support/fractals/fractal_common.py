@@ -269,9 +269,20 @@ class DualCanvasFractalWindow(QMainWindow):
     def update_c_label(self):
         self.c_label.setText(self._c_text())
 
-    def mark_all_dirty(self):
+    def mark_all_dirty(self, preview: bool = False):
+        """Mark both canvases dirty.
+
+        ``preview=True`` is for live parameter edits: draw a 1x preview now and
+        let each canvas refine at the selected AA factor after the user stops.
+        Structural changes (AA switch, reset, custom function) keep full quality
+        immediately.
+        """
         for widget in (self.left_widget, self.right_widget):
-            if widget is not None:
+            if widget is None:
+                continue
+            if preview:
+                widget.request_preview()
+            else:
                 widget.needs_recompute = True
                 widget.update()
 
@@ -282,8 +293,7 @@ class DualCanvasFractalWindow(QMainWindow):
         # c only changes the right canvas (Julia/Nova). The left canvas may
         # still need a repaint for its orbit overlay, but not a full rerender.
         if self.right_widget is not None:
-            self.right_widget.needs_recompute = True
-            self.right_widget.update()
+            self.right_widget.request_preview()
         if self.left_widget is not None:
             self.left_widget.update()
 

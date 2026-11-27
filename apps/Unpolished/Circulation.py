@@ -143,7 +143,7 @@ class WindSim:
         self.elev_s = gaussian_filter(np.maximum(self.elev, 0.0), 1.2).astype(np.float32)
 
         ti.reset()
-        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=True)
+        ti.init(arch=ti.cpu, default_fp=ti.f32, offline_cache=True, advanced_optimization=True)
         self.f_land = ti.field(ti.i32, (self.NH, self.NW))
         self.f_p0 = ti.field(ti.f32, (self.NH, self.NW))
         self.f_pd = ti.field(ti.f32, (self.NH, self.NW))

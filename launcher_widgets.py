@@ -762,10 +762,10 @@ class CategoryWidget(QFrame):
     def __init__(self, category_name, parent=None):
         super().__init__(parent)
         self.category_name = category_name
-        self.category_marker = "实验田" if category_note(category_name) else ""
+        self.category_marker = "实验" if category_note(category_name) else ""
         if self.category_marker:
-            # 实验田的说明放在整条胶卷的 tooltip 上，竖排标签保持短
-            self.setToolTip(f"实验田：{category_note(category_name)}")
+            # 实验的说明放在整条胶卷的 tooltip 上，竖排标签保持短
+            self.setToolTip(f"实验：{category_note(category_name)}")
         self.setAcceptDrops(True)
         self.setup_ui()
         self._apply_style(False)

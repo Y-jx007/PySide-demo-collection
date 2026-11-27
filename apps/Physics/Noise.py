@@ -22,8 +22,9 @@ from common.mpl_canvas import MplCanvas
 from common.qt_base import (
     QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QTimer, QVBoxLayout, QWidget, Qt, LabeledSlider, run_app,
+    QSizePolicy, QTabWidget, QTimer, QVBoxLayout, QWidget, Qt, LabeledSlider, run_app,
 )
+from common.lab_window import LabWindow
 from common.paths import LOG_DIR, RUNTIME_DIR
 from support.physics.noise_history import NoiseHistory
 from support.physics.noise_dsp import (
@@ -42,7 +43,9 @@ rcParams["axes.unicode_minus"] = False
 ROOT = RUNTIME_DIR.parent
 DISPLAY_HZ = 10
 DISPLAY_MS = 1000 // DISPLAY_HZ
-DRAW_EVERY = 3
+# 全图 matplotlib 重绘实测约 300 ms；3.3 Hz 会长期吃满一个核。
+# 统计标签仍然 10 Hz 更新，图每秒重绘一次即可。
+DRAW_EVERY = 10
 BLOCK_SIZE = 4096
 
 
@@ -151,12 +154,12 @@ class DemoSource:
         return noise
 
 
-class NoiseWindow(QMainWindow):
+class NoiseWindow(LabWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Noise — 环境噪声实时统计")
-        self.resize(1280, 840)
-        self.setMinimumSize(980, 680)
+        self.resize(1000, 720)
+        self.setMinimumSize(1000, 720)
 
         self.fs = 44100
         self.calibration = 0.0
@@ -178,6 +181,9 @@ class NoiseWindow(QMainWindow):
         self.last_long_update = 0.0
         self.session_samples = 0
         self._draw_counter = 0
+        # 静音/无演示成分时 _clear_live 每 100 ms 会被调用一次；只清一次，
+        # 否则每次都触发一次 300 ms 级的 matplotlib 全图重绘。
+        self._live_cleared = False
 
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.history = NoiseHistory(LOG_DIR / "noise_history.sqlite")
@@ -199,26 +205,29 @@ class NoiseWindow(QMainWindow):
         root.setSpacing(8)
 
         left = QWidget()
-        left.setFixedWidth(310)
+        left.setFixedWidth(330)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(8)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QFrame.NoFrame)
-        content = QWidget()
-        panel = QVBoxLayout(content)
-        panel.setContentsMargins(0, 0, 0, 0)
-        panel.setSpacing(8)
-        panel.addWidget(self._build_input_group())
-        panel.addWidget(self._build_calibration_group())
-        panel.addWidget(self._build_stats_group())
-        panel.addWidget(self._build_history_group())
-        panel.addStretch(1)
-        scroll.setWidget(content)
-        left_layout.addWidget(scroll)
+        tabs = QTabWidget()
+        capture_page = QWidget()
+        capture_layout = QVBoxLayout(capture_page)
+        capture_layout.setContentsMargins(0, 4, 0, 0)
+        capture_layout.setSpacing(8)
+        capture_layout.addWidget(self._build_input_group())
+        capture_layout.addWidget(self._build_calibration_group())
+        capture_layout.addStretch(1)
+        tabs.addTab(capture_page, "采集")
+        stats_page = QWidget()
+        stats_layout = QVBoxLayout(stats_page)
+        stats_layout.setContentsMargins(0, 4, 0, 0)
+        stats_layout.setSpacing(8)
+        stats_layout.addWidget(self._build_stats_group())
+        stats_layout.addWidget(self._build_history_group())
+        stats_layout.addStretch(1)
+        tabs.addTab(stats_page, "统计")
+        left_layout.addWidget(tabs)
         root.addWidget(left, 0)
 
         self.canvas = MplCanvas(9.2, 7.6, tight_layout=True)
@@ -551,6 +560,7 @@ class NoiseWindow(QMainWindow):
     def _toggle_running(self):
         self.running = not self.running
         if self.running:
+            self._live_cleared = False
             self.start_btn.setText("暂停")
             self._start_monitor()
             self.session_started = time.time()
@@ -560,6 +570,11 @@ class NoiseWindow(QMainWindow):
             self.statusBar().showMessage("已暂停")
 
     def _clear_live(self, message=""):
+        if self._live_cleared:
+            if message and self.statusBar().currentMessage() != message:
+                self.statusBar().showMessage(message)
+            return
+        self._live_cleared = True
         self.levels.clear()
         self.density_history.clear()
         self.noise_psd = None
@@ -596,6 +611,7 @@ class NoiseWindow(QMainWindow):
         self.band_line.set_data([], [])
         self.band_peak_text.set_text("")
         if not self.demo_source.enabled:
+            self._live_cleared = False
             self._clear_live("未选择演示噪声成分")
 
     def _calibration_changed(self, value):
@@ -672,6 +688,7 @@ class NoiseWindow(QMainWindow):
                 f"低于静音门限 {self.silence_gate_db:.0f} dBFS，清空实时显示"
             )
             return
+        self._live_cleared = False
         freqs, power = spectral_power(analysis, self.fs)
         if self.denoise_check.isChecked():
             if self.noise_psd is None or len(self.noise_psd) != len(power):

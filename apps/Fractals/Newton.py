@@ -9,7 +9,7 @@ from support.fractals.fractal_common import (
 )
 from support.fractals.fractal_kernels import NEWTON_FUNCTION_NAMES, newton_preset_f, render_newton
 
-ti.init(arch=ti.gpu, offline_cache=True)
+ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
 INFO_TEXT = (
     "左键 切换实时更新 · 中键 拖拽 · 滚轮 缩放\n"
@@ -147,11 +147,11 @@ class NewtonNovaApp(DualCanvasFractalWindow):
 
     def on_parameters_changed(self):
         self.max_iterations = self.iter_spin.value()
-        self.mark_all_dirty()
+        self.mark_all_dirty(preview=True)
 
     def on_threshold_changed(self, value):
         self.convergence_threshold = 10.0 ** value
-        self.mark_all_dirty()
+        self.mark_all_dirty(preview=True)
 
     def on_custom_roots_changed(self, value):
         self.custom_num_roots = int(value)

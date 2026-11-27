@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from common.app import run_app
+from common.lab_window import LabWindow
 from common.imaging import ask_save_path, ndarray_to_qimage
 from common.widgets import LabeledSlider
 from common.workers import StoppableThread
@@ -1002,12 +1003,12 @@ class PoincareCanvas(QWidget):
         painter.end()
 
 
-class MainWindow(QMainWindow):
+class MainWindow(LabWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1180, 800)
-        self.setMinimumSize(1020, 660)
+        self.resize(1000, 720)
+        self.setMinimumSize(1000, 720)
 
         self._worker = None
         self._generation = 0
@@ -1042,15 +1043,11 @@ class MainWindow(QMainWindow):
         root.setSpacing(8)
 
         panel = QWidget()
-        panel.setFixedWidth(326)
+        panel.setFixedWidth(330)
         panel.setAutoFillBackground(False)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(2, 2, 4, 4)
         layout.setSpacing(6)
-
-        title = QLabel("KAM")
-        title.setFont(QFont(FAMILY, 18, QFont.Bold))
-        layout.addWidget(title)
 
         self._control_tabs = QTabWidget()
         self._control_tabs.setUsesScrollButtons(False)
@@ -1072,6 +1069,7 @@ class MainWindow(QMainWindow):
         self.crtbp_canvas = PoincareCanvas()
 
         self._canvas_stack = QStackedWidget()
+        self._canvas_stack.setFixedSize(640, 640)
         self._canvas_stack.addWidget(self.canvas)
         self._canvas_stack.addWidget(self.planet_canvas)
         self._canvas_stack.addWidget(self.crtbp_canvas)

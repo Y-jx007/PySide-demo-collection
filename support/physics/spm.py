@@ -25,7 +25,7 @@ class TemporalNLSE:
     """One transverse dimension is time; the marching direction is distance z."""
 
     def __init__(self, points=512, window=16.0, beta2=1.0, gamma=1.0,
-                 dz=0.02, rows=512, raman=0.0):
+                 dz=0.02, rows=512, raman=0.0, backend="numpy"):
         self.n = int(points)
         self.window = float(window)
         self.dt = self.window / self.n
@@ -44,7 +44,81 @@ class TemporalNLSE:
         self._buffer = np.zeros((self.rows, self.n))
         self.filled = 0
         self.steps = 0
+        self.backend = backend
+        self._torch = None
+        self._torch_warm = False
+        self._torch_device = None
+        self._torch_disp = None
+        self._torch_disp_dz = None
         self.reset(2.0, 1.0)
+
+    # ---------- 可选 torch 后端 ----------
+    @property
+    def torch_ready(self):
+        return self._torch is not None and self._torch_warm
+
+    def enable_torch(self, device=None):
+        if self._torch is not None:
+            return True
+        try:
+            import torch
+        except ImportError:
+            return False
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._torch = torch
+        self._torch_device = torch.device(device)
+        self._torch_disp = None
+        self._torch_disp_dz = None
+        self._torch_warm = False
+        return True
+
+    def warm_torch(self):
+        """后台预热 1D cuFFT / elementwise kernel，避免切换瞬间卡 UI。"""
+        if self._torch is None:
+            return False
+        torch = self._torch
+        dummy = torch.zeros(self.n, dtype=torch.complex128,
+                            device=self._torch_device)
+        self._torch_advance(dummy, 1, push=False)
+        if self._torch_device.type == "cuda":
+            torch.cuda.synchronize(self._torch_device)
+        self._torch_warm = True
+        return True
+
+    def _torch_dispersion(self):
+        if self._torch_disp is None or self._torch_disp_dz != self.dz:
+            self._torch_disp = self._torch.as_tensor(
+                self._dispersion, dtype=self._torch.complex128,
+                device=self._torch_device,
+            )
+            self._torch_disp_dz = self.dz
+        return self._torch_disp
+
+    def _torch_advance(self, field, count, push=True):
+        torch = self._torch
+        dispersion = self._torch_dispersion()
+        half = 0.5 * self.gamma * self.dz
+        for _ in range(int(count)):
+            intensity = field.abs() ** 2
+            theta = half * intensity
+            field = field * (torch.cos(theta) + 1j * torch.sin(theta))
+            field = torch.fft.ifft(torch.fft.fft(field) * dispersion)
+            intensity = field.abs() ** 2
+            theta = half * intensity
+            field = field * (torch.cos(theta) + 1j * torch.sin(theta))
+            if push:
+                self._push(intensity.detach().cpu().numpy())
+        return field
+
+    def _step_torch(self, count):
+        torch = self._torch
+        field = torch.as_tensor(self.field, dtype=torch.complex128,
+                                device=self._torch_device)
+        field = self._torch_advance(field, count, push=True)
+        self.field = field.detach().cpu().numpy().astype(np.complex128, copy=False)
+        self.steps += int(count)
+        return self.field
 
     # ---------- 初始条件 ----------
     def reset(self, order=2.0, width=1.0):
@@ -59,6 +133,11 @@ class TemporalNLSE:
 
     # ---------- 推进 ----------
     def step(self, count=1):
+        if self.backend == "torch" and self.torch_ready and not self.raman:
+            return self._step_torch(count)
+        return self._step_numpy(count)
+
+    def _step_numpy(self, count=1):
         field = self.field
         half = 0.5 * self.gamma * self.dz
         for _ in range(int(count)):

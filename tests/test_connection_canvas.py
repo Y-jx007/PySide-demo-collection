@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Interaction checks for the Connection canvas.
 
-The point must follow the pointer smoothly (a critically damped spring in
-world space, no snap on release) and the ambient field must change length
-continuously while it travels.
+The dragged trail must extend immediately under the pointer, while the
+critically damped spring remains available for click-to-travel and settling.
+The ambient field must change length continuously while the point travels.
 """
 import importlib.util
 import math
@@ -30,9 +30,9 @@ _APP = None
 def app_path():
     """Follow the manifest, so moving the app does not break the test."""
     for app in apps_manifest.APPS:
-        if app["title"] == "Connection":
+        if app["title"] == "Christoffel":
             return os.path.join(ROOT, "apps", app["path"])
-    raise AssertionError("Connection 未在 apps_manifest.py 注册")
+    raise AssertionError("Christoffel 未在 apps_manifest.py 注册")
 
 
 def load_app():
@@ -90,6 +90,54 @@ class TestConnectionCanvas(unittest.TestCase):
         self.assertLessEqual(max(steps), cap * 1.02)
         # speed grows and decays instead of starting at full speed
         self.assertLess(steps[0], 0.6 * max(steps))
+
+    def test_drag_to_extends_the_path_immediately(self):
+        canvas = self.canvas
+        start = canvas.surface.initial()
+        target = (start[0] + 0.35, start[1] + 0.18)
+        canvas._begin_drag(start)
+        canvas._drag_to(target)
+        self.assertFalse(canvas._glide.isActive())
+        self.assertLess(self.distance(canvas.p_uv, target), 1e-6)
+        self.assertLess(self.distance(canvas.path[-1], target), 1e-6)
+        self.assertGreater(len(canvas.path), 1)
+
+    def test_long_path_keeps_the_newest_sample_visible(self):
+        canvas = self.canvas
+        start = canvas.surface.initial()
+        # A small closed arc keeps every uv inside the chart. PATH_MAX_POINTS+1
+        # points force the projected-path cache into stride-2 sampling; the
+        # extra points must still reach the screen instead of freezing.
+        limit = canvas.PATH_MAX_POINTS
+        arc = [
+            (start[0] + 0.2 * math.cos(0.004 * i),
+             start[1] + 0.2 * math.sin(0.004 * i))
+            for i in range(limit + 1)
+        ]
+        canvas.path = arc
+        canvas._path_cache = None
+        canvas._path_screen()
+        canvas.path = arc + [
+            (start[0] + 0.2 * math.cos(0.004 * i),
+             start[1] + 0.2 * math.sin(0.004 * i))
+            for i in range(limit + 1, limit + 10)
+        ]
+        pts = canvas._path_screen()
+        last = canvas.camera.project(
+            canvas.surface.point(*canvas.path[-1]), canvas.width(), canvas.height()
+        )[0]
+        self.assertLess(
+            math.hypot(pts[-1].x() - last.x(), pts[-1].y() - last.y()), 0.5
+        )
+
+    def test_path_tail_is_not_dropped_at_2400_points(self):
+        canvas = self.canvas
+        start = canvas.surface.initial()
+        first = (start[0] + 0.2, start[1] + 0.1)
+        canvas.path = [first] + [start] * 2500
+        canvas._advance((start[0] + 0.1, start[1] + 0.05))
+        self.assertEqual(canvas.path[0], first)
+        self.assertGreater(len(canvas.path), 2500)
 
     def test_follow_is_framerate_independent(self):
         canvas = self.canvas
@@ -149,6 +197,14 @@ class TestConnectionCanvas(unittest.TestCase):
         canvas._start_stroke((0.25, 0.35))
         self.assertLess(self.distance(canvas.base_uv, (0.25, 0.35)), 1e-6)
         self.assertLess(self.distance(canvas.initial_uv, (0.25, 0.35)), 1e-6)
+
+    def test_fast_move_interpolates_along_the_surface(self):
+        canvas = self.canvas
+        start = canvas.surface.initial()
+        canvas._begin_drag(start)
+        before = len(canvas.path)
+        canvas._advance((start[0] + 0.4, start[1] + 0.25))
+        self.assertGreater(len(canvas.path), before + 2)
 
     def test_locked_base_stays_put(self):
         canvas = self.canvas

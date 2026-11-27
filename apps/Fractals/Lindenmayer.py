@@ -286,10 +286,12 @@ class LSystemWidget(QWidget):
 class LSystemWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("L-system 分形生成器")
-        self.setGeometry(100, 100, 1000, 680)
+        self.setWindowTitle("Lindenmayer · L-system")
+        self.setMinimumSize(1000, 720)
+        self.setGeometry(100, 100, 1000, 720)
 
         self.canvas = LSystemWidget()
+        self.canvas.setFixedSize(640, 640)
         self.canvas.statsReady.connect(self.on_stats)
         self.init_ui()
         self.setup_default_systems()
@@ -298,11 +300,11 @@ class LSystemWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
 
         panel = QWidget()
-        panel.setFixedWidth(310)
+        panel.setFixedWidth(330)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(6)
         panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -325,7 +327,8 @@ class LSystemWindow(QMainWindow):
     def create_system_selection(self, layout):
         group = QGroupBox("预设系统")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(4)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(10, 8, 10, 8)
         self.system_combo = QComboBox()
         self.system_combo.currentTextChanged.connect(self.on_system_changed)
         vbox.addWidget(self.system_combo)
@@ -334,7 +337,8 @@ class LSystemWindow(QMainWindow):
     def create_parameters_section(self, layout):
         group = QGroupBox("参数")
         form = QFormLayout()
-        form.setSpacing(3)
+        form.setSpacing(6)
+        form.setContentsMargins(10, 8, 10, 8)
 
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1, 12)
@@ -360,6 +364,7 @@ class LSystemWindow(QMainWindow):
         group = QGroupBox("颜色")
         hbox = QHBoxLayout(group)
         hbox.setSpacing(6)
+        hbox.setContentsMargins(10, 8, 10, 8)
         hbox.addWidget(QLabel("起始"))
         self.start_color_btn = ColorButton(self.canvas.start_color)
         self.start_color_btn.colorChanged.connect(self.on_start_color_changed)
@@ -378,7 +383,8 @@ class LSystemWindow(QMainWindow):
     def create_rules_section(self, layout):
         group = QGroupBox("L-system 规则")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(4)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(10, 8, 10, 8)
 
         vbox.addWidget(QLabel("公理:"))
         self.axiom_edit = QTextEdit()
@@ -399,6 +405,7 @@ class LSystemWindow(QMainWindow):
         group = QGroupBox("操作")
         hbox = QHBoxLayout(group)
         hbox.setSpacing(6)
+        hbox.setContentsMargins(10, 8, 10, 8)
 
         self.generate_btn = QPushButton("生成")
         self.generate_btn.clicked.connect(self.generate_system)
@@ -415,7 +422,8 @@ class LSystemWindow(QMainWindow):
     def create_stats_section(self, layout):
         group = QGroupBox("统计")
         form = QFormLayout()
-        form.setSpacing(3)
+        form.setSpacing(6)
+        form.setContentsMargins(10, 8, 10, 8)
         self.lbl_length = QLabel("–")
         self.lbl_segments = QLabel("–")
         self.lbl_time = QLabel("–")

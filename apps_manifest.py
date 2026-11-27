@@ -13,6 +13,20 @@ from pathlib import Path
 # Category display order.  Unknown categories are appended alphabetically.
 CATEGORY_ORDER = ["Math", "Physics", "Fractals", "Cellular Automata", "Unpolished"]
 
+# Internal keys stay English (paths/tests depend on them); only the launcher
+# shows localized labels.  Chinese is much shorter in the vertical film tab.
+CATEGORY_DISPLAY = {
+    "Math": "数学",
+    "Physics": "物理",
+    "Fractals": "分形",
+    "Cellular Automata": "元胞自动机",
+    "Unpolished": "实验",
+}
+
+
+def category_display(name):
+    return CATEGORY_DISPLAY.get(name, name)
+
 # Categories that are not held to the same bar carry a note; the launcher tag,
 # docs/APP_MATRIX.md and the README all repeat this same wording.
 CATEGORY_NOTES = {
@@ -24,7 +38,7 @@ CATEGORY_NOTES = {
 
 def category_label(name):
     """Display name for a category, carrying its marker when it has one."""
-    return f"{name} · 实验田" if name in CATEGORY_NOTES else name
+    return f"{name} · 实验" if name in CATEGORY_NOTES else name
 
 
 def category_note(name):
@@ -84,17 +98,24 @@ APPS = [
         "category": "Math",
     },
     {
-        "title": "Connection",
-        "description": "在曲面上平滑拖动测地点，观察协变导数、场长起伏与 holonomy",
+        "title": "Christoffel",
+        "description": "在曲面上实时拖动测地点，观察协变导数、场长起伏与 holonomy",
         "path": "Math/Connection.py",
-        "friendly": "联络与协变导数",
+        "friendly": "Christoffel 联络",
         "category": "Math",
     },
     {
-        "title": "Stigmergy",
+        "title": "Grassé",
         "description": "黏菌/蚁群的信息素寻路：个体留下痕迹，痕迹反过来引导个体",
-        "path": "Math/Stigmergy.py",
-        "friendly": "黏菌网络",
+        "path": "Cellular Automata/Stigmergy.py",
+        "friendly": "Grassé 黏菌网络",
+        "category": "Cellular Automata",
+    },
+    {
+        "title": "Jones",
+        "description": "扭结不变量：Kauffman bracket、Jones 多项式、镜像手性",
+        "path": "Math/Jones.py",
+        "friendly": "Jones 扭结不变量",
         "category": "Math",
     },
     # ---------------- Physics ----------------
@@ -128,32 +149,32 @@ APPS = [
         "requires": ["sounddevice", "matplotlib"],
     },
     {
-        "title": "Snowflake",
+        "title": "Reiter",
         "description": "Reiter 雪花生长模型，六重对称枝晶",
         "path": "Fractals/Snowflake.py",
-        "friendly": "雪花生长",
+        "friendly": "Reiter 雪花",
         "category": "Fractals",
     },
     {
-        "title": "Beam",
+        "title": "Euler–Bernoulli",
         "description": "横梁承重：有限元算弯曲应力，超强度即断裂",
         "path": "Physics/Beam.py",
-        "friendly": "横梁承重",
+        "friendly": "Euler–Bernoulli 梁",
         "category": "Physics",
     },
     {
-        "title": "Bremsstrahlung",
+        "title": "Liénard–Wiechert",
         "description": "推迟 Liénard-Wiechert 场：轫致分量（红）与同步分量（蓝）",
         "path": "Physics/Bremsstrahlung.py",
-        "friendly": "轫致/同步辐射",
+        "friendly": "Liénard–Wiechert 辐射",
         "category": "Physics",
     },
     {
-        "title": "Kerr–Newman Lensing",
-        "description": "Kerr–Newman 零测地线逐像素 RK4：自旋与电荷可调、参考系拖曳、D 形阴影与吸积盘多普勒增亮",
-        "path": "Physics/Lensing.py",
+        "title": "Kerr–Newman",
+        "description": "Kerr–Newman 黑洞：电荷、自旋与吸积盘",
+        "path": "Unpolished/Lensing.py",
         "friendly": "Kerr–Newman黑洞",
-        "category": "Physics",
+        "category": "Unpolished",
     },
     {
         "title": "Ising",
@@ -206,17 +227,24 @@ APPS = [
         "category": "Fractals",
     },
     {
-        "title": "IFS分形",
+        "title": "Barnsley",
         "description": "迭代函数系统生成分形图案",
         "path": "Fractals/IFS.py",
-        "friendly": "IFS分形",
+        "friendly": "Barnsley 分形",
         "category": "Fractals",
     },
     {
-        "title": "Logistic分形",
+        "title": "May",
         "description": "逻辑映射生成分形图案",
         "path": "Fractals/Logistic.py",
-        "friendly": "逻辑映射分形",
+        "friendly": "May 逻辑映射",
+        "category": "Fractals",
+    },
+    {
+        "title": "DLA",
+        "description": "扩散限制凝聚：随机游走粒子屏蔽生长，统计质量–半径维数",
+        "path": "Fractals/DLA.py",
+        "friendly": "DLA 扩散限制凝聚",
         "category": "Fractals",
     },
     # ---------------- Cellular Automata ----------------
@@ -229,18 +257,32 @@ APPS = [
     },
     {
         "title": "Conway",
-        "description": "生命游戏，含 14 个经典预设与残影轨迹",
+        "description": "生命游戏，含 32 个 LifeWiki 标准预设、分类筛选与残影轨迹",
         "path": "Cellular Automata/Conway.py",
         "friendly": "元胞自动机",
         "category": "Cellular Automata",
     },
     {
-        "title": "Distill",
+        "title": "Mordvintsev",
         "description": "神经网络元胞自动机",
         "path": "Cellular Automata/Distill.py",
-        "friendly": "神经网络元胞自动机",
+        "friendly": "Mordvintsev 神经 CA",
         "category": "Cellular Automata",
         "requires": ["torch"],
+    },
+    {
+        "title": "NaSch",
+        "description": "Nagel–Schreckenberg 交通流：减速、随机刹车与空间–时间堵车波",
+        "path": "Cellular Automata/NaSch.py",
+        "friendly": "NaSch 交通流",
+        "category": "Cellular Automata",
+    },
+    {
+        "title": "BTW",
+        "description": "Bak–Tang–Wiesenfeld 沙堆：自组织临界性与雪崩",
+        "path": "Cellular Automata/Sandpile.py",
+        "friendly": "BTW 沙堆",
+        "category": "Cellular Automata",
     },
     # ---------------- Unpolished ----------------
     {
@@ -279,10 +321,10 @@ APPS = [
         "category": "Math",
     },
     {
-        "title": "Mass Spring",
+        "title": "Hooke",
         "description": "质点-弹簧网络：重力、阻尼与交互",
         "path": "Physics/Mass-Spring.py",
-        "friendly": "质点弹簧系统",
+        "friendly": "Hooke 弹簧网络",
         "category": "Physics",
     },
     {
@@ -298,6 +340,14 @@ APPS = [
         "path": "Physics/KAM.py",
         "friendly": "KAM环面",
         "category": "Unpolished",
+    },
+    {
+        "title": "Diffusion",
+        "description": "二维扩散模型：时间条件 MLP、DDPM/DDIM、生成轨迹与损失",
+        "path": "Unpolished/Diffusion.py",
+        "friendly": "二维扩散模型",
+        "category": "Unpolished",
+        "requires": ["torch"],
     },
 ]
 

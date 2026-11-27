@@ -98,7 +98,7 @@ class TestKerrNewmanIntegrator(unittest.TestCase):
 
 class TestKerrNewmanApp(unittest.TestCase):
     def test_app_exposes_spin_and_charge(self):
-        path = os.path.join(ROOT, "apps", "Physics", "Lensing.py")
+        path = os.path.join(ROOT, "apps", "Unpolished", "Lensing.py")
         with open(path, encoding="utf-8") as handle:
             source = handle.read()
         self.assertIn("KerrConfig", source)
@@ -109,7 +109,7 @@ class TestKerrNewmanApp(unittest.TestCase):
     def test_manifest_and_cover(self):
         import apps_manifest
         entry = next(a for a in apps_manifest.APPS
-                     if a["path"] == "Physics/Lensing.py")
+                     if a["path"] == "Unpolished/Lensing.py")
         self.assertIn("Kerr", entry["title"])
         self.assertIn("Newman", entry["title"])
         self.assertIn("电荷", entry["description"])

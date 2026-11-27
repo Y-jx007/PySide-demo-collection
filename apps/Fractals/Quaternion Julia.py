@@ -42,7 +42,7 @@ for _candidate in _ti_candidates:
 if _ti_cache is None:
     _ti_cache = tempfile.mkdtemp(prefix="PySideDrawingTool_taichi_")
 
-ti.init(arch=ti.gpu, offline_cache_file_path=_ti_cache)
+ti.init(arch=ti.gpu, offline_cache_file_path=_ti_cache, advanced_optimization=True)
 
 W, H = 640, 640
 FOCAL_LENGTH = 3.0

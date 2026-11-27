@@ -6,7 +6,7 @@ from common.taichi_base import (ti, tm)
 from common.opengl_base import (GL_CLAMP_TO_EDGE, GL_COLOR_BUFFER_BIT, GL_LINEAR, GL_NEAREST, GL_QUADS, GL_RGBA, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_UNSIGNED_BYTE, glBegin, glBindTexture, glClear, glEnable, glEnd, glGenTextures, glTexCoord2f, glTexImage2D, glTexSubImage2D, glTexParameteri, glVertex2f, glViewport)
 from PySide6.QtWidgets import QDialog
 
-ti.init(arch=ti.gpu, default_fp=ti.f32, kernel_profiler=False, offline_cache=False)
+ti.init(arch=ti.gpu, default_fp=ti.f32, kernel_profiler=False, offline_cache=False, advanced_optimization=True)
 
 # ── 结构体定义 ─────────────────────────
 PotentialParams = ti.types.struct(

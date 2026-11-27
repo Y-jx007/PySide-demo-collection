@@ -7,7 +7,7 @@ from common.reaction_diffusion import (
     create_init_group, create_control_group,
 )
 
-ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=False)
+ti.init(arch=ti.gpu, default_fp=ti.f32, offline_cache=False, advanced_optimization=True)
 
 # ---------- f–k 地图（200×200 参数，可缩放，点击选点） ----------
 from pathlib import Path
@@ -34,7 +34,7 @@ class FkMapView(QWidget):
         QImageReader.setAllocationLimit(1024)
         self._img = QImage(str(image_path)).convertToFormat(QImage.Format_Grayscale8)
         self._ok = not self._img.isNull()
-        self.setFixedSize(288, 288)
+        self.setFixedSize(240, 240)
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
         self._min_scale = self.width() / max(self._img.width(), 1)
@@ -150,7 +150,8 @@ def create_fk_map(sim, viewer, sliders, get_pattern=None):
 
     group = QGroupBox("f–k 地图")
     layout = QVBoxLayout()
-    layout.setContentsMargins(4, 4, 4, 4)
+    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setSpacing(6)
     widget = FkMapView(image)
 
     def current_pattern():
@@ -186,6 +187,9 @@ class TuringSimulation(SimulationBase):
         self.size = size
         self.U = ti.field(ti.f32, shape=(size, size))
         self.V = ti.field(ti.f32, shape=(size, size))
+        self.U_next = ti.field(ti.f32, shape=(size, size))
+        self.V_next = ti.field(ti.f32, shape=(size, size))
+        self.display_rgb = ti.field(ti.u8, shape=(size, size, 3))
         self.Du = 0.16
         self.Dv = 0.08
         self.f = 0.04
@@ -200,27 +204,55 @@ class TuringSimulation(SimulationBase):
         self.reset('random')
 
     @ti.kernel
-    def update_step(self, Du: ti.f32, Dv: ti.f32, f: ti.f32, k: ti.f32, dt: ti.f32):
-        for i, j in ti.ndrange((1, self.size-1), (1, self.size-1)):
-            lap_u = compute_laplacian(self.U, i, j)
-            lap_v = compute_laplacian(self.V, i, j)
-            reaction = self.U[i, j] * self.V[i, j] * self.V[i, j]
-            U_new = self.U[i, j] + dt * (Du * lap_u - reaction + f * (1.0 - self.U[i, j]))
-            V_new = self.V[i, j] + dt * (Dv * lap_v + reaction - (f + k) * self.V[i, j])
-            self.U[i, j] = ti.math.clamp(U_new, 0.0, 1.0)
-            self.V[i, j] = ti.math.clamp(V_new, 0.0, 1.0)
+    def update_step(self, U: ti.template(), V: ti.template(),
+                    U_next: ti.template(), V_next: ti.template(),
+                    Du: ti.f32, Dv: ti.f32, f: ti.f32, k: ti.f32, dt: ti.f32):
+        # 显式 Euler：读旧场、写新场，避免原地 stencil 的读写竞态。
+        # 边界复制并入同一 kernel，避免每步第二次 launch。
+        for i, j in ti.ndrange(self.size, self.size):
+            if i < 1 or j < 1 or i >= self.size - 1 or j >= self.size - 1:
+                U_next[i, j] = U[i, j]
+                V_next[i, j] = V[i, j]
+            else:
+                lap_u = compute_laplacian(U, i, j)
+                lap_v = compute_laplacian(V, i, j)
+                reaction = U[i, j] * V[i, j] * V[i, j]
+                u_new = U[i, j] + dt * (Du * lap_u - reaction + f * (1.0 - U[i, j]))
+                v_new = V[i, j] + dt * (Dv * lap_v + reaction - (f + k) * V[i, j])
+                U_next[i, j] = ti.math.clamp(u_new, 0.0, 1.0)
+                V_next[i, j] = ti.math.clamp(v_new, 0.0, 1.0)
 
     def step(self):
-        self.update_step(self.Du, self.Dv, self.f, self.k, self.dt)
+        self.update_step(self.U, self.V, self.U_next, self.V_next,
+                         self.Du, self.Dv, self.f, self.k, self.dt)
+        self.U, self.U_next = self.U_next, self.U
+        self.V, self.V_next = self.V_next, self.V
+
+    @ti.kernel
+    def _render_display_kernel(self):
+        n = self.size
+        for i, j in ti.ndrange(n, n):
+            value = ti.max(self.U[i, j], self.V[i, j])
+            value = ti.max(0.0, ti.min(1.0, 1.0 - value))
+            gray = ti.cast(value * 255.0, ti.u8)
+            if i < 2 or j < 2 or i >= n - 2 or j >= n - 2:
+                gray = ti.cast(0, ti.u8)
+            self.display_rgb[i, j, 0] = gray
+            self.display_rgb[i, j, 1] = gray
+            self.display_rgb[i, j, 2] = gray
 
     def get_image(self, mode=None):
-        u_np, v_np = self.U.to_numpy(), self.V.to_numpy()
-        return render_reaction_image(u_np, v_np)
+        self._render_display_kernel()
+        return self.display_rgb.to_numpy()
 
     def reset(self, pattern='random'):
         self.U.fill(1.0)
         self.V.fill(0.0)
+        self.U_next.fill(1.0)
+        self.V_next.fill(0.0)
         self._init_patterns.get(pattern, self._init_random)()
+        self.U_next.copy_from(self.U)
+        self.V_next.copy_from(self.V)
 
     @ti.kernel
     def _init_center(self):
@@ -545,17 +577,19 @@ def build_panel(sim, viewer, sim_type):
         return reset_mapping.get(pattern_state['name'], 'random')
 
     preset_callback = make_preset_callback(sliders, get_pattern)
-    init_group, pattern_combo, _ = create_init_group(sim, viewer,
-                                         list(reset_mapping.keys()),
-                                         presets,
-                                         lambda idx: preset_callback(idx),
-                                         reset_mapping)
+    init_group, pattern_combo, _ = create_init_group(
+        sim, viewer,
+        list(reset_mapping.keys()),
+        presets,
+        lambda idx: preset_callback(idx),
+        reset_mapping,
+        merge_control=True,
+    )
     pattern_state['name'] = pattern_combo.currentText()
     pattern_combo.currentTextChanged.connect(lambda t: pattern_state.__setitem__('name', t))
     if sim_type == 'turing':
         layout.addWidget(create_fk_map(sim, viewer, sliders, get_pattern))
     layout.addWidget(init_group)
-    layout.addWidget(create_control_group(viewer))
     layout.addStretch()
     panel.setLayout(layout)
     return panel
@@ -565,16 +599,17 @@ def build_panel(sim, viewer, sim_type):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("反应扩散模拟系统")
+        self.setWindowTitle("Turing · 反应扩散")
         self.current_sim_type = "turing"
         self.current_size = 512
 
         self.sim = TuringSimulation(self.current_size)
         self.viewer = SimulationViewer(self.sim)
+        self.viewer.steps_per_frame = 50
         self.setCentralWidget(self.viewer)
 
         self.viewer.set_display_modes(['混合'])
-        self.viewer.param_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.viewer.param_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         self.top_selector = QWidget()
         top_layout = QHBoxLayout()
@@ -603,12 +638,15 @@ class MainWindow(QMainWindow):
         self.custom_container_layout = QVBoxLayout()
         self.custom_container.setLayout(self.custom_container_layout)
 
-        self.viewer.param_panel_layout.insertWidget(0, self.top_selector)
-        self.viewer.param_panel_layout.insertWidget(1, self.custom_container)
+        self.viewer.param_panel_layout.insertWidget(0, self.custom_container)
+        self.viewer.set_top_widget(self.top_selector)
 
         self._rebuild_custom_panel()
-        self.setMinimumSize(900, 620)
-        self.setGeometry(100, 100, 1180, 780)
+        self.statusBar().showMessage(
+            f"Turing · {self.sim_combo.currentText()} · {self.current_size}² · 连续"
+        )
+        self.setMinimumSize(1000, 720)
+        self.setGeometry(100, 100, 1000, 720)
 
     @staticmethod
     def _fit_combo(combo):
@@ -625,6 +663,9 @@ class MainWindow(QMainWindow):
         }
         self.current_sim_type = mapping[text]
         self._rebuild_simulation(keep_params=False)
+        self.statusBar().showMessage(
+            f"Turing · {text} · {self.current_size}² · 连续"
+        )
 
     def _on_size_changed(self, text):
         sizes = {"128x128":128, "256x256":256, "512x512":512, "1024x1024":1024}
@@ -632,11 +673,13 @@ class MainWindow(QMainWindow):
         if new_size != self.current_size:
             self.current_size = new_size
             self._rebuild_simulation(keep_params=True)
+            self.statusBar().showMessage(
+                f"Turing · {self.sim_combo.currentText()} · {new_size}² · 连续"
+            )
 
     def _rebuild_simulation(self, keep_params=False):
         old_sim = self.viewer.sim
         was_playing = self.viewer.is_playing
-        self.viewer.timer.stop()
 
         if self.current_sim_type == "turing":
             new_sim = TuringSimulation(self.current_size)
@@ -662,8 +705,9 @@ class MainWindow(QMainWindow):
 
         self.viewer.sim = new_sim
         self._rebuild_custom_panel()
+        self.viewer.is_playing = was_playing
         if was_playing:
-            self.viewer.timer.start()
+            self.viewer.gl_widget.update()
 
     def _rebuild_custom_panel(self):
         while self.custom_container_layout.count():
@@ -674,8 +718,8 @@ class MainWindow(QMainWindow):
         self.custom_container_layout.addWidget(panel)
 
     def closeEvent(self, event):
-        self.viewer.timer.stop()
+        self.viewer.is_playing = False
         event.accept()
 
 if __name__ == "__main__":
-    raise SystemExit(run_app(MainWindow, gl=True))
+    raise SystemExit(run_app(MainWindow, gl=True, gl_options={"swap_interval": 1}))
