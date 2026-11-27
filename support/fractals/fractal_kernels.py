@@ -76,6 +76,7 @@ def render_mandelbrot(
     display_mode: ti.i32,
     scale_x: ti.f64, offset_x: ti.f64,
     scale_y: ti.f64, offset_y: ti.f64,
+    quantum: ti.f64,
     func: ti.template(), use_custom: ti.template(), func_type: ti.template(),
 ):
     escape_sq = escape_radius * escape_radius
@@ -85,7 +86,16 @@ def render_mandelbrot(
 
     ti.loop_config(block_dim=256)
     for i, j in ti.ndrange(width, height):
-        uv = c64(i * scale_x + offset_x, j * scale_y + offset_y)
+        u = i * scale_x + offset_x
+        v = j * scale_y + offset_y
+        # 深度缩放：两轴必须落在同一张 f64 网格上。实轴/虚轴的量化步长
+        # 不同（取决于数值量级），不统一的话色块会被拉成横条。这里按网格
+        # 序号取样，避免先把坐标舍入到各自的 ulp 再对齐带来的抖动。
+        if quantum > 0.0:
+            inv_q = 1.0 / quantum
+            u = (ti.round(offset_x * inv_q) + ti.round(i * (scale_x * inv_q))) * quantum
+            v = (ti.round(offset_y * inv_q) + ti.round(j * (scale_y * inv_q))) * quantum
+        uv = c64(u, v)
         z = c64(0.0, 0.0)
         c = c64(0.0, 0.0)
         if display_mode == 0:       # Mandelbrot

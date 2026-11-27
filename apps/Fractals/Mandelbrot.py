@@ -57,6 +57,7 @@ class MandelJuliaWidget(BaseFractalWidget):
             0 if self.is_left else 1,
             transform.scale_x, transform.offset_x,
             transform.scale_y, transform.offset_y,
+            self.sampling_quantum(w, h),
             func, custom, func_type,
         )
         self.field_to_image(rw, rh, w, h)
@@ -217,7 +218,7 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         render_mandelbrot(
             self._warmup_field, 1, 1, 2, float(self.escape_radius),
             float(self.c_real), float(self.c_imag), 0,
-            2.0, 0.0, -2.0, 0.0,
+            2.0, 0.0, -2.0, 0.0, 0.0,
             func, True, 0,
         )
 

@@ -1,5 +1,6 @@
 """Shared canvas base class for the complex-plane fractal apps."""
 
+import math
 from dataclasses import dataclass
 
 import taichi_forge as ti
@@ -24,6 +25,39 @@ def render_dimensions(width, height, antialias, *, preview=False,
     height = max(1, int(height))
     aa = preview_antialias if preview else max(1, int(antialias))
     return width, height, width * aa, height * aa
+
+
+def sample_quantum(width, height, view_scale, center_x, center_y):
+    """Return the world-space sample grid that keeps deep-zoom pixels square.
+
+    A float64 value near ``0.74`` is spaced ``2**-53`` apart, while near
+    ``0.13`` the spacing is eight times finer.  Once one screen pixel is
+    narrower than the coarser spacing, the raw samples ``i * scale + offset``
+    snap to that lattice: neighbouring columns collapse into wide, flat blocks
+    while neighbouring rows still change, so the colour patches look like
+    rectangles instead of pixels.  Snapping both axes to the same grid makes
+    every patch a square again.
+
+    Returns ``0.0`` while one pixel is still coarser than the grid, so normal
+    zooms keep sampling the exact affine positions.
+    """
+    if width <= 0 or height <= 0:
+        return 0.0
+    if not (math.isfinite(view_scale) and view_scale > 0.0):
+        return 0.0
+    if not (math.isfinite(center_x) and math.isfinite(center_y)):
+        return 0.0
+    half_w = (width / height) * view_scale
+    half_h = view_scale
+    quantum = max(
+        math.ulp(center_x - half_w),
+        math.ulp(center_x + half_w),
+        math.ulp(center_y - half_h),
+        math.ulp(center_y + half_h),
+    )
+    if 2.0 * view_scale / height >= quantum:
+        return 0.0
+    return quantum
 
 
 @dataclass(frozen=True)
@@ -163,6 +197,14 @@ class BaseFractalWidget(QWidget):
 
     def world_to_screen(self, x: float, y: float) -> tuple[float, float]:
         return self.view_transform().world_to_screen(x, y)
+
+    def sampling_quantum(self, display_w=None, display_h=None):
+        """Sample grid for this view; 0.0 means "use the exact affine samples"."""
+        w = self.width() if display_w is None else int(display_w)
+        h = self.height() if display_h is None else int(display_h)
+        return sample_quantum(
+            w, h, self.view_scale, self.view_center[0], self.view_center[1]
+        )
 
     def get_render_dims(self):
         """Return (display_w, display_h, render_w, render_h)."""
