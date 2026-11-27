@@ -114,6 +114,11 @@ class MandelJuliaWidget(BaseFractalWidget):
         super().paintEvent(event)
         if not self.is_left:
             return
+        # 轨道叠加用的是 f64 种子和 f64 视图变换。越过 f64 采样极限后，
+        # 种子与坐标都落在像素尺度以下，画出来是一条乱线；而轨道点本身
+        # 是 O(1) 量级、离这个 1e-20 的视野极其遥远，正确实现也看不到。
+        if self.sampling_quantum() > 0.0:
+            return
         points = self._current_orbit()
         if points is None:
             return
