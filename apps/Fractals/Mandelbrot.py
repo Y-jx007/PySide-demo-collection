@@ -38,10 +38,7 @@ class MandelJuliaWidget(BaseFractalWidget):
         w, h, rw, rh = self.get_render_dims()
         if w is None:
             return
-        self.ensure_taichi_field(rw, rh)
         app = self.parent_app
-        transform = self.view_transform(rw, rh)
-
         custom = bool(app.using_custom_function)
         func = app.custom_function if custom else mandelbrot_preset
         # func_type is ignored when a custom function is active; pin it to 0
@@ -50,10 +47,19 @@ class MandelJuliaWidget(BaseFractalWidget):
         quantum = self.sampling_quantum(w, h)
 
         # f64 的采样网格耗尽后，z² 改用扰动法：中心用 50 位小数算参考轨道，
-        # 逐像素只迭代 f64 偏差。交互预览仍走 f64（快），停手精修时才换。
+        # 逐像素只迭代 f64 偏差。预览也用同一条路径，否则 f64 预览的中心只有
+        # 1e-16 精度，看到的根本不是同一块区域（画面会“跳”）。
         deep = (not custom) and func_type == 0 and quantum > 0.0
-        use_perturbation = deep and not self._interactive
+        use_perturbation = deep
         self.deep_precision = use_perturbation
+        # 扰动法一拍要跑满迭代，比 f64 贵；交互时先按 1/3 分辨率出图，
+        # 松手后再全分辨率精修，画面区域始终一致。
+        if deep and self._interactive:
+            rw = max(1, rw // 3)
+            rh = max(1, rh // 3)
+        self.ensure_taichi_field(rw, rh)
+        transform = self.view_transform(rw, rh)
+
         if use_perturbation:
             ref_re, ref_im = app.reference_fields(
                 self.center_ext, app.max_iterations,
