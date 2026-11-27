@@ -242,6 +242,16 @@ class BaseFractalWidget(QWidget):
         super().resizeEvent(event)
         self.needs_recompute = True
         self.update()
+        # 画布尺寸变化会改变一个像素对应的复数步长（c 的显示位数）。
+        callback = getattr(self.parent_app, "refresh_readouts", None)
+        if callback is not None:
+            callback()
+
+    def notify_view_changed(self):
+        """Tell the window that zoom/centre changed (updates the readouts)."""
+        callback = getattr(self.parent_app, "view_changed", None)
+        if callback is not None:
+            callback(self)
 
     def showEvent(self, event):
         # The initial QSplitter layout can settle after the first paint.
@@ -313,6 +323,7 @@ class BaseFractalWidget(QWidget):
             self.view_center[1] -= dy * transform.scale_y
             self.last_drag_pos = current_pos
             self.request_preview()
+            self.notify_view_changed()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MiddleButton:
@@ -333,6 +344,7 @@ class BaseFractalWidget(QWidget):
             mouse_imag - (mouse_imag - self.view_center[1]) * zoom_factor
         )
         self.request_preview()
+        self.notify_view_changed()
 
     def update_mouse_position(self, event):
         if self.parent_app:

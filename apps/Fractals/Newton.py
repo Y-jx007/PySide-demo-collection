@@ -1,7 +1,6 @@
 from common.taichi_base import (ti)
 from common.custom_base import (BaseFractalWidget)
-from common.qt_base import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QSpinBox,
-                            QVBoxLayout, Qt, run_app)
+from common.qt_base import (QComboBox, QDoubleSpinBox, QSpinBox, Qt, run_app)
 
 from support.fractals.fractal_common import (
     DualCanvasFractalWindow,
@@ -13,10 +12,7 @@ from support.fractals.fractal_kernels import (
 
 ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
-INFO_TEXT = (
-    "左键 切换实时更新 · 中键 拖拽 · 滚轮 缩放\n"
-    "左 牛顿分形 · 右 Nova 分形"
-)
+INFO_TEXT = "左键 实时更新 · 中键 拖拽 · 滚轮 缩放 · 左 牛顿分形 · 右 Nova 分形"
 CUSTOM_PLACEHOLDER = (
     "输入 f(z) 表达式，如: cpow(z, 4.0) - c64(1.0, 0.0)\n"
     "可用: csqr, cconj, cmul, cdiv, csin,\n"
@@ -103,6 +99,8 @@ class NewtonNovaWidget(BaseFractalWidget):
 
 # -------------------- 主窗口 --------------------
 class NewtonNovaApp(DualCanvasFractalWindow):
+    custom_placeholder = CUSTOM_PLACEHOLDER
+
     # Newton's flat root basins need native-resolution rendering; otherwise
     # Windows display scaling stretches the logical-size bitmap and softens
     # every root boundary.  This is DPI sharpness, not anti-aliasing.
@@ -123,69 +121,46 @@ class NewtonNovaApp(DualCanvasFractalWindow):
         self.setup_ui()
 
     # ------------------------------------------------------------------
-    # 控件
+    # 工具条控件（单行，标签在左、控件在右）
     # ------------------------------------------------------------------
-    def create_parameter_group(self):
-        group = QGroupBox("参数设置")
-        form = QFormLayout(group)
-        form.setContentsMargins(12, 18, 12, 10)
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(6)
-        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
-
+    def build_parameter_controls(self, layout):
         self.function_combo = QComboBox()
         self.function_combo.addItems(NEWTON_FUNCTION_NAMES)
         self.function_combo.setFixedSize(132, 26)
         self.function_combo.setToolTip("选择迭代函数；首次切换会编译专用内核")
         self.function_combo.currentIndexChanged.connect(self.on_function_changed)
-        form.addRow("函数:", self.function_combo)
+        layout.addWidget(self.labeled_control("函数", self.function_combo))
 
         self.iter_spin = QSpinBox()
         self.iter_spin.setRange(10, 1000)
         self.iter_spin.setValue(self.max_iterations)
-        self.iter_spin.setFixedSize(132, 26)
+        self.iter_spin.setFixedSize(96, 26)
         self.iter_spin.setToolTip("最大迭代次数")
         self.iter_spin.valueChanged.connect(self.on_parameters_changed)
-        form.addRow("迭代:", self.iter_spin)
+        layout.addWidget(self.labeled_control("迭代", self.iter_spin))
 
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setRange(-12, -1)
         self.threshold_spin.setDecimals(0)
         self.threshold_spin.setValue(-6)
-        self.threshold_spin.setFixedSize(132, 26)
+        self.threshold_spin.setFixedSize(96, 26)
         self.threshold_spin.setToolTip("收敛阈值（10 的幂）")
         self.threshold_spin.valueChanged.connect(self.on_threshold_changed)
-        form.addRow("阈值:", self.threshold_spin)
+        layout.addWidget(self.labeled_control("阈值", self.threshold_spin))
 
-        form.addRow("抗锯齿:", self.create_antialias_combo())
+        layout.addWidget(self.labeled_control("抗锯齿", self.create_antialias_combo()))
         self.aa_combo.setCurrentIndex(1)
         self.aa_combo.setToolTip("左画布只对根边界超采样；4x 比整图 4x 便宜很多")
-        return group
 
-    def create_custom_group(self):
-        group = QGroupBox("自定义函数 (Taichi 表达式)")
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(12, 18, 12, 10)
-        layout.setSpacing(8)
-        layout.addWidget(self.create_custom_edit(CUSTOM_PLACEHOLDER, 84))
-
-        footer = QHBoxLayout()
-        footer.setSpacing(8)
-        footer.addWidget(QLabel("根数量:"))
+    def build_custom_controls(self, layout):
         self.roots_spin = QSpinBox()
         self.roots_spin.setRange(1, 20)
         self.roots_spin.setValue(self.custom_num_roots)
         self.roots_spin.setFixedSize(64, 26)
         self.roots_spin.setToolTip("自定义函数的根数量（用于角度着色）")
         self.roots_spin.valueChanged.connect(self.on_custom_roots_changed)
-        footer.addWidget(self.roots_spin)
-        footer.addStretch(1)
-        footer.addWidget(self.create_apply_button())
-        layout.addLayout(footer)
-        layout.addStretch(1)
-        return group
+        layout.addWidget(
+            self.labeled_control("根数量", self.roots_spin), 0, Qt.AlignBottom)
 
     def create_canvas(self, is_left):
         widget = NewtonNovaWidget(self, is_left)

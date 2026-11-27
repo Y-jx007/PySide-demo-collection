@@ -13,11 +13,11 @@ from collections.abc import Callable
 import numpy as np
 import taichi_forge as ti
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -73,14 +73,6 @@ def compile_complex_function(expression: str, func_name: str = "custom_func") ->
     scope = dict(_COMPLEX_SCOPE)
     exec(code, scope)
     return scope[func_name]
-
-
-def hint_label(text: str) -> QLabel:
-    label = QLabel(text)
-    font = label.font()
-    font.setPointSizeF(max(7.5, font.pointSizeF() - 1.0))
-    label.setFont(font)
-    return label
 
 
 def draw_orbit(
@@ -164,13 +156,16 @@ class SquarePairArea(QWidget):
 
 
 class DualCanvasFractalWindow(QMainWindow):
-    """Common window frame for the two-canvas complex fractal apps."""
+    """Shared window frame: slim toolbar, two square canvases, status readouts."""
+
+    #: 自定义表达式输入框的占位提示（子类覆盖）
+    custom_placeholder = "输入迭代表达式"
 
     def __init__(self, title: str, info_text: str, default_view_scale: float = 1.0):
         super().__init__()
         self.setWindowTitle(title)
-        self.setMinimumSize(1000, 700)
-        self.resize(1080, 740)
+        self.setMinimumSize(1000, 660)
+        self.resize(1080, 700)
         self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
         self.default_view_scale = float(default_view_scale)
         self.info_text = info_text
@@ -180,132 +175,207 @@ class DualCanvasFractalWindow(QMainWindow):
         self.realtime_update = True
         self.left_widget = None
         self.right_widget = None
+        self.readout_widget = None
+        self.custom_panel = None
 
         # These are filled by the subclass before setup_ui(); defaults keep the
-        # shared status label and custom-function helper usable.
+        # shared readouts and custom-function helper usable.
         self.c_real = 0.0
         self.c_imag = 0.0
         self.using_custom_function = False
         self.function_revision = 0
 
     # ------------------------------------------------------------------
-    # UI construction
+    # 界面骨架：一条工具条 + 两张画布 + 底部读数
     # ------------------------------------------------------------------
     def setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(10)
-        layout.addWidget(self.create_control_panel())
-        layout.addWidget(self.create_display_area(), 1)
-
-    def create_control_panel(self) -> QWidget:
-        widget = QWidget()
-        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        widget.setFixedHeight(176)
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        param_group = self.create_parameter_group()
-        param_group.setFixedWidth(250)
-        status_group = self.create_status_group()
-        status_group.setFixedWidth(330)
-        custom_group = self.create_custom_group()
-        custom_group.setMinimumWidth(330)
-
-        layout.addWidget(param_group)
-        layout.addWidget(status_group)
-        layout.addWidget(custom_group, 1)
-        return widget
-
-    def create_status_group(self) -> QGroupBox:
-        group = QGroupBox("状态与控制")
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(12, 18, 12, 10)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(8)
 
-        self.c_label = QLabel(self._c_text())
-        self.c_label.setAlignment(Qt.AlignCenter)
-        self.c_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.c_label.setToolTip("当前 Julia / Nova 参数 c（可选中复制）")
-        label_font = self.c_label.font()
-        label_font.setBold(True)
-        label_font.setPointSizeF(label_font.pointSizeF() + 0.5)
-        self.c_label.setFont(label_font)
-        layout.addWidget(self.c_label)
+        layout.addWidget(self.create_toolbar())
+        layout.addWidget(self._separator())
+        layout.addWidget(self.create_custom_panel())
+        layout.addWidget(self.create_display_area(), 1)
+        self.create_status_bar()
+        self.refresh_readouts()
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        self.realtime_btn = QPushButton()
-        self.realtime_btn.setFixedSize(112, 28)
-        self.realtime_btn.setToolTip("切换实时更新（也可左键点击画布）")
-        self.realtime_btn.clicked.connect(self.toggle_realtime_update)
-        buttons.addWidget(self.realtime_btn)
+    def create_toolbar(self) -> QWidget:
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(6, 0, 6, 0)
+        layout.setSpacing(26)
 
-        reset_btn = QPushButton("重置视图")
-        reset_btn.setFixedSize(112, 28)
-        reset_btn.setToolTip("回到默认缩放和视图中心")
-        reset_btn.clicked.connect(self.reset_views)
-        buttons.addWidget(reset_btn)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
-
-        # 操作提示按行拆成独立标签，行距由布局控制；之前用 wordWrap 的
-        # 单个标签在 320 px 宽里被压成一团。
-        hints = QVBoxLayout()
-        hints.setContentsMargins(2, 4, 0, 0)
-        hints.setSpacing(5)
-        for line in self.info_text.splitlines():
-            hint = QLabel(line)
-            hint.setStyleSheet("color: #555555;")
-            hints.addWidget(hint)
-        layout.addLayout(hints)
+        self.build_parameter_controls(layout)
         layout.addStretch(1)
 
+        self.realtime_btn = QPushButton()
+        self.realtime_btn.setFixedHeight(28)
+        self.realtime_btn.setMinimumWidth(96)
+        self.realtime_btn.setToolTip("切换实时更新（也可左键点击画布）")
+        self.realtime_btn.clicked.connect(self.toggle_realtime_update)
+        layout.addWidget(self.realtime_btn)
+
+        reset_btn = QPushButton("重置视图")
+        reset_btn.setFixedHeight(28)
+        reset_btn.setToolTip("回到默认缩放和视图中心")
+        reset_btn.clicked.connect(self.reset_views)
+        layout.addWidget(reset_btn)
+
+        self.custom_toggle = QPushButton("自定义函数")
+        self.custom_toggle.setFixedHeight(28)
+        self.custom_toggle.setToolTip("展开或收起自定义迭代表达式编辑器")
+        self.custom_toggle.clicked.connect(self.toggle_custom_panel)
+        layout.addWidget(self.custom_toggle)
+
         self._sync_realtime_button()
-        return group
+        return bar
+
+    def labeled_control(self, text: str, control: QWidget) -> QWidget:
+        """Small gray label + control, for the single-row toolbar."""
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        label = QLabel(text)
+        label.setStyleSheet("color: #777777;")
+        row.addWidget(label)
+        row.addWidget(control)
+        return box
+
+    def _separator(self) -> QWidget:
+        line = QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #ececea;")
+        return line
+
+    def create_custom_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("fxPanel")
+        panel.setStyleSheet(
+            "#fxPanel { background-color: #f7f7f4;"
+            " border: 1px solid #e8e8e3; border-radius: 6px; }")
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        self.custom_edit = QPlainTextEdit()
+        self.custom_edit.setFixedHeight(56)
+        self.custom_edit.setPlaceholderText(self.custom_placeholder)
+        self.custom_edit.setToolTip("仅执行你信任的本地表达式")
+        layout.addWidget(self.custom_edit, 1)
+
+        self.build_custom_controls(layout)
+
+        apply_btn = QPushButton("应用")
+        apply_btn.setFixedSize(84, 28)
+        apply_btn.setToolTip("编译并启用当前表达式")
+        apply_btn.clicked.connect(self.apply_custom_function)
+        layout.addWidget(apply_btn, 0, Qt.AlignBottom)
+
+        panel.setVisible(False)
+        self.custom_panel = panel
+        return panel
+
+    def toggle_custom_panel(self):
+        shown = not self.custom_panel.isVisible()
+        self.custom_panel.setVisible(shown)
+        self.custom_toggle.setText("收起" if shown else "自定义函数")
+
+    def create_status_bar(self):
+        status = self.statusBar()
+        status.setSizeGripEnabled(False)
+        status.setStyleSheet(
+            "QStatusBar { border-top: 1px solid #ececea; background: #ffffff; }"
+            "QStatusBar::item { border: none; }")
+
+        fixed = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+
+        self.c_label = QLabel(self._c_text())
+        self.c_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.c_label.setToolTip("当前 Julia / Nova 参数 c（可选中复制）")
+        c_font = QFont(fixed)
+        c_font.setBold(True)
+        c_font.setPointSizeF(c_font.pointSizeF() + 1.0)
+        self.c_label.setFont(c_font)
+        status.addWidget(self.c_label)
+
+        self.hint_label = QLabel(" · ".join(self.info_text.splitlines()))
+        self.hint_label.setStyleSheet(
+            "color: #8a8a86; padding-left: 18px;")
+        status.addWidget(self.hint_label, 1)
+
+        self.zoom_label = QLabel("缩放 1.00×")
+        zoom_font = QFont(fixed)
+        zoom_font.setPointSizeF(zoom_font.pointSizeF() + 0.5)
+        self.zoom_label.setFont(zoom_font)
+        self.zoom_label.setStyleSheet("color: #444444; padding-right: 6px;")
+        self.zoom_label.setToolTip("当前画布的放大倍数（相对默认视图）")
+        status.addPermanentWidget(self.zoom_label)
 
     def create_display_area(self) -> QWidget:
         self.left_widget = self.create_canvas(is_left=True)
         self.right_widget = self.create_canvas(is_left=False)
         self.display_area = SquarePairArea(self.left_widget, self.right_widget)
+        self.readout_widget = self.left_widget
         return self.display_area
 
-    def create_antialias_combo(self) -> QComboBox:
-        self.aa_combo = QComboBox()
-        self.aa_combo.addItems(["1x (无)", "2x", "4x"])
-        self.aa_combo.setFixedSize(132, 26)
-        self.aa_combo.setToolTip("超采样倍率；4x 最清晰，也更耗 GPU")
-        self.aa_combo.currentIndexChanged.connect(self.on_aa_changed)
-        return self.aa_combo
-
-    def create_custom_edit(self, placeholder: str, height: int) -> QPlainTextEdit:
-        self.custom_edit = QPlainTextEdit()
-        self.custom_edit.setFixedHeight(height)
-        self.custom_edit.setPlaceholderText(placeholder)
-        self.custom_edit.setToolTip("仅执行你信任的本地表达式")
-        return self.custom_edit
-
-    def create_apply_button(self) -> QPushButton:
-        button = QPushButton("应用自定义函数")
-        button.setFixedHeight(28)
-        button.setMinimumWidth(128)
-        button.setToolTip("编译并启用当前表达式")
-        button.clicked.connect(self.apply_custom_function)
-        return button
-
     # ------------------------------------------------------------------
-    # Shared state changes
+    # 读数：c 的有效位数跟随当前缩放，放大倍数单独显示
     # ------------------------------------------------------------------
+    _SUPERSCRIPT = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+    _MAX_C_DECIMALS = 15
+
+    def _c_decimals(self) -> int:
+        """小数位数 = 当前视图一个像素对应的复数步长。"""
+        widget = self.left_widget
+        if widget is None or widget.height() <= 0 or widget.view_scale <= 0.0:
+            return 4
+        pixel = 2.0 * widget.view_scale / widget.height()
+        if not math.isfinite(pixel) or pixel <= 0.0:
+            return 4
+        return max(4, min(self._MAX_C_DECIMALS, int(math.ceil(-math.log10(pixel)))))
+
+    def _zoom_text(self, widget) -> str:
+        if widget is None or widget.view_scale <= 0.0 or widget.default_view_scale <= 0.0:
+            return "缩放 —"
+        zoom = widget.default_view_scale / widget.view_scale
+        if zoom < 0.01:
+            return "缩放 <0.01×"
+        if zoom < 10.0:
+            return f"缩放 {zoom:.2f}×"
+        if zoom < 1000.0:
+            return f"缩放 {zoom:.0f}×"
+        exponent = int(math.floor(math.log10(zoom)))
+        mantissa = zoom / (10.0 ** exponent)
+        return "缩放 " + f"{mantissa:.1f}×10" + str(exponent).translate(self._SUPERSCRIPT)
+
     def _c_text(self) -> str:
+        decimals = self._c_decimals()
         sign = "+" if self.c_imag >= 0 else "-"
-        return f"c = {self.c_real:.4f} {sign} {abs(self.c_imag):.4f}i"
+        return f"c = {self.c_real:.{decimals}f} {sign} {abs(self.c_imag):.{decimals}f}i"
+
+    def refresh_readouts(self, widget=None):
+        if widget is not None:
+            self.readout_widget = widget
+        widget = self.readout_widget or self.left_widget
+        if getattr(self, "zoom_label", None) is not None:
+            self.zoom_label.setText(self._zoom_text(widget))
+        if getattr(self, "c_label", None) is not None:
+            self.c_label.setText(self._c_text())
+
+    def view_changed(self, widget):
+        """Canvas hook: the user zoomed/panned, update the readouts."""
+        self.refresh_readouts(widget)
 
     def update_c_label(self):
         self.c_label.setText(self._c_text())
 
+    # ------------------------------------------------------------------
+    # Shared state changes
+    # ------------------------------------------------------------------
     def mark_all_dirty(self, preview: bool = False):
         """Mark both canvases dirty.
 
@@ -358,6 +428,16 @@ class DualCanvasFractalWindow(QMainWindow):
             widget.view_scale = widget.default_view_scale
             widget.needs_recompute = True
             widget.update()
+        self.readout_widget = self.left_widget
+        self.refresh_readouts()
+
+    def create_antialias_combo(self) -> QComboBox:
+        self.aa_combo = QComboBox()
+        self.aa_combo.addItems(["无", "2×", "4×"])
+        self.aa_combo.setFixedSize(76, 26)
+        self.aa_combo.setToolTip("超采样倍率：无 = 1x；4× 最清晰，也更耗 GPU")
+        self.aa_combo.currentIndexChanged.connect(self.on_aa_changed)
+        return self.aa_combo
 
     def apply_custom_expression(
         self, expression: str, build: Callable[[str], None], success_message: str
@@ -385,11 +465,11 @@ class DualCanvasFractalWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Hooks implemented by each app
     # ------------------------------------------------------------------
-    def create_parameter_group(self) -> QGroupBox:
+    def build_parameter_controls(self, layout):
         raise NotImplementedError
 
-    def create_custom_group(self) -> QGroupBox:
-        raise NotImplementedError
+    def build_custom_controls(self, layout):
+        """Extra controls for the custom-function panel (e.g. root count)."""
 
     def create_canvas(self, is_left: bool):
         raise NotImplementedError

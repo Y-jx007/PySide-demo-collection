@@ -1,13 +1,11 @@
 from common.taichi_base import (ti)
 from common.custom_base import (BaseFractalWidget, c64)
-from common.qt_base import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPainter, QSpinBox,
-                            QVBoxLayout, Qt, run_app)
+from common.qt_base import (QComboBox, QDoubleSpinBox, QPainter, QSpinBox, run_app)
 
 from support.fractals.fractal_common import (
     DualCanvasFractalWindow,
     compile_complex_function,
     draw_orbit,
-    hint_label,
 )
 from support.fractals.fractal_kernels import (
     MANDELBROT_FUNCTION_NAMES,
@@ -18,10 +16,7 @@ from support.fractals.fractal_kernels import (
 
 ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
-INFO_TEXT = (
-    "左键 切换实时更新 · 中键 拖拽 · 滚轮 缩放\n"
-    "左 Mandelbrot · 右 Julia（鼠标选取 c）"
-)
+INFO_TEXT = "左键 实时更新 · 中键 拖拽 · 滚轮 缩放 · 左 Mandelbrot · 右 Julia（鼠标选取 c）"
 CUSTOM_PLACEHOLDER = (
     "输入表达式，如: csqr(z) + csin(z)\n"
     "可用: csqr, cconj, cmul, cdiv, csin,\n"
@@ -104,6 +99,8 @@ class MandelJuliaWidget(BaseFractalWidget):
 
 # -------------------- 主窗口 --------------------
 class ComplexDynamicsApp(DualCanvasFractalWindow):
+    custom_placeholder = CUSTOM_PLACEHOLDER
+
     def __init__(self):
         super().__init__(
             "Mandelbrot / Julia 集 — 双精度 Taichi GPU",
@@ -128,60 +125,34 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         self.setup_ui()
 
     # ------------------------------------------------------------------
-    # 控件
+    # 工具条控件（单行，标签在左、控件在右）
     # ------------------------------------------------------------------
-    def create_parameter_group(self):
-        group = QGroupBox("参数设置")
-        form = QFormLayout(group)
-        form.setContentsMargins(12, 18, 12, 10)
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(6)
-        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
-
+    def build_parameter_controls(self, layout):
         self.function_combo = QComboBox()
         self.function_combo.addItems(MANDELBROT_FUNCTION_NAMES)
         self.function_combo.setFixedSize(132, 26)
         self.function_combo.setToolTip("选择迭代函数；首次切换会编译专用内核")
         self.function_combo.currentIndexChanged.connect(self.on_function_changed)
-        form.addRow("函数:", self.function_combo)
+        layout.addWidget(self.labeled_control("函数", self.function_combo))
 
         self.iter_spin = QSpinBox()
         self.iter_spin.setRange(50, 50000)
         self.iter_spin.setValue(self.max_iterations)
-        self.iter_spin.setFixedSize(132, 26)
+        self.iter_spin.setFixedSize(96, 26)
         self.iter_spin.setToolTip("最大迭代次数")
         self.iter_spin.valueChanged.connect(self.on_parameters_changed)
-        form.addRow("迭代:", self.iter_spin)
+        layout.addWidget(self.labeled_control("迭代", self.iter_spin))
 
         self.radius_spin = QDoubleSpinBox()
         self.radius_spin.setRange(2.0, 20.0)
         self.radius_spin.setDecimals(2)
         self.radius_spin.setValue(self.escape_radius)
-        self.radius_spin.setFixedSize(132, 26)
+        self.radius_spin.setFixedSize(96, 26)
         self.radius_spin.setToolTip("逃逸半径")
         self.radius_spin.valueChanged.connect(self.on_parameters_changed)
-        form.addRow("半径:", self.radius_spin)
+        layout.addWidget(self.labeled_control("半径", self.radius_spin))
 
-        form.addRow("抗锯齿:", self.create_antialias_combo())
-        return group
-
-    def create_custom_group(self):
-        group = QGroupBox("自定义函数 (Taichi 表达式)")
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(12, 18, 12, 10)
-        layout.setSpacing(8)
-        layout.addWidget(self.create_custom_edit(CUSTOM_PLACEHOLDER, 84))
-
-        footer = QHBoxLayout()
-        footer.setSpacing(8)
-        footer.addWidget(hint_label("仅执行本地可信表达式"))
-        footer.addStretch(1)
-        footer.addWidget(self.create_apply_button())
-        layout.addLayout(footer)
-        layout.addStretch(1)
-        return group
+        layout.addWidget(self.labeled_control("抗锯齿", self.create_antialias_combo()))
 
     def create_canvas(self, is_left):
         widget = MandelJuliaWidget(self, is_left)
