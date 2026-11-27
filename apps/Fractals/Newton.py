@@ -56,6 +56,11 @@ class NewtonNovaWidget(BaseFractalWidget):
 
 # -------------------- 主窗口 --------------------
 class NewtonNovaApp(DualCanvasFractalWindow):
+    # Newton's flat root basins need native-resolution rendering; otherwise
+    # Windows display scaling stretches the logical-size bitmap and softens
+    # every root boundary.
+    high_dpi_render = True
+
     def __init__(self):
         super().__init__(
             "牛顿 / Nova 分形 — 双精度 Taichi GPU",
@@ -108,6 +113,7 @@ class NewtonNovaApp(DualCanvasFractalWindow):
         form.addRow("阈值:", self.threshold_spin)
 
         form.addRow("抗锯齿:", self.create_antialias_combo())
+        self.aa_combo.setCurrentIndex(1)
         return group
 
     def create_custom_group(self):

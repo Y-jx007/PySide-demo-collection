@@ -168,6 +168,10 @@ class BaseFractalWidget(QWidget):
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
             return None, None, None, None
+        if getattr(self.parent_app, "high_dpi_render", False):
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            w = max(1, int(round(w * dpr)))
+            h = max(1, int(round(h * dpr)))
         return render_dimensions(
             w, h, self.parent_app.antialias_factor, preview=self._interactive
         )
@@ -219,6 +223,8 @@ class BaseFractalWidget(QWidget):
             buffer = None
         elif buffer is None:
             buffer = array
+        if getattr(self.parent_app, "high_dpi_render", False):
+            image.setDevicePixelRatio(max(1.0, float(self.devicePixelRatioF())))
         self.image = image
         self._image_buffer = buffer
         self.needs_recompute = False
