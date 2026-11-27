@@ -17,7 +17,7 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -164,8 +164,8 @@ class DualCanvasFractalWindow(QMainWindow):
     def __init__(self, title: str, info_text: str, default_view_scale: float = 1.0):
         super().__init__()
         self.setWindowTitle(title)
-        self.setMinimumSize(1000, 660)
-        self.resize(1080, 700)
+        self.setMinimumSize(1000, 700)
+        self.resize(1080, 730)
         self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
         self.default_view_scale = float(default_view_scale)
         self.info_text = info_text
@@ -186,103 +186,104 @@ class DualCanvasFractalWindow(QMainWindow):
         self.function_revision = 0
 
     # ------------------------------------------------------------------
-    # 界面骨架：一条工具条 + 两张画布 + 底部读数
+    # 界面骨架：上方左右两块（参数 / 自定义函数）+ 方形画布 + 底部读数
     # ------------------------------------------------------------------
     def setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
 
-        layout.addWidget(self.create_toolbar())
-        layout.addWidget(self._separator())
-        layout.addWidget(self.create_custom_panel())
+        layout.addWidget(self.create_top_area())
         layout.addWidget(self.create_display_area(), 1)
         self.create_status_bar()
         self.refresh_readouts()
 
-    def create_toolbar(self) -> QWidget:
-        bar = QWidget()
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(6, 0, 6, 0)
-        layout.setSpacing(26)
+    def create_top_area(self) -> QWidget:
+        area = QWidget()
+        area.setFixedHeight(142)
+        layout = QHBoxLayout(area)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        layout.addWidget(self.create_parameter_box())
+        layout.addWidget(self.create_custom_box(), 1)
+        return area
 
-        self.build_parameter_controls(layout)
-        layout.addStretch(1)
+    def create_parameter_box(self) -> QGroupBox:
+        box = QGroupBox("参数与控制")
+        box.setFixedWidth(470)
+        outer = QHBoxLayout(box)
+        outer.setContentsMargins(12, 18, 12, 10)
+        outer.setSpacing(18)
 
+        rows = QVBoxLayout()
+        rows.setSpacing(10)
+        primary = QHBoxLayout()
+        primary.setSpacing(16)
+        secondary = QHBoxLayout()
+        secondary.setSpacing(16)
+        self.build_parameter_controls(primary, secondary)
+        rows.addLayout(primary)
+        rows.addLayout(secondary)
+        rows.addStretch(1)
+        outer.addLayout(rows)
+        outer.addStretch(1)
+
+        actions = QVBoxLayout()
+        actions.setSpacing(10)
         self.realtime_btn = QPushButton()
-        self.realtime_btn.setFixedHeight(28)
-        self.realtime_btn.setMinimumWidth(96)
+        self.realtime_btn.setFixedSize(104, 28)
         self.realtime_btn.setToolTip("切换实时更新（也可左键点击画布）")
         self.realtime_btn.clicked.connect(self.toggle_realtime_update)
-        layout.addWidget(self.realtime_btn)
+        actions.addWidget(self.realtime_btn)
 
         reset_btn = QPushButton("重置视图")
-        reset_btn.setFixedHeight(28)
+        reset_btn.setFixedSize(104, 28)
         reset_btn.setToolTip("回到默认缩放和视图中心")
         reset_btn.clicked.connect(self.reset_views)
-        layout.addWidget(reset_btn)
-
-        self.custom_toggle = QPushButton("自定义函数")
-        self.custom_toggle.setFixedHeight(28)
-        self.custom_toggle.setToolTip("展开或收起自定义迭代表达式编辑器")
-        self.custom_toggle.clicked.connect(self.toggle_custom_panel)
-        layout.addWidget(self.custom_toggle)
+        actions.addWidget(reset_btn)
+        actions.addStretch(1)
+        outer.addLayout(actions)
 
         self._sync_realtime_button()
-        return bar
+        return box
+
+    def create_custom_box(self) -> QGroupBox:
+        box = QGroupBox("自定义函数")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(12, 18, 12, 10)
+        layout.setSpacing(8)
+
+        self.custom_edit = QPlainTextEdit()
+        self.custom_edit.setPlaceholderText(self.custom_placeholder)
+        self.custom_edit.setMinimumHeight(56)
+        self.custom_edit.setToolTip("仅执行你信任的本地表达式")
+        layout.addWidget(self.custom_edit, 1)
+
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+        self.build_custom_controls(footer)
+        footer.addStretch(1)
+        apply_btn = QPushButton("应用")
+        apply_btn.setFixedSize(84, 28)
+        apply_btn.setToolTip("编译并启用当前表达式")
+        apply_btn.clicked.connect(self.apply_custom_function)
+        footer.addWidget(apply_btn)
+        layout.addLayout(footer)
+        return box
 
     def labeled_control(self, text: str, control: QWidget) -> QWidget:
-        """Small gray label + control, for the single-row toolbar."""
+        """Small gray label + control."""
         box = QWidget()
         row = QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(10)
+        row.setSpacing(8)
         label = QLabel(text)
         label.setStyleSheet("color: #777777;")
         row.addWidget(label)
         row.addWidget(control)
         return box
-
-    def _separator(self) -> QWidget:
-        line = QFrame()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background-color: #ececea;")
-        return line
-
-    def create_custom_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("fxPanel")
-        panel.setStyleSheet(
-            "#fxPanel { background-color: #f7f7f4;"
-            " border: 1px solid #e8e8e3; border-radius: 6px; }")
-        layout = QHBoxLayout(panel)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
-
-        self.custom_edit = QPlainTextEdit()
-        self.custom_edit.setFixedHeight(56)
-        self.custom_edit.setPlaceholderText(self.custom_placeholder)
-        self.custom_edit.setToolTip("仅执行你信任的本地表达式")
-        layout.addWidget(self.custom_edit, 1)
-
-        self.build_custom_controls(layout)
-
-        apply_btn = QPushButton("应用")
-        apply_btn.setFixedSize(84, 28)
-        apply_btn.setToolTip("编译并启用当前表达式")
-        apply_btn.clicked.connect(self.apply_custom_function)
-        layout.addWidget(apply_btn, 0, Qt.AlignBottom)
-
-        panel.setVisible(False)
-        self.custom_panel = panel
-        return panel
-
-    def toggle_custom_panel(self):
-        shown = not self.custom_panel.isVisible()
-        self.custom_panel.setVisible(shown)
-        self.custom_toggle.setText("收起" if shown else "自定义函数")
 
     def create_status_bar(self):
         status = self.statusBar()
@@ -308,6 +309,7 @@ class DualCanvasFractalWindow(QMainWindow):
         status.addWidget(self.hint_label, 1)
 
         self.zoom_label = QLabel("缩放 1.00×")
+        self.zoom_label.setTextFormat(Qt.RichText)
         zoom_font = QFont(fixed)
         zoom_font.setPointSizeF(zoom_font.pointSizeF() + 0.5)
         self.zoom_label.setFont(zoom_font)
@@ -325,7 +327,6 @@ class DualCanvasFractalWindow(QMainWindow):
     # ------------------------------------------------------------------
     # 读数：c 的有效位数跟随当前缩放，放大倍数单独显示
     # ------------------------------------------------------------------
-    _SUPERSCRIPT = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
     _MAX_C_DECIMALS = 15
 
     def _c_decimals(self) -> int:
@@ -350,7 +351,8 @@ class DualCanvasFractalWindow(QMainWindow):
             return f"缩放 {zoom:.0f}×"
         exponent = int(math.floor(math.log10(zoom)))
         mantissa = zoom / (10.0 ** exponent)
-        return "缩放 " + f"{mantissa:.1f}×10" + str(exponent).translate(self._SUPERSCRIPT)
+        # 富文本上标：等宽字体里 Unicode 上标数字会掉字形，看起来像 10^1^4。
+        return f"缩放 {mantissa:.1f}×10<sup>{exponent}</sup>"
 
     def _c_text(self) -> str:
         decimals = self._c_decimals()
@@ -465,7 +467,7 @@ class DualCanvasFractalWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Hooks implemented by each app
     # ------------------------------------------------------------------
-    def build_parameter_controls(self, layout):
+    def build_parameter_controls(self, primary_row, secondary_row):
         raise NotImplementedError
 
     def build_custom_controls(self, layout):

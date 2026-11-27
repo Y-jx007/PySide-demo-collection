@@ -125,34 +125,34 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         self.setup_ui()
 
     # ------------------------------------------------------------------
-    # 工具条控件（单行，标签在左、控件在右）
+    # 参数控件（左上半边：2×2 参数格 + 右侧动作按钮）
     # ------------------------------------------------------------------
-    def build_parameter_controls(self, layout):
+    def build_parameter_controls(self, primary, secondary):
         self.function_combo = QComboBox()
         self.function_combo.addItems(MANDELBROT_FUNCTION_NAMES)
-        self.function_combo.setFixedSize(132, 26)
+        self.function_combo.setFixedSize(120, 26)
         self.function_combo.setToolTip("选择迭代函数；首次切换会编译专用内核")
         self.function_combo.currentIndexChanged.connect(self.on_function_changed)
-        layout.addWidget(self.labeled_control("函数", self.function_combo))
+        primary.addWidget(self.labeled_control("函数", self.function_combo))
 
         self.iter_spin = QSpinBox()
         self.iter_spin.setRange(50, 50000)
         self.iter_spin.setValue(self.max_iterations)
-        self.iter_spin.setFixedSize(96, 26)
+        self.iter_spin.setFixedSize(88, 26)
         self.iter_spin.setToolTip("最大迭代次数")
         self.iter_spin.valueChanged.connect(self.on_parameters_changed)
-        layout.addWidget(self.labeled_control("迭代", self.iter_spin))
+        primary.addWidget(self.labeled_control("迭代", self.iter_spin))
 
         self.radius_spin = QDoubleSpinBox()
         self.radius_spin.setRange(2.0, 20.0)
         self.radius_spin.setDecimals(2)
         self.radius_spin.setValue(self.escape_radius)
-        self.radius_spin.setFixedSize(96, 26)
+        self.radius_spin.setFixedSize(88, 26)
         self.radius_spin.setToolTip("逃逸半径")
         self.radius_spin.valueChanged.connect(self.on_parameters_changed)
-        layout.addWidget(self.labeled_control("半径", self.radius_spin))
+        secondary.addWidget(self.labeled_control("半径", self.radius_spin))
 
-        layout.addWidget(self.labeled_control("抗锯齿", self.create_antialias_combo()))
+        secondary.addWidget(self.labeled_control("抗锯齿", self.create_antialias_combo()))
 
     def create_canvas(self, is_left):
         widget = MandelJuliaWidget(self, is_left)
