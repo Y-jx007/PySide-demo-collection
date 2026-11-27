@@ -1,6 +1,6 @@
 from common.taichi_base import (ti)
 from common.custom_base import (BaseFractalWidget)
-from common.qt_base import (QComboBox, QDoubleSpinBox, QSpinBox, Qt, run_app)
+from common.qt_base import (QComboBox, QDoubleSpinBox, QSpinBox, run_app)
 
 from support.fractals.fractal_common import (
     DualCanvasFractalWindow,
@@ -159,8 +159,7 @@ class NewtonNovaApp(DualCanvasFractalWindow):
         self.roots_spin.setFixedSize(64, 26)
         self.roots_spin.setToolTip("自定义函数的根数量（用于角度着色）")
         self.roots_spin.valueChanged.connect(self.on_custom_roots_changed)
-        layout.addWidget(
-            self.labeled_control("根数量", self.roots_spin), 0, Qt.AlignBottom)
+        layout.addWidget(self.labeled_control("根数量", self.roots_spin))
 
     def create_canvas(self, is_left):
         widget = NewtonNovaWidget(self, is_left)

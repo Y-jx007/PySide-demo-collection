@@ -251,26 +251,33 @@ class DualCanvasFractalWindow(QMainWindow):
 
     def create_custom_box(self) -> QGroupBox:
         box = QGroupBox("自定义函数")
-        layout = QVBoxLayout(box)
+        layout = QHBoxLayout(box)
         layout.setContentsMargins(12, 18, 12, 10)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
 
         self.custom_edit = QPlainTextEdit()
         self.custom_edit.setPlaceholderText(self.custom_placeholder)
-        self.custom_edit.setMinimumHeight(56)
+        self.custom_edit.setMinimumHeight(64)
         self.custom_edit.setToolTip("仅执行你信任的本地表达式")
+        self.custom_edit.setStyleSheet(
+            "QPlainTextEdit { background: #fdfdfb; color: #222222;"
+            " border: 1px solid #c9c9c2; border-radius: 4px;"
+            " padding: 4px 6px; selection-background-color: #d8dde6; }"
+            "QPlainTextEdit:focus { border-color: #8f8f86; }")
         layout.addWidget(self.custom_edit, 1)
 
-        footer = QHBoxLayout()
-        footer.setSpacing(10)
-        self.build_custom_controls(footer)
-        footer.addStretch(1)
+        # 右侧一列：根数量（如有）+ 应用，垂直居中，避免按钮独霸一行。
+        side = QVBoxLayout()
+        side.setSpacing(10)
+        side.addStretch(1)
+        self.build_custom_controls(side)
         apply_btn = QPushButton("应用")
         apply_btn.setFixedSize(84, 28)
         apply_btn.setToolTip("编译并启用当前表达式")
         apply_btn.clicked.connect(self.apply_custom_function)
-        footer.addWidget(apply_btn)
-        layout.addLayout(footer)
+        side.addWidget(apply_btn)
+        side.addStretch(1)
+        layout.addLayout(side)
         return box
 
     def labeled_control(self, text: str, control: QWidget) -> QWidget:
