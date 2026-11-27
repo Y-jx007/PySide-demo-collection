@@ -21,7 +21,7 @@ try:
 except Exception:
     _sps = None
 
-mp.dps = 15
+mp.mp.dps = 15
 
 
 def _wrap_mp(fn):
