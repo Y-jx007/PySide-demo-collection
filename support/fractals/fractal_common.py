@@ -350,18 +350,16 @@ class DualCanvasFractalWindow(QMainWindow):
         if widget is None or widget.view_scale <= 0.0 or widget.default_view_scale <= 0.0:
             return "缩放 —"
         zoom = widget.default_view_scale / widget.view_scale
-        deep = getattr(widget, "deep_precision", False)
-        suffix = " · 扩展精度" if deep else ""
         if zoom < 0.01:
-            return "缩放 <0.01×" + suffix
+            return "缩放 <0.01×"
         if zoom < 10.0:
-            return f"缩放 {zoom:.2f}×" + suffix
+            return f"缩放 {zoom:.2f}×"
         if zoom < 1000.0:
-            return f"缩放 {zoom:.0f}×" + suffix
+            return f"缩放 {zoom:.0f}×"
         exponent = int(math.floor(math.log10(zoom)))
         mantissa = zoom / (10.0 ** exponent)
         # 富文本上标：等宽字体里 Unicode 上标数字会掉字形，看起来像 10^1^4。
-        return f"缩放 {mantissa:.1f}×10<sup>{exponent}</sup>" + suffix
+        return f"缩放 {mantissa:.1f}×10<sup>{exponent}</sup>"
 
     def _c_text(self) -> str:
         decimals = self._c_decimals()
@@ -435,7 +433,9 @@ class DualCanvasFractalWindow(QMainWindow):
         for widget in (self.left_widget, self.right_widget):
             if widget is None:
                 continue
-            widget.reset_view()
+            widget.view_center = list(widget.default_center)
+            widget.view_scale = widget.default_view_scale
+            widget.needs_recompute = True
             widget.update()
         self.readout_widget = self.left_widget
         self.refresh_readouts()

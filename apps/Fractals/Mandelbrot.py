@@ -12,9 +12,7 @@ from support.fractals.fractal_kernels import (
     compute_orbit,
     mandelbrot_preset,
     render_mandelbrot,
-    render_mandelbrot_perturb,
 )
-from support.fractals.reference_orbit import reference_orbit
 
 ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
@@ -38,54 +36,25 @@ class MandelJuliaWidget(BaseFractalWidget):
         w, h, rw, rh = self.get_render_dims()
         if w is None:
             return
+        self.ensure_taichi_field(rw, rh)
         app = self.parent_app
+        transform = self.view_transform(rw, rh)
+
         custom = bool(app.using_custom_function)
         func = app.custom_function if custom else mandelbrot_preset
         # func_type is ignored when a custom function is active; pin it to 0
         # so the warmed kernel and the render call share one specialization.
         func_type = 0 if custom else app.function_type
-        quantum = self.sampling_quantum(w, h)
-
-        # f64 的采样网格耗尽后，z² 改用扰动法：中心用 50 位小数算参考轨道，
-        # 逐像素只迭代 f64 偏差。预览也用同一条路径，否则 f64 预览的中心只有
-        # 1e-16 精度，看到的根本不是同一块区域（画面会“跳”）。
-        deep = (not custom) and func_type == 0 and quantum > 0.0
-        use_perturbation = deep
-        self.deep_precision = use_perturbation
-        # 扰动法一拍要跑满迭代，比 f64 贵；交互时先按 1/3 分辨率出图，
-        # 松手后再全分辨率精修，画面区域始终一致。
-        if deep and self._interactive:
-            rw = max(1, rw // 3)
-            rh = max(1, rh // 3)
-        self.ensure_taichi_field(rw, rh)
-        transform = self.view_transform(rw, rh)
-
-        if use_perturbation:
-            ref_re, ref_im = app.reference_fields(
-                self.center_ext, app.max_iterations,
-                0 if self.is_left else 1,
-                float(app.c_real), float(app.c_imag),
-            )
-            render_mandelbrot_perturb(
-                self.taichi_field, rw, rh,
-                app.max_iterations, float(app.escape_radius),
-                ref_re, ref_im,
-                0 if self.is_left else 1,
-                float(app.c_real), float(app.c_imag),
-                transform.scale_x, (rw / rh) * transform.view_scale,
-                transform.scale_y, transform.view_scale,
-            )
-        else:
-            render_mandelbrot(
-                self.taichi_field, rw, rh,
-                app.max_iterations, float(app.escape_radius),
-                float(app.c_real), float(app.c_imag),
-                0 if self.is_left else 1,
-                transform.scale_x, transform.offset_x,
-                transform.scale_y, transform.offset_y,
-                quantum,
-                func, custom, func_type,
-            )
+        render_mandelbrot(
+            self.taichi_field, rw, rh,
+            app.max_iterations, float(app.escape_radius),
+            float(app.c_real), float(app.c_imag),
+            0 if self.is_left else 1,
+            transform.scale_x, transform.offset_x,
+            transform.scale_y, transform.offset_y,
+            self.sampling_quantum(w, h),
+            func, custom, func_type,
+        )
         self.field_to_image(rw, rh, w, h)
         app.ensure_orbit_kernel_warm()
 
@@ -120,11 +89,6 @@ class MandelJuliaWidget(BaseFractalWidget):
         super().paintEvent(event)
         if not self.is_left:
             return
-        # 轨道叠加用的是 f64 种子和 f64 视图变换。越过 f64 采样极限后，
-        # 种子与坐标都落在像素尺度以下，画出来是一条乱线；而轨道点本身
-        # 是 O(1) 量级、离这个 1e-20 的视野极其遥远，正确实现也看不到。
-        if self.sampling_quantum() > 0.0:
-            return
         points = self._current_orbit()
         if points is None:
             return
@@ -158,7 +122,6 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         self._warmup_orbit_field = None
         self._warmup_orbit_length = None
         self._orbit_warm_revision = -1
-        self._reference_cache = {}
         self.setup_ui()
 
     # ------------------------------------------------------------------
@@ -269,35 +232,6 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         # short even when the user selected a very high iteration count.
         self.compute_orbit(float(self.escape_radius) * 2.0, 0.0)
         self._orbit_warm_revision = self.function_revision
-
-    # ------------------------------------------------------------------
-    # 扰动法：高精度参考轨道
-    # ------------------------------------------------------------------
-    def reference_fields(self, center_ext, max_iter, display_mode, c_real, c_imag):
-        """Return Taichi fields holding the reference orbit for this view."""
-        key = (tuple(center_ext), int(max_iter), int(display_mode),
-               float(c_real), float(c_imag))
-        cached = self._reference_cache.get(key)
-        if cached is not None:
-            return cached
-
-        if display_mode == 0:
-            re, im = reference_orbit(
-                center_ext[0], center_ext[1], center_ext[2], center_ext[3],
-                max_iter)
-        else:
-            re, im = reference_orbit(
-                center_ext[0], center_ext[1], center_ext[2], center_ext[3],
-                max_iter, julia_re=c_real, julia_im=c_imag)
-
-        ref_re = ti.field(dtype=ti.f64, shape=(re.size,))
-        ref_im = ti.field(dtype=ti.f64, shape=(im.size,))
-        ref_re.from_numpy(re)
-        ref_im.from_numpy(im)
-        if len(self._reference_cache) >= 4:
-            self._reference_cache.clear()
-        self._reference_cache[key] = (ref_re, ref_im)
-        return ref_re, ref_im
 
     def compute_orbit(self, c_real, c_imag):
         max_iter = max(1, int(self.max_iterations))
