@@ -1,8 +1,9 @@
 from common.taichi_base import (ti)
 from common.custom_base import (BaseFractalWidget, c64)
-from common.qt_base import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPainter, QSpinBox,
-                            QVBoxLayout, Qt, run_app)
+from common.qt_base import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPainter, QPushButton,
+                            QSpinBox, QVBoxLayout, Qt, run_app)
 
+from support.fractals.deep_zoom_dialog import DeepZoomDialog
 from support.fractals.fractal_common import (
     DualCanvasFractalWindow,
     compile_complex_function,
@@ -164,7 +165,24 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         form.addRow("半径:", self.radius_spin)
 
         form.addRow("抗锯齿:", self.create_antialias_combo())
+
+        self.deep_btn = QPushButton("深度缩放…")
+        self.deep_btn.setFixedSize(132, 26)
+        self.deep_btn.setToolTip("任意精度 CPU 渲染，支持远超 f64 的缩放倍率")
+        self.deep_btn.clicked.connect(self.open_deep_zoom)
+        form.addRow("深度缩放:", self.deep_btn)
         return group
+
+    def open_deep_zoom(self):
+        left = self.left_widget
+        dialog = DeepZoomDialog(
+            center_x=left.view_center[0],
+            center_y=left.view_center[1],
+            scale=left.view_scale,
+            max_iter=self.max_iterations,
+            parent=self,
+        )
+        dialog.exec()
 
     def create_custom_group(self):
         group = QGroupBox("自定义函数 (Taichi 表达式)")
