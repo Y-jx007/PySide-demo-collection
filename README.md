@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/Y-jx007/PySide-demo-collection)](https://github.com/Y-jx007/PySide-demo-collection/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![启动器预览](https://github.com/user-attachments/assets/ff9e75e9-4eb0-4258-8a69-0d75faad1c13)
+![启动器预览：5 个分类、41 个应用](docs/images/launcher.png)
 
 ## 这是什么
 
