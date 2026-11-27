@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 import taichi_forge as ti
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QPointF
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -299,7 +299,13 @@ class BaseFractalWidget(QWidget):
         if self.image is not None and not self.image.isNull():
             # Exact-size bitmap; avoid a second smooth resample.
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-            painter.drawImage(self.rect(), self.image)
+            if getattr(self.parent_app, "high_dpi_render", False):
+                # Draw at the origin so the physical-pixel bitmap is never
+                # scaled by a fractional logical-size difference.
+                painter.fillRect(self.rect(), Qt.black)
+                painter.drawImage(QPointF(0.0, 0.0), self.image)
+            else:
+                painter.drawImage(self.rect(), self.image)
         else:
             painter.fillRect(self.rect(), Qt.black)
         painter.end()

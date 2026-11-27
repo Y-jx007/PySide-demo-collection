@@ -58,12 +58,8 @@ class NewtonNovaWidget(BaseFractalWidget):
 class NewtonNovaApp(DualCanvasFractalWindow):
     # Newton's flat root basins need native-resolution rendering; otherwise
     # Windows display scaling stretches the logical-size bitmap and softens
-    # every root boundary.
+    # every root boundary.  This is DPI sharpness, not anti-aliasing.
     high_dpi_render = True
-    # Keep the same AA while dragging/zooming.  Otherwise the 1x preview is
-    # replaced by a 2x smooth pass after 180 ms, which reads as "blurry, then
-    # suddenly smooth" during every zoom.
-    preview_antialias = 2
 
     def __init__(self):
         super().__init__(
@@ -117,7 +113,7 @@ class NewtonNovaApp(DualCanvasFractalWindow):
         form.addRow("阈值:", self.threshold_spin)
 
         form.addRow("抗锯齿:", self.create_antialias_combo())
-        self.aa_combo.setCurrentIndex(1)
+        self.aa_combo.setCurrentIndex(2)
         return group
 
     def create_custom_group(self):
