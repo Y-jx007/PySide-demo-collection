@@ -16,6 +16,7 @@ from common.custom_function import (
     c64,
     cconj,
     cdiv,
+    cdiv_exact,
     cexp,
     cmul,
     ccos,
@@ -277,6 +278,7 @@ def render_newton(
     display_mode: ti.i32,
     scale_x: ti.f64, offset_x: ti.f64,
     scale_y: ti.f64, offset_y: ti.f64,
+    quantum: ti.f64,
     num_roots: ti.i32,
     func: ti.template(), use_custom: ti.template(), func_type: ti.template(),
 ):
@@ -287,7 +289,14 @@ def render_newton(
 
     ti.loop_config(block_dim=256)
     for i, j in ti.ndrange(width, height):
-        z = c64(i * scale_x + offset_x, j * scale_y + offset_y)
+        u = i * scale_x + offset_x
+        v = j * scale_y + offset_y
+        # 深度缩放：两轴对齐到同一张 f64 网格（理由见 render_mandelbrot）。
+        if quantum > 0.0:
+            inv_q = 1.0 / quantum
+            u = (ti.round(offset_x * inv_q) + ti.round(i * (scale_x * inv_q))) * quantum
+            v = (ti.round(offset_y * inv_q) + ti.round(j * (scale_y * inv_q))) * quantum
+        z = c64(u, v)
         c = c64(c_real, c_imag)
         iterations = 0
         converged = False
@@ -310,10 +319,13 @@ def render_newton(
                 f_z = newton_preset_f(z, func_type)
                 df_z = newton_preset_df(z, func_type)
 
-            if df_z.x * df_z.x + df_z.y * df_z.y < 1e-16:
+            denom = df_z.x * df_z.x + df_z.y * df_z.y
+            if denom <= 0.0:
                 break
 
-            z_new = z - cdiv(f_z, df_z)
+            # 用不设近零保护的除法：临界点附近 1/df 很大，但下一步会把点
+            # 送回单位圆附近并收敛到某个根；用 cdiv 会让这里卡成黑圆盘。
+            z_new = z - cdiv_exact(f_z, df_z)
             if display_mode == 1:   # Nova
                 z_new = z_new + c
 
@@ -391,10 +403,10 @@ def _newton_gray(
             f_z = newton_preset_f(z, func_type)
             df_z = newton_preset_df(z, func_type)
 
-        if df_z.x * df_z.x + df_z.y * df_z.y < 1e-16:
+        if df_z.x * df_z.x + df_z.y * df_z.y <= 0.0:
             break
 
-        z_new = z - cdiv(f_z, df_z)
+        z_new = z - cdiv_exact(f_z, df_z)
         if display_mode == 1:
             z_new = z_new + c
 
@@ -455,6 +467,7 @@ def render_newton_edge_aa(
     display_mode: ti.i32,
     scale_x: ti.f64, offset_x: ti.f64,
     scale_y: ti.f64, offset_y: ti.f64,
+    quantum: ti.f64,
     num_roots: ti.i32,
     func: ti.template(), use_custom: ti.template(), func_type: ti.template(),
     aa_factor: ti.i32,
@@ -466,6 +479,9 @@ def render_newton_edge_aa(
     pixels need subpixel Newton solves.
     """
     inv_aa = 1.0 / ti.cast(aa_factor, ti.f64)
+    inv_q = ti.cast(0.0, ti.f64)
+    if quantum > 0.0:
+        inv_q = 1.0 / quantum
     for i, j in ti.ndrange(width, height):
         base = src[j, i]
         r0 = (base >> 16) & 255
@@ -489,6 +505,13 @@ def render_newton_edge_aa(
                 for sx in range(aa_factor):
                     px = (ti.cast(i, ti.f64) + (ti.cast(sx, ti.f64) + 0.5) * inv_aa) * scale_x + offset_x
                     py = (ti.cast(j, ti.f64) + (ti.cast(sy, ti.f64) + 0.5) * inv_aa) * scale_y + offset_y
+                    if quantum > 0.0:
+                        px = (ti.round(offset_x * inv_q)
+                              + ti.round((ti.cast(i, ti.f64) + (ti.cast(sx, ti.f64) + 0.5) * inv_aa)
+                                         * (scale_x * inv_q))) * quantum
+                        py = (ti.round(offset_y * inv_q)
+                              + ti.round((ti.cast(j, ti.f64) + (ti.cast(sy, ti.f64) + 0.5) * inv_aa)
+                                         * (scale_y * inv_q))) * quantum
                     gray_sum += _newton_gray(
                         c64(px, py), max_iter, threshold, c_real, c_imag,
                         display_mode, num_roots, func, use_custom, func_type,

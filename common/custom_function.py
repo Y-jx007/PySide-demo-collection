@@ -106,6 +106,19 @@ def cdiv(a: c64, b: c64) -> c64:
     return c64(ti.select(safe, real, 0.0), ti.select(safe, imag, 0.0))
 
 @ti.func
+def cdiv_exact(a: c64, b: c64) -> c64:
+    """不设近零保护的复数除法（牛顿步专用）。
+
+    ``cdiv`` 在 ``|b|² < 1e-12`` 时直接返回 0，牛顿迭代会在临界点附近原地
+    打转，屏幕上就是一个完美的黑圆盘。牛顿步需要真实的 1/df：即使步长
+    很大，下一步也会把点带回单位圆附近并收敛到某个根。
+    """
+    denom = b.x * b.x + b.y * b.y
+    inv_denom = 1.0 / denom
+    return c64((a.x * b.x + a.y * b.y) * inv_denom,
+               (a.y * b.x - a.x * b.y) * inv_denom)
+
+@ti.func
 def csin(z: c64) -> c64:
     ey = ti.exp(z.y)
     e_neg_y = ti.exp(-z.y)

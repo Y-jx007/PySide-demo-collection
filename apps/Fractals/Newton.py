@@ -56,6 +56,7 @@ class NewtonNovaWidget(BaseFractalWidget):
         if self.is_left and app.antialias_factor > 1:
             self.ensure_taichi_field(w, h)
             transform = self.view_transform(w, h)
+            quantum = self.sampling_quantum(w, h)
             render_newton(
                 self.taichi_field, w, h,
                 app.max_iterations, float(app.convergence_threshold),
@@ -63,6 +64,7 @@ class NewtonNovaWidget(BaseFractalWidget):
                 0,
                 transform.scale_x, transform.offset_x,
                 transform.scale_y, transform.offset_y,
+                quantum,
                 int(app.custom_num_roots),
                 func, custom, func_type,
             )
@@ -74,6 +76,7 @@ class NewtonNovaWidget(BaseFractalWidget):
                 0,
                 transform.scale_x, transform.offset_x,
                 transform.scale_y, transform.offset_y,
+                quantum,
                 int(app.custom_num_roots),
                 func, custom, func_type,
                 int(app.antialias_factor),
@@ -91,6 +94,7 @@ class NewtonNovaWidget(BaseFractalWidget):
             0 if self.is_left else 1,
             transform.scale_x, transform.offset_x,
             transform.scale_y, transform.offset_y,
+            self.sampling_quantum(w, h),
             int(app.custom_num_roots),
             func, custom, func_type,
         )
@@ -218,7 +222,7 @@ class NewtonNovaApp(DualCanvasFractalWindow):
         render_newton(
             self._warmup_field, 1, 1, 2, float(self.convergence_threshold),
             float(self.c_real), float(self.c_imag), 0,
-            2.0, 0.0, -2.0, 0.0, int(num_roots),
+            2.0, 0.0, -2.0, 0.0, 0.0, int(num_roots),
             func, True, 0,
         )
         ti.sync()
