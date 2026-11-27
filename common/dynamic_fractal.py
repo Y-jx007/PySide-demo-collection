@@ -185,6 +185,12 @@ class BaseFractalWidget(QWidget):
         self.needs_recompute = True
         self.update()
 
+    def showEvent(self, event):
+        # The initial QSplitter layout can settle after the first paint.
+        super().showEvent(event)
+        self.needs_recompute = True
+        self.update()
+
     def ensure_taichi_field(self, render_w, render_h):
         # 预览（1x）与精修（AA）尺寸不同；缓存最近两个尺寸，避免每次开始
         # 交互都重新分配几十 MB 的 field（分配 + 首次写入约几十毫秒）。
