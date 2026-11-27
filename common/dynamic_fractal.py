@@ -12,6 +12,35 @@ from PySide6.QtWidgets import QWidget
 CANVAS_BORDER_COLOR = QColor(140, 132, 120)
 CANVAS_BORDER_WIDTH = 2
 
+# --- 双精度扩展（double-double）的主机端小工具 ---------------------------
+# 视图中心用 (hi, lo) 两个 float 记住约 31 位有效数字；GPU 侧的同名运算
+# 在 support/fractals/fractal_kernels.py 里。
+_DD_SPLIT = 134217729.0          # 2**27 + 1
+
+
+def dd_add(a_hi, a_lo, b_hi, b_lo):
+    """(a_hi + a_lo) + (b_hi + b_lo)，返回 (hi, lo)。"""
+    s = a_hi + b_hi
+    v = s - a_hi
+    e = (a_hi - (s - v)) + (b_hi - v) + a_lo + b_lo
+    r = s + e
+    return r, e - (r - s)
+
+
+def dd_scale(hi, lo, factor):
+    """(hi + lo) * factor（factor 是普通 float）。"""
+    p = hi * factor
+    ca = _DD_SPLIT * hi
+    ah = ca - (ca - hi)
+    al = hi - ah
+    cb = _DD_SPLIT * factor
+    bh = cb - (cb - factor)
+    bl = factor - bh
+    err = ((ah * bh - p) + ah * bl + al * bh) + al * bl
+    e = err + lo * factor
+    r = p + e
+    return r, e - (r - p)
+
 # 交互进行中先用 1x 采样出预览；停手后由 QTimer 触发一次全质量精修。
 PREVIEW_ANTIALIAS = 1
 PREVIEW_REFINE_MS = 180
@@ -129,6 +158,10 @@ class BaseFractalWidget(QWidget):
         self.view_scale = 1.0          # subclasses may change the default
         self.default_center = [0.0, 0.0]
         self.default_view_scale = 1.0
+        # 视图中心的 double-double 版本（hi_x, lo_x, hi_y, lo_y）。深度缩放
+        # 超过 f64 后，光靠 view_center 的 float 已经无法定位。
+        self.center_ext = [0.0, 0.0, 0.0, 0.0]
+        self.deep_precision = False
         self.is_dragging = False
         self.last_drag_pos = None
         self.taichi_field = None
@@ -156,7 +189,27 @@ class BaseFractalWidget(QWidget):
         """Set the framing restored by “重置视图” and used as the initial view."""
         self.default_center = [float(center[0]), float(center[1])]
         self.default_view_scale = float(view_scale)
-        self.view_center = list(self.default_center)
+        self.set_center_dd(self.default_center[0], 0.0,
+                           self.default_center[1], 0.0)
+        self.view_scale = self.default_view_scale
+        self.needs_recompute = True
+
+    def set_center_dd(self, x_hi, x_lo, y_hi, y_lo):
+        self.center_ext[0] = x_hi
+        self.center_ext[1] = x_lo
+        self.center_ext[2] = y_hi
+        self.center_ext[3] = y_lo
+        self.view_center[0] = x_hi + x_lo
+        self.view_center[1] = y_hi + y_lo
+
+    def pan_center(self, dx_world: float, dy_world: float):
+        x_hi, x_lo = dd_add(self.center_ext[0], self.center_ext[1], dx_world, 0.0)
+        y_hi, y_lo = dd_add(self.center_ext[2], self.center_ext[3], dy_world, 0.0)
+        self.set_center_dd(x_hi, x_lo, y_hi, y_lo)
+
+    def reset_view(self):
+        self.set_center_dd(self.default_center[0], 0.0,
+                           self.default_center[1], 0.0)
         self.view_scale = self.default_view_scale
         self.needs_recompute = True
 
@@ -297,6 +350,10 @@ class BaseFractalWidget(QWidget):
         self.image = image
         self._image_buffer = buffer
         self.needs_recompute = False
+        # 精修后才知道这一帧是不是走了扩展精度，刷新读数。
+        callback = getattr(self.parent_app, "refresh_readouts", None)
+        if callback is not None:
+            callback()
 
     # ---------- mouse and view interaction ----------
     def mousePressEvent(self, event):
@@ -319,8 +376,7 @@ class BaseFractalWidget(QWidget):
             dx = current_pos.x() - self.last_drag_pos.x()
             dy = current_pos.y() - self.last_drag_pos.y()
             transform = self.view_transform()
-            self.view_center[0] -= dx * transform.scale_x
-            self.view_center[1] -= dy * transform.scale_y
+            self.pan_center(-dx * transform.scale_x, -dy * transform.scale_y)
             self.last_drag_pos = current_pos
             self.request_preview()
             self.notify_view_changed()
@@ -332,17 +388,31 @@ class BaseFractalWidget(QWidget):
             self._refine_timer.start()
 
     def wheelEvent(self, event):
-        mouse_real, mouse_imag = self.screen_to_world(
-            event.position().x(), event.position().y()
-        )
+        w = max(1, self.width())
+        h = max(1, self.height())
+        aspect = w / h
+        norm_x = (event.position().x() / w - 0.5) * 2.0 * aspect
+        norm_y = (0.5 - event.position().y() / h) * 2.0
         zoom_factor = 1.1 if event.angleDelta().y() <= 0 else 1.0 / 1.1
+        old_scale = self.view_scale
         self.view_scale *= zoom_factor
-        self.view_center[0] = (
-            mouse_real - (mouse_real - self.view_center[0]) * zoom_factor
-        )
-        self.view_center[1] = (
-            mouse_imag - (mouse_imag - self.view_center[1]) * zoom_factor
-        )
+
+        # 以鼠标处的世界坐标为锚点做 double-double 缩放：
+        #   anchor = center + norm * scale
+        #   center = anchor - (anchor - center) * factor
+        cx_hi, cx_lo = self.center_ext[0], self.center_ext[1]
+        cy_hi, cy_lo = self.center_ext[2], self.center_ext[3]
+        ax_hi, ax_lo = dd_add(cx_hi, cx_lo, norm_x * old_scale, 0.0)
+        ay_hi, ay_lo = dd_add(cy_hi, cy_lo, norm_y * old_scale, 0.0)
+
+        dx_hi, dx_lo = dd_add(ax_hi, ax_lo, -cx_hi, -cx_lo)
+        dx_hi, dx_lo = dd_scale(dx_hi, dx_lo, zoom_factor)
+        dy_hi, dy_lo = dd_add(ay_hi, ay_lo, -cy_hi, -cy_lo)
+        dy_hi, dy_lo = dd_scale(dy_hi, dy_lo, zoom_factor)
+
+        nx_hi, nx_lo = dd_add(ax_hi, ax_lo, -dx_hi, -dx_lo)
+        ny_hi, ny_lo = dd_add(ay_hi, ay_lo, -dy_hi, -dy_lo)
+        self.set_center_dd(nx_hi, nx_lo, ny_hi, ny_lo)
         self.request_preview()
         self.notify_view_changed()
 

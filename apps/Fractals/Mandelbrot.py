@@ -12,7 +12,9 @@ from support.fractals.fractal_kernels import (
     compute_orbit,
     mandelbrot_preset,
     render_mandelbrot,
+    render_mandelbrot_perturb,
 )
+from support.fractals.reference_orbit import reference_orbit
 
 ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
@@ -45,16 +47,39 @@ class MandelJuliaWidget(BaseFractalWidget):
         # func_type is ignored when a custom function is active; pin it to 0
         # so the warmed kernel and the render call share one specialization.
         func_type = 0 if custom else app.function_type
-        render_mandelbrot(
-            self.taichi_field, rw, rh,
-            app.max_iterations, float(app.escape_radius),
-            float(app.c_real), float(app.c_imag),
-            0 if self.is_left else 1,
-            transform.scale_x, transform.offset_x,
-            transform.scale_y, transform.offset_y,
-            self.sampling_quantum(w, h),
-            func, custom, func_type,
-        )
+        quantum = self.sampling_quantum(w, h)
+
+        # f64 的采样网格耗尽后，z² 改用扰动法：中心用 50 位小数算参考轨道，
+        # 逐像素只迭代 f64 偏差。交互预览仍走 f64（快），停手精修时才换。
+        deep = (not custom) and func_type == 0 and quantum > 0.0
+        use_perturbation = deep and not self._interactive
+        self.deep_precision = use_perturbation
+        if use_perturbation:
+            ref_re, ref_im = app.reference_fields(
+                self.center_ext, app.max_iterations,
+                0 if self.is_left else 1,
+                float(app.c_real), float(app.c_imag),
+            )
+            render_mandelbrot_perturb(
+                self.taichi_field, rw, rh,
+                app.max_iterations, float(app.escape_radius),
+                ref_re, ref_im,
+                0 if self.is_left else 1,
+                float(app.c_real), float(app.c_imag),
+                transform.scale_x, (rw / rh) * transform.view_scale,
+                transform.scale_y, transform.view_scale,
+            )
+        else:
+            render_mandelbrot(
+                self.taichi_field, rw, rh,
+                app.max_iterations, float(app.escape_radius),
+                float(app.c_real), float(app.c_imag),
+                0 if self.is_left else 1,
+                transform.scale_x, transform.offset_x,
+                transform.scale_y, transform.offset_y,
+                quantum,
+                func, custom, func_type,
+            )
         self.field_to_image(rw, rh, w, h)
         app.ensure_orbit_kernel_warm()
 
@@ -122,6 +147,7 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         self._warmup_orbit_field = None
         self._warmup_orbit_length = None
         self._orbit_warm_revision = -1
+        self._reference_cache = {}
         self.setup_ui()
 
     # ------------------------------------------------------------------
@@ -232,6 +258,35 @@ class ComplexDynamicsApp(DualCanvasFractalWindow):
         # short even when the user selected a very high iteration count.
         self.compute_orbit(float(self.escape_radius) * 2.0, 0.0)
         self._orbit_warm_revision = self.function_revision
+
+    # ------------------------------------------------------------------
+    # 扰动法：高精度参考轨道
+    # ------------------------------------------------------------------
+    def reference_fields(self, center_ext, max_iter, display_mode, c_real, c_imag):
+        """Return Taichi fields holding the reference orbit for this view."""
+        key = (tuple(center_ext), int(max_iter), int(display_mode),
+               float(c_real), float(c_imag))
+        cached = self._reference_cache.get(key)
+        if cached is not None:
+            return cached
+
+        if display_mode == 0:
+            re, im = reference_orbit(
+                center_ext[0], center_ext[1], center_ext[2], center_ext[3],
+                max_iter)
+        else:
+            re, im = reference_orbit(
+                center_ext[0], center_ext[1], center_ext[2], center_ext[3],
+                max_iter, julia_re=c_real, julia_im=c_imag)
+
+        ref_re = ti.field(dtype=ti.f64, shape=(re.size,))
+        ref_im = ti.field(dtype=ti.f64, shape=(im.size,))
+        ref_re.from_numpy(re)
+        ref_im.from_numpy(im)
+        if len(self._reference_cache) >= 4:
+            self._reference_cache.clear()
+        self._reference_cache[key] = (ref_re, ref_im)
+        return ref_re, ref_im
 
     def compute_orbit(self, c_real, c_imag):
         max_iter = max(1, int(self.max_iterations))

@@ -127,6 +127,72 @@ def render_mandelbrot(
 
 
 @ti.kernel
+def render_mandelbrot_perturb(
+    pixels: ti.template(),
+    width: ti.i32, height: ti.i32,
+    max_iter: ti.i32, escape_radius: ti.f64,
+    ref_re: ti.template(), ref_im: ti.template(),
+    display_mode: ti.i32,
+    c_real: ti.f64, c_imag: ti.f64,
+    scale_x: ti.f64, half_x: ti.f64,
+    scale_y: ti.f64, half_y: ti.f64,
+):
+    """扰动法渲染 z² + c：参考轨道用高精度算好，逐像素只迭代 f64 偏差。
+
+    参考轨道 ``Z_n`` 是视图中心（Mandelbrot）或 z0 中心（Julia）的高精度
+    轨道；像素轨道写成 ``z_n = Z_n + δ_n``，于是
+    ``δ_{n+1} = 2·Z_n·δ_n + δ_n² + dc``，其中 ``dc`` 是像素与中心的偏移。
+    这样既不受 f64 绝对精度限制，也不必做 double-double 算术。
+    """
+    escape_sq = escape_radius * escape_radius
+    inv_log_radius = 1.0 / ti.log(escape_radius)
+    inv_log2 = 1.0 / ti.log(2.0)
+    inv_max_iter = 1.0 / ti.cast(max_iter, ti.f64)
+
+    ti.loop_config(block_dim=256)
+    for i, j in ti.ndrange(width, height):
+        dc_r = ti.cast(i, ti.f64) * scale_x - half_x
+        dc_i = ti.cast(j, ti.f64) * scale_y + half_y
+        dr = ti.cast(0.0, ti.f64)
+        di = ti.cast(0.0, ti.f64)
+        if display_mode == 1:       # Julia：δ0 = 像素 - 中心
+            dr = dc_r
+            di = dc_i
+            dc_r = ti.cast(0.0, ti.f64)
+            dc_i = ti.cast(0.0, ti.f64)
+
+        iterations = 0
+        escaped = False
+        esc_r = ti.cast(0.0, ti.f64)
+        esc_i = ti.cast(0.0, ti.f64)
+        for n in range(max_iter):
+            zr = ref_re[n] + dr
+            zi = ref_im[n] + di
+            if zr * zr + zi * zi > escape_sq:
+                escaped = True
+                esc_r = zr
+                esc_i = zi
+                break
+            zr_n = ref_re[n]
+            zi_n = ref_im[n]
+            ndr = (2.0 * (zr_n * dr - zi_n * di)
+                   + (dr * dr - di * di) + dc_r)
+            ndi = (2.0 * (zr_n * di + zi_n * dr)
+                   + 2.0 * dr * di + dc_i)
+            dr = ndr
+            di = ndi
+            iterations += 1
+
+        gray = 1.0
+        if escaped:
+            log_zn = ti.log(esc_r * esc_r + esc_i * esc_i) * 0.5
+            nu = ti.log(log_zn * inv_log_radius) * inv_log2
+            smooth_iter = ti.cast(iterations, ti.f64) + 1.0 - nu
+            gray = ti.cast(smooth_iter * inv_max_iter, ti.f32)
+        pixels[j, i] = pack_color(gray, gray, gray)
+
+
+@ti.kernel
 def compute_orbit(
     points: ti.template(), length: ti.template(),
     max_iter: ti.i32,
