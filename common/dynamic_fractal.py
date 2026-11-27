@@ -164,13 +164,26 @@ class BaseFractalWidget(QWidget):
         return self.view_transform().world_to_screen(x, y)
 
     def get_render_dims(self):
-        """Return (display_w, display_h, render_w, render_h)."""
+        """Return (display_w, display_h, render_w, render_h) in device pixels."""
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
             return None, None, None, None
+        # Render in physical pixels on high-DPI screens.  Rendering at logical
+        # size and letting Qt upscale is what made the fractal look soft.
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        pw = max(1, int(round(w * dpr)))
+        ph = max(1, int(round(h * dpr)))
         return render_dimensions(
-            w, h, self.parent_app.antialias_factor, preview=self._interactive
+            pw, ph, self.parent_app.antialias_factor, preview=self._interactive
         )
+
+    def resizeEvent(self, event):
+        # A widget resize invalidates the cached bitmap.  Without this, the
+        # old image is stretched to the new rect, which is why one canvas
+        # could show square pixels while the other showed rectangles.
+        super().resizeEvent(event)
+        self.needs_recompute = True
+        self.update()
 
     def ensure_taichi_field(self, render_w, render_h):
         # 预览（1x）与精修（AA）尺寸不同；缓存最近两个尺寸，避免每次开始
@@ -205,6 +218,9 @@ class BaseFractalWidget(QWidget):
             buffer = None
         elif buffer is None:
             buffer = array
+        # The target is in physical pixels; tell Qt how large it is in
+        # logical pixels so it is not upscaled again by the high-DPI factor.
+        image.setDevicePixelRatio(max(1.0, float(self.devicePixelRatioF())))
         self.image = image
         self._image_buffer = buffer
         self.needs_recompute = False
@@ -274,6 +290,9 @@ class BaseFractalWidget(QWidget):
             self.compute_image()
         painter = QPainter(self)
         if self.image is not None and not self.image.isNull():
+            # The image is already at physical resolution; do not let Qt
+            # resample it again (smooth upscaling is what looked blurry).
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
             painter.drawImage(self.rect(), self.image)
         else:
             painter.fillRect(self.rect(), Qt.black)
