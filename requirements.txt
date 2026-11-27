@@ -1,5 +1,5 @@
 # 可视化工具集基础依赖
-PySide6>=6.12.0
+PySide6-Essentials>=6.12.0
 taichi-forge==0.7.0
 numpy>=2.5.4
 Pillow>=13.0.0

@@ -16,6 +16,13 @@ env/
 .vscode/
 .idea/
 
+# PyInstaller / installer output
+build/
+dist/
+dist-debug/
+dist-installer/
+*.spec
+
 # Runtime output（日志、启动器布局、imgui.ini 都放 runtime/）
 runtime/
 # 测试临时目录（tests/tmpdir.py 建在这里，%TEMP% 在某些沙箱里不可写）

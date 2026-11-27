@@ -9,6 +9,15 @@ import json
 import math
 import random
 
+# PyInstaller one-folder: the launcher is the exe itself, so a child app cannot
+# be started as `python app_runner.py`; re-enter this exe in child mode instead.
+if len(sys.argv) >= 3 and sys.argv[1] == "--child":
+    from app_runner import main as _run_child_app
+
+    sys.argv = [sys.argv[0], sys.argv[2], *sys.argv[3:]]
+    _run_child_app()
+    raise SystemExit(0)
+
 from PySide6.QtCore import (
     Qt, QTimer, Signal, QMimeData, QPoint, QPointF, QEvent, QSize, QUrl,
     QVariantAnimation, QRectF, QPropertyAnimation, QEasingCurve,
@@ -1965,8 +1974,12 @@ class ApplicationLauncher(QMainWindow):
         env[READY_ENV] = ready_path
         env["PYSIDE_TOOLS_SPLASH"] = "1"
         try:
+            if getattr(sys, "frozen", False):
+                child_cmd = [sys.executable, "--child", module_path]
+            else:
+                child_cmd = [sys.executable, runner, module_path]
             proc = subprocess.Popen(
-                [sys.executable, runner, module_path],
+                child_cmd,
                 cwd=PROJECT_DIR,
                 stdout=out_handle,
                 stderr=err_handle,
