@@ -98,7 +98,7 @@ class DeepZoomDialog(QDialog):
         self.size_combo = QComboBox()
         for size in (120, 160, 200, 240, 320):
             self.size_combo.addItem(f"{size} × {size}", size)
-        self.size_combo.setCurrentIndex(2)
+        self.size_combo.setCurrentIndex(1)
         form.addRow("中心实部:", self.cx_edit)
         form.addRow("中心虚部:", self.cy_edit)
         form.addRow("视野半高:", self.scale_edit)
