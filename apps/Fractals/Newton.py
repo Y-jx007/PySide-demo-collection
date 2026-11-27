@@ -128,9 +128,9 @@ class NewtonNovaApp(DualCanvasFractalWindow):
     def create_parameter_group(self):
         group = QGroupBox("参数设置")
         form = QFormLayout(group)
-        form.setContentsMargins(12, 16, 12, 8)
+        form.setContentsMargins(12, 18, 12, 10)
         form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(4)
+        form.setVerticalSpacing(6)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
         form.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
@@ -167,9 +167,9 @@ class NewtonNovaApp(DualCanvasFractalWindow):
     def create_custom_group(self):
         group = QGroupBox("自定义函数 (Taichi 表达式)")
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(12, 16, 12, 10)
-        layout.setSpacing(6)
-        layout.addWidget(self.create_custom_edit(CUSTOM_PLACEHOLDER, 80))
+        layout.setContentsMargins(12, 18, 12, 10)
+        layout.setSpacing(8)
+        layout.addWidget(self.create_custom_edit(CUSTOM_PLACEHOLDER, 84))
 
         footer = QHBoxLayout()
         footer.setSpacing(8)
@@ -188,7 +188,10 @@ class NewtonNovaApp(DualCanvasFractalWindow):
         return group
 
     def create_canvas(self, is_left):
-        return NewtonNovaWidget(self, is_left)
+        widget = NewtonNovaWidget(self, is_left)
+        # 正方形画布下保持原来的横向取景范围（约 1.4）。
+        widget.set_default_view((0.0, 0.0), 1.40)
+        return widget
 
     # ------------------------------------------------------------------
     # 参数与交互

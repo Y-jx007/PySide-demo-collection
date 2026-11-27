@@ -5,8 +5,12 @@ from dataclasses import dataclass
 
 import taichi_forge as ti
 from PySide6.QtCore import Qt, QTimer, QPointF
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
+
+# 双视图的两块画布需要一条可见的中性色边框（UI_GUIDELINES §0）。
+CANVAS_BORDER_COLOR = QColor(140, 132, 120)
+CANVAS_BORDER_WIDTH = 2
 
 # 交互进行中先用 1x 采样出预览；停手后由 QTimer 触发一次全质量精修。
 PREVIEW_ANTIALIAS = 1
@@ -123,6 +127,8 @@ class BaseFractalWidget(QWidget):
         self.is_left = is_left
         self.view_center = [0.0, 0.0]
         self.view_scale = 1.0          # subclasses may change the default
+        self.default_center = [0.0, 0.0]
+        self.default_view_scale = 1.0
         self.is_dragging = False
         self.last_drag_pos = None
         self.taichi_field = None
@@ -144,7 +150,15 @@ class BaseFractalWidget(QWidget):
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
-        self.setMinimumSize(300, 300)
+        self.setMinimumSize(220, 220)
+
+    def set_default_view(self, center, view_scale: float):
+        """Set the framing restored by “重置视图” and used as the initial view."""
+        self.default_center = [float(center[0]), float(center[1])]
+        self.default_view_scale = float(view_scale)
+        self.view_center = list(self.default_center)
+        self.view_scale = self.default_view_scale
+        self.needs_recompute = True
 
     def _on_timer(self):
         # Only repaint when something actually changed, so an idle canvas
@@ -350,4 +364,10 @@ class BaseFractalWidget(QWidget):
                 painter.drawImage(self.rect(), self.image)
         else:
             painter.fillRect(self.rect(), Qt.black)
+        # 双视图的两块画布用一条 2px 中性色边框分开，盖住最外侧像素即可，
+        # 不改变图像尺寸、也不影响坐标换算。
+        painter.setPen(QPen(CANVAS_BORDER_COLOR, CANVAS_BORDER_WIDTH))
+        painter.setBrush(Qt.NoBrush)
+        inset = CANVAS_BORDER_WIDTH // 2
+        painter.drawRect(self.rect().adjusted(inset, inset, -inset - 1, -inset - 1))
         painter.end()
