@@ -20,7 +20,10 @@ Nonlinear 会自动回退 NumPy FFT。
 
 ## 构建
 
+先装 PyInstaller，再运行：
+
 ```powershell
+python -m pip install pyinstaller
 python installer/build_setup.py
 ```
 

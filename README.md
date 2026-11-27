@@ -103,6 +103,20 @@ Mordvintsev 需要额外的 PyTorch：
 pip install -r requirements-distill.txt
 ```
 
+### Windows 安装器
+
+如果不想手动配环境，可以构建一个自定义安装器：
+
+```bash
+python -m pip install pyinstaller
+python installer/build_setup.py
+```
+
+输出 `dist-installer/PySideToolbox-Setup.exe`。安装器会复制应用、用系统
+Python 创建独立 `.venv` 并安装核心依赖；PyTorch 是可选组件（不装 / 默认 /
+CPU / CUDA 12.4），不装时 Diffusion/Mordvintsev 不可用，Nonlinear 自动回退
+NumPy。安装器本身约 86 MB，不会把 900 MB 的应用目录整个打进去。
+
 ### 运行
 
 启动主界面：
