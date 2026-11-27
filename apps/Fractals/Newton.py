@@ -60,6 +60,10 @@ class NewtonNovaApp(DualCanvasFractalWindow):
     # Windows display scaling stretches the logical-size bitmap and softens
     # every root boundary.
     high_dpi_render = True
+    # Keep the same AA while dragging/zooming.  Otherwise the 1x preview is
+    # replaced by a 2x smooth pass after 180 ms, which reads as "blurry, then
+    # suddenly smooth" during every zoom.
+    preview_antialias = 2
 
     def __init__(self):
         super().__init__(

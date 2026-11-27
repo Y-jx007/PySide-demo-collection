@@ -12,7 +12,8 @@ PREVIEW_ANTIALIAS = 1
 PREVIEW_REFINE_MS = 180
 
 
-def render_dimensions(width, height, antialias, *, preview=False):
+def render_dimensions(width, height, antialias, *, preview=False,
+                       preview_antialias=PREVIEW_ANTIALIAS):
     """Return (display_w, display_h, render_w, render_h).
 
     During interaction the canvas renders one sample per pixel, which is
@@ -21,7 +22,7 @@ def render_dimensions(width, height, antialias, *, preview=False):
     """
     width = max(1, int(width))
     height = max(1, int(height))
-    aa = PREVIEW_ANTIALIAS if preview else max(1, int(antialias))
+    aa = preview_antialias if preview else max(1, int(antialias))
     return width, height, width * aa, height * aa
 
 
@@ -173,7 +174,9 @@ class BaseFractalWidget(QWidget):
             w = max(1, int(round(w * dpr)))
             h = max(1, int(round(h * dpr)))
         return render_dimensions(
-            w, h, self.parent_app.antialias_factor, preview=self._interactive
+            w, h, self.parent_app.antialias_factor, preview=self._interactive,
+            preview_antialias=getattr(
+                self.parent_app, "preview_antialias", PREVIEW_ANTIALIAS),
         )
 
     def resizeEvent(self, event):
