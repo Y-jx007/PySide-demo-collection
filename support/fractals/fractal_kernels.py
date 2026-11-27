@@ -347,3 +347,144 @@ def render_newton(
             pixels[j, i] = pack_color(gray, gray, gray)
         else:
             pixels[j, i] = pack_color(0.0, 0.0, 0.0)
+
+
+@ti.func
+def _newton_gray(
+    z: c64, max_iter: ti.i32, threshold: ti.f64,
+    c_real: ti.f64, c_imag: ti.f64,
+    display_mode: ti.i32, num_roots: ti.i32,
+    func: ti.template(), use_custom: ti.template(), func_type: ti.template(),
+) -> ti.f32:
+    """Converged Newton/Nova gray value, or 0 when the pixel does not converge."""
+    threshold_sq = threshold * threshold
+    inv_max_iter = 1.0 / ti.cast(max_iter, ti.f64)
+    h = 1e-8
+    two_h = 2.0 * h
+    c = c64(c_real, c_imag)
+    iterations = 0
+    converged = False
+    root_idx = 0
+
+    for _ in range(max_iter):
+        f_z = c64(0.0, 0.0)
+        df_z = c64(0.0, 0.0)
+        if ti.static(use_custom):
+            f_z = func(z)
+            f_plus = func(z + c64(h, 0.0))
+            f_minus = func(z - c64(h, 0.0))
+            df_z = c64(
+                (f_plus.x - f_minus.x) / two_h,
+                (f_plus.y - f_minus.y) / two_h,
+            )
+        else:
+            f_z = newton_preset_f(z, func_type)
+            df_z = newton_preset_df(z, func_type)
+
+        if df_z.x * df_z.x + df_z.y * df_z.y < 1e-16:
+            break
+
+        z_new = z - cdiv(f_z, df_z)
+        if display_mode == 1:
+            z_new = z_new + c
+
+        if display_mode == 0:
+            if f_z.x * f_z.x + f_z.y * f_z.y < threshold_sq:
+                converged = True
+                if ti.static(use_custom):
+                    angle = ti.atan2(z.y, z.x)
+                    root_idx = ti.cast(
+                        (angle + ti.math.pi) / (2.0 * ti.math.pi) * num_roots,
+                        ti.i32,
+                    ) % ti.max(num_roots, 1)
+                break
+        else:
+            diff = z_new - z
+            if diff.x * diff.x + diff.y * diff.y < threshold_sq:
+                converged = True
+                break
+
+        z = z_new
+        iterations += 1
+
+    gray = 0.0
+    if converged:
+        if display_mode == 0:
+            if ti.static(use_custom):
+                gray = ti.select(
+                    num_roots <= 1,
+                    0.5,
+                    ti.cast(root_idx, ti.f32)
+                    / ti.cast(ti.max(num_roots - 1, 1), ti.f32),
+                )
+            else:
+                gray = newton_root_gray(z, func_type)
+        else:
+            smooth = ti.cast(iterations, ti.f64) + 1.0
+            gray = ti.cast(
+                3.0 * ti.log(1.0 + ti.log(1.0 + smooth * inv_max_iter)),
+                ti.f32,
+            )
+    return gray
+
+
+@ti.func
+def _max_color_diff(a: ti.u32, b: ti.u32) -> ti.i32:
+    dr = ti.abs(ti.cast((a >> 16) & 255, ti.i32) - ti.cast((b >> 16) & 255, ti.i32))
+    dg = ti.abs(ti.cast((a >> 8) & 255, ti.i32) - ti.cast((b >> 8) & 255, ti.i32))
+    db = ti.abs(ti.cast(a & 255, ti.i32) - ti.cast(b & 255, ti.i32))
+    return ti.max(dr, ti.max(dg, db))
+
+
+@ti.kernel
+def render_newton_edge_aa(
+    src: ti.template(), dst: ti.template(),
+    width: ti.i32, height: ti.i32,
+    max_iter: ti.i32, threshold: ti.f64,
+    c_real: ti.f64, c_imag: ti.f64,
+    display_mode: ti.i32,
+    scale_x: ti.f64, offset_x: ti.f64,
+    scale_y: ti.f64, offset_y: ti.f64,
+    num_roots: ti.i32,
+    func: ti.template(), use_custom: ti.template(), func_type: ti.template(),
+    aa_factor: ti.i32,
+):
+    """Supersample only basin boundaries; flat interiors copy the 1x pixel.
+
+    Full 4x supersampling cost scales with height * width * 16.  Newton's
+    basins are flat, so almost all pixels can be copied and only the edge
+    pixels need subpixel Newton solves.
+    """
+    inv_aa = 1.0 / ti.cast(aa_factor, ti.f64)
+    for i, j in ti.ndrange(width, height):
+        base = src[j, i]
+        r0 = (base >> 16) & 255
+        g0 = (base >> 8) & 255
+        b0 = base & 255
+
+        left = src[j, ti.max(i - 1, 0)]
+        right = src[j, ti.min(i + 1, width - 1)]
+        up = src[ti.max(j - 1, 0), i]
+        down = src[ti.min(j + 1, height - 1), i]
+
+        diff = ti.max(
+            _max_color_diff(base, left),
+            ti.max(_max_color_diff(base, right),
+                   ti.max(_max_color_diff(base, up), _max_color_diff(base, down)))
+        )
+
+        if diff > 6:
+            gray_sum = 0.0
+            for sy in range(aa_factor):
+                for sx in range(aa_factor):
+                    px = (ti.cast(i, ti.f64) + (ti.cast(sx, ti.f64) + 0.5) * inv_aa) * scale_x + offset_x
+                    py = (ti.cast(j, ti.f64) + (ti.cast(sy, ti.f64) + 0.5) * inv_aa) * scale_y + offset_y
+                    gray_sum += _newton_gray(
+                        c64(px, py), max_iter, threshold, c_real, c_imag,
+                        display_mode, num_roots, func, use_custom, func_type,
+                    )
+            gray = gray_sum / ti.cast(aa_factor * aa_factor, ti.f32)
+            dst[j, i] = pack_color(gray, gray, gray)
+        else:
+            dst[j, i] = base
+

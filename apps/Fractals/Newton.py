@@ -7,7 +7,9 @@ from support.fractals.fractal_common import (
     DualCanvasFractalWindow,
     compile_complex_function,
 )
-from support.fractals.fractal_kernels import NEWTON_FUNCTION_NAMES, newton_preset_f, render_newton
+from support.fractals.fractal_kernels import (
+    NEWTON_FUNCTION_NAMES, newton_preset_f, render_newton, render_newton_edge_aa,
+)
 
 ti.init(arch=ti.gpu, offline_cache=True, advanced_optimization=True)
 
@@ -27,20 +29,61 @@ class NewtonNovaWidget(BaseFractalWidget):
     def __init__(self, parent, is_left):
         super().__init__(parent, is_left)
         self.view_scale = 1.2
+        self._edge_field = None
+        self._edge_key = None
+
+    def _ensure_edge_field(self, width, height):
+        key = (height, width)
+        if self._edge_key != key or self._edge_field is None:
+            self._edge_field = ti.field(dtype=ti.u32, shape=key)
+            self._edge_key = key
+        return self._edge_field
 
     def compute_image(self):
         w, h, rw, rh = self.get_render_dims()
         if w is None:
             return
-        self.ensure_taichi_field(rw, rh)
         app = self.parent_app
-        transform = self.view_transform(rw, rh)
-
         custom = bool(app.using_custom_function)
         func = app.custom_function if custom else newton_preset_f
         # func_type is ignored when a custom function is active; pin it to 0
         # so the warmed kernel and the render call share one specialization.
         func_type = 0 if custom else app.function_type
+
+        # Newton's basins are flat: render 1x, then supersample only pixels on
+        # a basin boundary.  Full 4x supersampling is 16x the work and is what
+        # made dragging feel heavy.
+        if self.is_left and app.antialias_factor > 1:
+            self.ensure_taichi_field(w, h)
+            transform = self.view_transform(w, h)
+            render_newton(
+                self.taichi_field, w, h,
+                app.max_iterations, float(app.convergence_threshold),
+                float(app.c_real), float(app.c_imag),
+                0,
+                transform.scale_x, transform.offset_x,
+                transform.scale_y, transform.offset_y,
+                int(app.custom_num_roots),
+                func, custom, func_type,
+            )
+            edge_field = self._ensure_edge_field(w, h)
+            render_newton_edge_aa(
+                self.taichi_field, edge_field, w, h,
+                app.max_iterations, float(app.convergence_threshold),
+                float(app.c_real), float(app.c_imag),
+                0,
+                transform.scale_x, transform.offset_x,
+                transform.scale_y, transform.offset_y,
+                int(app.custom_num_roots),
+                func, custom, func_type,
+                int(app.antialias_factor),
+            )
+            self.taichi_field = edge_field
+            self.field_to_image(w, h, w, h)
+            return
+
+        self.ensure_taichi_field(rw, rh)
+        transform = self.view_transform(rw, rh)
         render_newton(
             self.taichi_field, rw, rh,
             app.max_iterations, float(app.convergence_threshold),
@@ -113,7 +156,8 @@ class NewtonNovaApp(DualCanvasFractalWindow):
         form.addRow("阈值:", self.threshold_spin)
 
         form.addRow("抗锯齿:", self.create_antialias_combo())
-        self.aa_combo.setCurrentIndex(2)
+        self.aa_combo.setCurrentIndex(1)
+        self.aa_combo.setToolTip("左画布只对根边界超采样；4x 比整图 4x 便宜很多")
         return group
 
     def create_custom_group(self):
