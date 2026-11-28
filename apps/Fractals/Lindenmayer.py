@@ -1,7 +1,7 @@
-from common.qt_base import (ColorButton, QColor, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-                            QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPainter, QPen, QPixmap, QPushButton,
-                            QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget, Signal, math,
-                            run_app, time)
+from common.qt_base import (ColorButton, QColor, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout,
+                            QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPainter, QPen,
+                            QPixmap, QPushButton, QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget,
+                            Signal, SquareContainer, math, run_app, time)
 from common.numpy_base import (np)
 from array import array
 
@@ -291,7 +291,6 @@ class LSystemWindow(QMainWindow):
         self.setGeometry(100, 100, 1000, 720)
 
         self.canvas = LSystemWidget()
-        self.canvas.setFixedSize(640, 640)
         self.canvas.statsReady.connect(self.on_stats)
         self.init_ui()
         self.setup_default_systems()
@@ -306,58 +305,59 @@ class LSystemWindow(QMainWindow):
         panel = QWidget()
         panel.setFixedWidth(330)
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setSpacing(6)
+        panel_layout.setSpacing(5)
         panel_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.create_system_selection(panel_layout)
-        self.create_parameters_section(panel_layout)
+        self.create_system_parameters_section(panel_layout)
         self.create_colors_section(panel_layout)
         self.create_rules_section(panel_layout)
-        self.create_buttons_section(panel_layout)
-        self.create_stats_section(panel_layout)
+        self.create_bottom_section(panel_layout)
 
         main_layout.addWidget(panel)
-        main_layout.addWidget(self.canvas, 1)
+        self.canvas_holder = SquareContainer(
+            self.canvas, background="#ffffff", border="0")
+        main_layout.addWidget(self.canvas_holder, 1)
 
         bar = self.statusBar()
         bar.setSizeGripEnabled(False)
         self.lbl_status = QLabel("就绪")
         bar.addWidget(self.lbl_status)
 
-    def create_system_selection(self, layout):
-        group = QGroupBox("预设系统")
-        vbox = QVBoxLayout(group)
-        vbox.setSpacing(6)
-        vbox.setContentsMargins(10, 8, 10, 8)
+    def create_system_parameters_section(self, layout):
+        group = QGroupBox("系统与参数")
+        grid = QGridLayout(group)
+        grid.setContentsMargins(10, 8, 10, 8)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(5)
+
         self.system_combo = QComboBox()
         self.system_combo.currentTextChanged.connect(self.on_system_changed)
-        vbox.addWidget(self.system_combo)
-        layout.addWidget(group)
-
-    def create_parameters_section(self, layout):
-        group = QGroupBox("参数")
-        form = QFormLayout()
-        form.setSpacing(6)
-        form.setContentsMargins(10, 8, 10, 8)
+        grid.addWidget(QLabel("预设"), 0, 0)
+        grid.addWidget(self.system_combo, 0, 1, 1, 3)
 
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1, 12)
         self.iterations_spin.setValue(4)
-        form.addRow("迭代次数:", self.iterations_spin)
+        self.iterations_spin.setFixedWidth(62)
+        grid.addWidget(QLabel("迭代"), 1, 0)
+        grid.addWidget(self.iterations_spin, 1, 1)
 
         self.angle_spin = QDoubleSpinBox()
         self.angle_spin.setRange(1, 180)
         self.angle_spin.setValue(25)
         self.angle_spin.setSuffix("°")
         self.angle_spin.setDecimals(1)
-        form.addRow("转角:", self.angle_spin)
+        self.angle_spin.setFixedWidth(72)
+        grid.addWidget(QLabel("转角"), 1, 2)
+        grid.addWidget(self.angle_spin, 1, 3)
 
         self.distance_spin = QDoubleSpinBox()
         self.distance_spin.setRange(1, 50)
         self.distance_spin.setValue(10)
-        form.addRow("步长:", self.distance_spin)
-
-        group.setLayout(form)
+        self.distance_spin.setFixedWidth(62)
+        grid.addWidget(QLabel("步长"), 2, 0)
+        grid.addWidget(self.distance_spin, 2, 1)
+        grid.setColumnStretch(3, 1)
         layout.addWidget(group)
 
     def create_colors_section(self, layout):
@@ -383,30 +383,27 @@ class LSystemWindow(QMainWindow):
     def create_rules_section(self, layout):
         group = QGroupBox("L-system 规则")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(6)
+        vbox.setSpacing(5)
         vbox.setContentsMargins(10, 8, 10, 8)
 
-        vbox.addWidget(QLabel("公理:"))
-        self.axiom_edit = QTextEdit()
-        self.axiom_edit.setMaximumHeight(32)
+        axiom_row = QHBoxLayout()
+        axiom_row.setSpacing(6)
+        axiom_row.addWidget(QLabel("公理"))
+        self.axiom_edit = QLineEdit()
         self.axiom_edit.setPlaceholderText("例如: F")
-        vbox.addWidget(self.axiom_edit)
+        axiom_row.addWidget(self.axiom_edit, 1)
+        vbox.addLayout(axiom_row)
 
-        hint = QLabel("规则每行一条：前驱->后继；F 前进、+/- 转向、[ ] 入栈出栈")
-        hint.setStyleSheet("color:#888;")
-        hint.setWordWrap(True)
-        vbox.addWidget(hint)
         self.rules_edit = QTextEdit()
-        self.rules_edit.setPlaceholderText("例如: F->F+F-F-F+F")
+        self.rules_edit.setPlaceholderText("每行一条：前驱->后继，例如 F->F+F-F-F+F")
+        self.rules_edit.setToolTip(
+            "规则每行一条：前驱->后继；F 前进、+/- 转向、[ ] 入栈出栈")
         vbox.addWidget(self.rules_edit, 1)
         layout.addWidget(group, 1)
 
-    def create_buttons_section(self, layout):
-        group = QGroupBox("操作")
-        hbox = QHBoxLayout(group)
-        hbox.setSpacing(6)
-        hbox.setContentsMargins(10, 8, 10, 8)
-
+    def create_bottom_section(self, layout):
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
         self.generate_btn = QPushButton("生成")
         self.generate_btn.clicked.connect(self.generate_system)
         self.reset_btn = QPushButton("恢复预设")
@@ -414,29 +411,18 @@ class LSystemWindow(QMainWindow):
             lambda: self.on_system_changed(self.system_combo.currentText()))
         self.save_btn = QPushButton("保存")
         self.save_btn.clicked.connect(self.save_image)
+        for button in (self.generate_btn, self.reset_btn, self.save_btn):
+            button.setFixedHeight(26)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
 
-        for b in (self.generate_btn, self.reset_btn, self.save_btn):
-            hbox.addWidget(b)
-        layout.addWidget(group)
-
-    def create_stats_section(self, layout):
-        group = QGroupBox("统计")
-        form = QFormLayout()
-        form.setSpacing(6)
-        form.setContentsMargins(10, 8, 10, 8)
-        self.lbl_length = QLabel("–")
-        self.lbl_segments = QLabel("–")
-        self.lbl_time = QLabel("–")
-        form.addRow("字符串长度:", self.lbl_length)
-        form.addRow("线段数:", self.lbl_segments)
-        form.addRow("生成耗时:", self.lbl_time)
-        group.setLayout(form)
-        layout.addWidget(group)
+        self.lbl_stats = QLabel("—")
+        self.lbl_stats.setStyleSheet("color:#667085;")
+        layout.addWidget(self.lbl_stats)
 
     def on_stats(self, segments, chars, truncated, elapsed, reason):
-        self.lbl_length.setText(f"{chars:,}")
-        self.lbl_segments.setText(f"{segments:,}")
-        self.lbl_time.setText(f"{elapsed * 1000:.0f} ms")
+        self.lbl_stats.setText(
+            f"字符串 {chars:,}  ·  线段 {segments:,}  ·  {elapsed * 1000:.0f} ms")
         self.generate_btn.setEnabled(True)
         if reason == "time":
             self.lbl_status.setText(
@@ -445,7 +431,7 @@ class LSystemWindow(QMainWindow):
             self.lbl_status.setText(
                 f"字符串达到内存上限 {LSystem.MAX_CHARS:,} 字符，已截断")
         else:
-            self.lbl_status.setText(f"完成：{segments:,} 条线段，{elapsed * 1000:.0f} ms")
+            self.lbl_status.setText("完成")
 
     def setup_default_systems(self):
         self.systems = {
@@ -475,7 +461,7 @@ class LSystemWindow(QMainWindow):
     def generate_system(self):
         """构建 L-system 并传递给绘图部件（后台生成）"""
         lsys = LSystem()
-        axiom = self.axiom_edit.toPlainText().strip()
+        axiom = self.axiom_edit.text().strip()
         if not axiom:
             self.lbl_status.setText("公理为空，什么都不画")
             return

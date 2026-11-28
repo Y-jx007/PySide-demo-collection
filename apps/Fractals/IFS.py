@@ -1,6 +1,6 @@
-from common.qt_base import (ColorButton, QColor, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QImage,
+from common.qt_base import (ColorButton, QColor, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QImage,
                             QLabel, QMainWindow, QMessageBox, QPainter, QPixmap, QPushButton, QSpinBox, QTextEdit,
-                            QThread, QVBoxLayout, QWidget, Qt, Signal, run_app, time)
+                            QThread, QVBoxLayout, QWidget, Qt, Signal, SquareContainer, run_app, time)
 from common.numpy_base import (np)
 
 # 经典 IFS 分形数据
@@ -234,98 +234,87 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(8)
 
         self.fractal_widget = FractalWidget()
-        self.fractal_widget.setFixedSize(640, 640)
 
         panel = QWidget()
         panel.setFixedWidth(330)
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setSpacing(6)
+        panel_layout.setSpacing(5)
         panel_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.create_fractal_selection(panel_layout)
-        self.create_parameters_section(panel_layout)
+        self.create_fractal_parameters_section(panel_layout)
         self.create_transform_section(panel_layout)
-        self.create_buttons_section(panel_layout)
-        self.create_stats_section(panel_layout)
+        self.create_bottom_section(panel_layout)
 
         main_layout.addWidget(panel)
-        main_layout.addWidget(self.fractal_widget, 1)
+        self.canvas_holder = SquareContainer(
+            self.fractal_widget, background="#ffffff", border="0")
+        main_layout.addWidget(self.canvas_holder, 1)
 
         bar = self.statusBar()
         bar.setSizeGripEnabled(False)
         self.lbl_status = QLabel("就绪")
         bar.addWidget(self.lbl_status)
 
-    def create_fractal_selection(self, layout):
-        group = QGroupBox("分形选择")
-        vbox = QVBoxLayout(group)
-        vbox.setSpacing(6)
-        vbox.setContentsMargins(10, 8, 10, 8)
+    def create_fractal_parameters_section(self, layout):
+        group = QGroupBox("分形与参数")
+        grid = QGridLayout(group)
+        grid.setContentsMargins(10, 8, 10, 8)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(5)
+
         self.fractal_combo = QComboBox()
         self.fractal_combo.addItems(IFS_FRACTALS.keys())
         self.fractal_combo.currentTextChanged.connect(self.on_fractal_change)
-        vbox.addWidget(self.fractal_combo)
-        layout.addWidget(group)
-
-    def create_parameters_section(self, layout):
-        group = QGroupBox("参数")
-        form = QFormLayout()
-        form.setSpacing(6)
-        form.setContentsMargins(10, 8, 10, 8)
+        grid.addWidget(QLabel("预设"), 0, 0)
+        grid.addWidget(self.fractal_combo, 0, 1, 1, 4)
 
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1000, 1000000)
         self.iterations_spin.setValue(50000)
         self.iterations_spin.setSingleStep(10000)
         self.iterations_spin.setGroupSeparatorShown(True)
-        form.addRow("迭代次数:", self.iterations_spin)
+        self.iterations_spin.setFixedWidth(108)
+        grid.addWidget(QLabel("迭代"), 1, 0)
+        grid.addWidget(self.iterations_spin, 1, 1)
 
         color_row = QWidget()
-        h = QHBoxLayout(color_row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(6)
+        colors = QHBoxLayout(color_row)
+        colors.setContentsMargins(0, 0, 0, 0)
+        colors.setSpacing(6)
         self.start_color_btn = ColorButton(self.color_start)
         self.start_color_btn.colorChanged.connect(self.on_start_color_changed)
         self.end_color_btn = ColorButton(self.color_end)
         self.end_color_btn.colorChanged.connect(self.on_end_color_changed)
-        h.addWidget(self.start_color_btn)
-        h.addWidget(QLabel("→"))
-        h.addWidget(self.end_color_btn)
-        h.addStretch()
-        form.addRow("颜色:", color_row)
-
-        bg_row = QWidget()
-        hb = QHBoxLayout(bg_row)
-        hb.setContentsMargins(0, 0, 0, 0)
-        hb.setSpacing(6)
+        colors.addWidget(self.start_color_btn)
+        colors.addWidget(QLabel("→"))
+        colors.addWidget(self.end_color_btn)
+        colors.addSpacing(6)
+        colors.addWidget(QLabel("背景"))
         self.bg_color_btn = ColorButton(self.fractal_widget.bg_color)
         self.bg_color_btn.colorChanged.connect(self.on_bg_color_changed)
-        hb.addWidget(self.bg_color_btn)
-        hb.addStretch()
-        form.addRow("背景:", bg_row)
-
-        group.setLayout(form)
+        colors.addWidget(self.bg_color_btn)
+        colors.addStretch(1)
+        grid.addWidget(QLabel("颜色"), 2, 0)
+        grid.addWidget(color_row, 2, 1, 1, 4)
+        grid.setColumnStretch(4, 1)
         layout.addWidget(group)
 
     def create_transform_section(self, layout):
         group = QGroupBox("变换参数")
         vbox = QVBoxLayout(group)
-        vbox.setSpacing(6)
+        vbox.setSpacing(5)
         vbox.setContentsMargins(10, 8, 10, 8)
-        hint = QLabel("每行 a,b,c,d,e,f,概率；概率可以不用凑成 1")
-        hint.setStyleSheet("color:#888;")
-        hint.setWordWrap(True)
-        vbox.addWidget(hint)
         self.transform_edit = QTextEdit()
-        self.transform_edit.setPlaceholderText("0.850,0.040,-0.040,0.850,0.000,1.600,0.850")
+        self.transform_edit.setPlaceholderText(
+            "每行 a,b,c,d,e,f,概率，例如 0.850,0.040,-0.040,0.850,0.000,1.600,0.850")
+        self.transform_edit.setToolTip(
+            "每行 a,b,c,d,e,f,概率；概率可以不用凑成 1")
         vbox.addWidget(self.transform_edit, 1)
         layout.addWidget(group, 1)
 
-    def create_buttons_section(self, layout):
-        group = QGroupBox("操作")
-        hbox = QHBoxLayout(group)
-        hbox.setSpacing(6)
-        hbox.setContentsMargins(10, 8, 10, 8)
+    def create_bottom_section(self, layout):
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
         self.generate_btn = QPushButton("生成")
         self.generate_btn.clicked.connect(self.generate_fractal)
         self.reset_btn = QPushButton("恢复预设")
@@ -333,23 +322,14 @@ class MainWindow(QMainWindow):
             lambda: self.on_fractal_change(self.fractal_combo.currentText()))
         self.save_btn = QPushButton("保存")
         self.save_btn.clicked.connect(self.save_fractal)
-        for b in (self.generate_btn, self.reset_btn, self.save_btn):
-            hbox.addWidget(b)
-        layout.addWidget(group)
+        for button in (self.generate_btn, self.reset_btn, self.save_btn):
+            button.setFixedHeight(26)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
 
-    def create_stats_section(self, layout):
-        group = QGroupBox("统计")
-        form = QFormLayout()
-        form.setSpacing(6)
-        form.setContentsMargins(10, 8, 10, 8)
-        self.lbl_points = QLabel("–")
-        self.lbl_transforms = QLabel("–")
-        self.lbl_time = QLabel("–")
-        form.addRow("点数:", self.lbl_points)
-        form.addRow("变换数:", self.lbl_transforms)
-        form.addRow("生成耗时:", self.lbl_time)
-        group.setLayout(form)
-        layout.addWidget(group)
+        self.lbl_stats = QLabel("—")
+        self.lbl_stats.setStyleSheet("color:#667085;")
+        layout.addWidget(self.lbl_stats)
 
     def on_fractal_change(self, name):
         if name not in IFS_FRACTALS:
@@ -417,10 +397,9 @@ class MainWindow(QMainWindow):
         self.fractal_widget.set_points(points)
         self.fractal_widget.set_colors(self.color_start, self.color_end)
         self.generate_btn.setEnabled(True)
-        self.lbl_points.setText(f"{len(points):,}")
-        self.lbl_transforms.setText(str(self._transforms))
-        self.lbl_time.setText(f"{elapsed * 1000:.0f} ms")
-        self.lbl_status.setText(f"完成：{len(points):,} 点，{elapsed * 1000:.0f} ms")
+        self.lbl_stats.setText(
+            f"点数 {len(points):,}  ·  变换 {self._transforms}  ·  {elapsed * 1000:.0f} ms")
+        self.lbl_status.setText("完成")
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
