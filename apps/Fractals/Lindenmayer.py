@@ -1,6 +1,6 @@
 from common.qt_base import (ColorButton, QColor, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout,
-                            QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPainter, QPen,
-                            QPixmap, QPushButton, QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget,
+                            QGroupBox, QHBoxLayout, QLabel, QLineEdit, QLineF, QMainWindow, QMessageBox, QPainter,
+                            QPen, QPixmap, QPushButton, QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget,
                             Signal, SquareContainer, math, run_app, time)
 from common.numpy_base import (np)
 from array import array
@@ -205,13 +205,18 @@ class LSystemWidget(QWidget):
         if self.path.shape[0] == 0:
             return
         rect = self.bounding_rect
-        if rect.width() < 0.01 or rect.height() < 0.01:
-            return
-        margin = 24
+        margin = 32
         avail_w = max(1.0, self.width() - 2 * margin)
         avail_h = max(1.0, self.height() - 2 * margin)
-        scale_x = avail_w / rect.width() if rect.width() > 0 else 1.0
-        scale_y = avail_h / rect.height() if rect.height() > 0 else 1.0
+        span_w = max(rect.width(), 1e-6)
+        span_h = max(rect.height(), 1e-6)
+        if rect.width() < 0.01 and rect.height() < 0.01:
+            self.scale = 1.0
+            self.offset_x = self.width() / 2.0 - rect.center().x()
+            self.offset_y = self.height() / 2.0 - rect.center().y()
+            return
+        scale_x = avail_w / span_w
+        scale_y = avail_h / span_h
         self.scale = min(scale_x, scale_y)
         draw_w = rect.width() * self.scale
         draw_h = rect.height() * self.scale
@@ -252,7 +257,7 @@ class LSystemWidget(QWidget):
         return pm
 
     def _draw_path(self, painter):
-        """原始绘法：逐段整数坐标 + 逐段渐变颜色（与最初版本完全一致）。"""
+        """Batch segments by colour bucket instead of one draw call each."""
         n = self.path.shape[0]
         if n == 0:
             return
@@ -264,18 +269,23 @@ class LSystemWidget(QWidget):
         dr, dg, db = er - sr, eg - sg, eb - sb
 
         pen = QPen()
-        pen.setWidth(max(1, int(2 * scale)))
-
-        rows = self.path.tolist()
+        pen.setWidth(max(1, int(round(2 * scale))))
+        buckets = [[] for _ in range(64)]
         denom = n - 1 if n > 1 else 1
+        rows = self.path.tolist()
         for i, (x1, y1, x2, y2) in enumerate(rows):
             t = i / denom if n > 1 else 0
+            bucket = min(63, int(t * 64))
+            buckets[bucket].append(QLineF(
+                x1 * scale + off_x, y1 * scale + off_y,
+                x2 * scale + off_x, y2 * scale + off_y))
+        for bucket, lines in enumerate(buckets):
+            if not lines:
+                continue
+            t = bucket / 63.0
             pen.setColor(QColor(int(sr + dr * t), int(sg + dg * t), int(sb + db * t)))
             painter.setPen(pen)
-            painter.drawLine(
-                int(x1 * scale + off_x), int(y1 * scale + off_y),
-                int(x2 * scale + off_x), int(y2 * scale + off_y)
-            )
+            painter.drawLines(lines)
 
     def save_image(self, filename):
         """将当前图形保存为图片文件"""
@@ -311,7 +321,7 @@ class LSystemWindow(QMainWindow):
         main_layout.setSpacing(8)
 
         panel = QWidget()
-        panel.setFixedWidth(330)
+        panel.setFixedWidth(360)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(5)
         panel_layout.setContentsMargins(0, 0, 0, 0)

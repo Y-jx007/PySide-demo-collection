@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
         self.fractal_widget = FractalWidget()
 
         panel = QWidget()
-        panel.setFixedWidth(330)
+        panel.setFixedWidth(360)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(5)
         panel_layout.setContentsMargins(0, 0, 0, 0)
