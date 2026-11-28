@@ -1,6 +1,8 @@
+import threading
+
 from common.qt_base import (ColorButton, QColor, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout,
-                            QGroupBox, QHBoxLayout, QLabel, QLineEdit, QLineF, QMainWindow, QMessageBox, QPainter,
-                            QPen, QPixmap, QPushButton, QRectF, QSpinBox, QTextEdit, QThread, QVBoxLayout, QWidget,
+                            QGroupBox, QHBoxLayout, QLabel, QLineEdit, QLineF, QMainWindow, QMessageBox, QObject,
+                            QPainter, QPen, QPixmap, QPushButton, QRectF, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
                             Signal, SquareContainer, math, run_app, time)
 from common.numpy_base import (np)
 from array import array
@@ -24,8 +26,9 @@ class LSystem:
     def add_rule(self, predecessor, successor):
         self.rules[predecessor] = successor
 
-    def generate(self, generations=None, deadline=None, max_chars=None):
-        """返回 (字符串, 截断原因)。原因：None / 'time' / 'size'。"""
+    def generate(self, generations=None, deadline=None, max_chars=None,
+                 cancelled=None):
+        """返回 (字符串, 截断原因)。原因：None / 'time' / 'size' / 'cancel'。"""
         if generations is None:
             generations = self.generations
         if deadline is None:
@@ -35,6 +38,9 @@ class LSystem:
         reason = None
         rules = self.rules
         for _ in range(generations):
+            if cancelled is not None and cancelled():
+                reason = 'cancel'
+                break
             if time.perf_counter() > deadline:
                 reason = 'time'
                 break
@@ -47,9 +53,13 @@ class LSystem:
                 if total > cap:
                     reason = 'size'
                     break
-                if (i & 0x3FFFF) == 0 and time.perf_counter() > deadline:
-                    reason = 'time'
-                    break
+                if (i & 0xFFF) == 0:
+                    if cancelled is not None and cancelled():
+                        reason = 'cancel'
+                        break
+                    if time.perf_counter() > deadline:
+                        reason = 'time'
+                        break
             result = ''.join(parts)
             if reason:
                 break
@@ -61,16 +71,23 @@ class LSystem:
         self.generations = generations
 
 # ========== 后台生成线程 ==========
-class LSystemGenerator(QThread):
-    """在后台计算 L-system 路径，避免阻塞 GUI"""
-    pathReady = Signal(object)   # dict: path/bbox/chars/truncated/elapsed
+class _LSystemSignals(QObject):
+    pathReady = Signal(object)
 
 
-    def __init__(self, lsystem, start_x, start_y, parent=None):
-        super().__init__(parent)
+class LSystemGenerator(threading.Thread):
+    """在后台计算 L-system 路径，避免阻塞 GUI。
+
+    Python thread rather than QThread: a QThread destroyed during Qt teardown
+    can abort the process (0xC0000409) even after ``wait()``.
+    """
+
+    def __init__(self, lsystem, start_x, start_y, signals):
+        super().__init__(daemon=True)
         self.lsystem = lsystem
         self.start_x = start_x
         self.start_y = start_y
+        self.signals = signals
         self._cancelled = False
 
     def cancel(self):
@@ -79,7 +96,8 @@ class LSystemGenerator(QThread):
     def run(self):
         t0 = time.perf_counter()
         deadline = t0 + self.lsystem.TIME_BUDGET
-        string, reason = self.lsystem.generate(deadline=deadline)
+        string, reason = self.lsystem.generate(
+            deadline=deadline, cancelled=lambda: self._cancelled)
         if self._cancelled:
             return
 
@@ -133,7 +151,7 @@ class LSystemGenerator(QThread):
                     x, y, dx, dy = stack.pop()
 
         path = np.frombuffer(buf, dtype=np.float32).reshape(-1, 4).copy()
-        self.pathReady.emit({
+        self.signals.pathReady.emit({
             "path": path,
             "bbox": (min_x, min_y, max_x, max_y),
             "chars": len(string),
@@ -163,32 +181,42 @@ class LSystemWidget(QWidget):
 
         self.setMinimumSize(400, 400)
         self._generator = None          # 当前后台线程
+        self._signals = _LSystemSignals(self)
+        self._signals.pathReady.connect(self._on_path_ready)
+        self._closing = False
 
     def set_lsystem(self, lsystem):
         """设置新的 L-system 并启动后台生成"""
-        if self._generator and self._generator.isRunning():
+        if self._generator and self._generator.is_alive():
             self._generator.cancel()
-            self._generator.wait(2000)
+            self._generator.join()
+        self._generator = None
         self.lsystem = lsystem
         self._start_background_generation()
 
     def shutdown(self):
         """窗口关闭时停止后台生成线程。"""
-        if self._generator and self._generator.isRunning():
+        self._closing = True
+        try:
+            self._signals.pathReady.disconnect(self._on_path_ready)
+        except (RuntimeError, TypeError):
+            pass
+        if self._generator and self._generator.is_alive():
             self._generator.cancel()
-            self._generator.wait(2000)
-
+            self._generator.join()
+        self._generator = None
     def _start_background_generation(self):
         """启动后台线程计算路径"""
         # 起点设置为画布中心底部（与原始逻辑一致）
         start_x = self.width() / 2.0
         start_y = self.height() - 50.0
-        self._generator = LSystemGenerator(self.lsystem, start_x, start_y)
-        self._generator.pathReady.connect(self._on_path_ready)
+        self._generator = LSystemGenerator(self.lsystem, start_x, start_y, self._signals)
         self._generator.start()
 
     def _on_path_ready(self, result):
         """后台计算完成，更新路径并重绘"""
+        if self._closing:
+            return
         path = result["path"]
         min_x, min_y, max_x, max_y = result["bbox"]
         self.path = path
@@ -321,7 +349,7 @@ class LSystemWindow(QMainWindow):
         main_layout.setSpacing(8)
 
         panel = QWidget()
-        panel.setFixedWidth(360)
+        panel.setFixedWidth(400)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(5)
         panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -546,4 +574,12 @@ class LSystemWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_app(LSystemWindow))
+    code = run_app(LSystemWindow)
+    # Qt/Python 3.14 can abort during interpreter teardown after the window
+    # has closed (0xC0000409).  All app state has already been shut down by
+    # closeEvent, so skip the fragile destructor path and exit cleanly.
+    import os
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(code))

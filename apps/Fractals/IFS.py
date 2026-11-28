@@ -1,6 +1,8 @@
+import threading
+
 from common.qt_base import (ColorButton, QColor, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QImage,
-                            QLabel, QMainWindow, QMessageBox, QPainter, QPixmap, QPushButton, QSpinBox, QTextEdit,
-                            QThread, QVBoxLayout, QWidget, Qt, Signal, SquareContainer, run_app, time)
+                            QLabel, QMainWindow, QMessageBox, QObject, QPainter, QPixmap, QPushButton, QSpinBox,
+                            QTextEdit, QVBoxLayout, QWidget, Qt, Signal, SquareContainer, run_app, time)
 from common.numpy_base import (np)
 
 # 经典 IFS 分形数据
@@ -75,15 +77,19 @@ def generate_ifs_points(transforms, probabilities, iterations, cancel_flag):
 
 
 
-class FractalWorker(QThread):
-    # 注意：不能叫 finished，否则会覆盖 QThread 自带的 finished 信号
-    resultReady = Signal(np.ndarray, float)   # 点集, 耗时(秒)
+class _FractalSignals(QObject):
+    resultReady = Signal(object, float)
 
-    def __init__(self, transforms, probabilities, iterations):
-        super().__init__()
+
+class FractalWorker(threading.Thread):
+    """Background chaos-game worker (Python thread, not QThread)."""
+
+    def __init__(self, transforms, probabilities, iterations, signals):
+        super().__init__(daemon=True)
         self.transforms = transforms
         self.probabilities = probabilities
         self.iterations = iterations
+        self.signals = signals
         self._cancel = np.zeros(1, dtype=np.int32)
 
     def cancel(self):
@@ -102,7 +108,7 @@ class FractalWorker(QThread):
         points = generate_ifs_points(transforms_np, probs_np, self.iterations, self._cancel)
         elapsed = time.perf_counter() - t0
         if not self._cancel[0]:
-            self.resultReady.emit(points, elapsed)
+            self.signals.resultReady.emit(points, elapsed)
 
 
 class FractalWidget(QWidget):
@@ -241,6 +247,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1000, 720)
         self.setGeometry(100, 100, 1000, 720)
         self.worker = None
+        self._signals = _FractalSignals(self)
+        self._signals.resultReady.connect(self.on_fractal_generated)
+        self._closing = False
 
         self.color_start = QColor(218, 247, 166)
         self.color_end = QColor(34, 139, 34)
@@ -259,7 +268,7 @@ class MainWindow(QMainWindow):
         self.fractal_widget = FractalWidget()
 
         panel = QWidget()
-        panel.setFixedWidth(360)
+        panel.setFixedWidth(400)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setSpacing(5)
         panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -381,7 +390,7 @@ class MainWindow(QMainWindow):
         self.fractal_widget.set_background(color)
 
     def generate_fractal(self):
-        if self.worker and self.worker.isRunning():
+        if self.worker and self.worker.is_alive():
             self.lbl_status.setText("上一次生成还没结束")
             return
         text = self.transform_edit.toPlainText().strip()
@@ -414,12 +423,14 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(msg + "）")
         self.generate_btn.setEnabled(False)
 
-        self.worker = FractalWorker(transforms, probabilities, self.iterations_spin.value())
-        self.worker.resultReady.connect(self.on_fractal_generated)
+        self.worker = FractalWorker(transforms, probabilities,
+                                    self.iterations_spin.value(), self._signals)
         self._transforms = len(transforms)
         self.worker.start()
 
     def on_fractal_generated(self, points, elapsed):
+        if self._closing:
+            return
         self.fractal_widget.set_points(points)
         self.fractal_widget.set_colors(self.color_start, self.color_end)
         self.generate_btn.setEnabled(True)
@@ -428,9 +439,18 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("完成")
 
     def closeEvent(self, event):
-        if self.worker and self.worker.isRunning():
+        self._closing = True
+        try:
+            self._signals.resultReady.disconnect(self.on_fractal_generated)
+        except (RuntimeError, TypeError):
+            pass
+        if self.worker is not None:
             self.worker.cancel()
-            self.worker.wait(3000)
+            # Python threads don't have QThread's native destructor abort,
+            # but still join so a late result cannot target a closed window.
+            if self.worker.is_alive():
+                self.worker.join()
+        self.worker = None
         super().closeEvent(event)
 
     def save_fractal(self):
@@ -450,4 +470,11 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_app(MainWindow))
+    code = run_app(MainWindow)
+    # Qt/Python 3.14 can abort during interpreter teardown after the window
+    # has closed (0xC0000409).  Worker shutdown already happened in closeEvent.
+    import os
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(code))
