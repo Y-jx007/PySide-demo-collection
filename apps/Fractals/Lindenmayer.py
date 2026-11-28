@@ -230,15 +230,23 @@ class LSystemWidget(QWidget):
         painter.fillRect(self.rect(), self.bg_color)
         if self.path.shape[0] == 0:
             return
-        if self._pixmap is None or self._pixmap.size() != self.size():
+        if self._pixmap is None:
             self._pixmap = self._render_pixmap()
         painter.drawPixmap(0, 0, self._pixmap)
 
     def _render_pixmap(self):
-        pm = QPixmap(self.size())
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        w = max(1, int(round(self.width() * dpr)))
+        h = max(1, int(round(self.height() * dpr)))
+        pm = QPixmap(w, h)
+        pm.setDevicePixelRatio(dpr)
         pm.fill(self.bg_color)
         painter = QPainter(pm)
-        # 不开抗锯齿：纯像素线条，粗细与深浅都均匀
+        painter.scale(dpr, dpr)
+        # AA is affordable for normal L-systems; very large strings disable it
+        # to keep the first frame responsive.
+        if self.path.shape[0] <= 200_000:
+            painter.setRenderHint(QPainter.Antialiasing, True)
         self._draw_path(painter)
         painter.end()
         return pm
@@ -309,7 +317,6 @@ class LSystemWindow(QMainWindow):
         panel_layout.setContentsMargins(0, 0, 0, 0)
 
         self.create_system_parameters_section(panel_layout)
-        self.create_colors_section(panel_layout)
         self.create_rules_section(panel_layout)
         self.create_bottom_section(panel_layout)
 
@@ -324,7 +331,7 @@ class LSystemWindow(QMainWindow):
         bar.addWidget(self.lbl_status)
 
     def create_system_parameters_section(self, layout):
-        group = QGroupBox("系统与参数")
+        group = QGroupBox("参数")
         grid = QGridLayout(group)
         grid.setContentsMargins(10, 8, 10, 8)
         grid.setHorizontalSpacing(8)
@@ -357,27 +364,30 @@ class LSystemWindow(QMainWindow):
         self.distance_spin.setFixedWidth(62)
         grid.addWidget(QLabel("步长"), 2, 0)
         grid.addWidget(self.distance_spin, 2, 1)
-        grid.setColumnStretch(3, 1)
-        layout.addWidget(group)
 
-    def create_colors_section(self, layout):
-        group = QGroupBox("颜色")
-        hbox = QHBoxLayout(group)
-        hbox.setSpacing(6)
-        hbox.setContentsMargins(10, 8, 10, 8)
-        hbox.addWidget(QLabel("起始"))
+        colors = QWidget()
+        color_row = QHBoxLayout(colors)
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(6)
         self.start_color_btn = ColorButton(self.canvas.start_color)
+        self.start_color_btn.setFixedSize(22, 22)
         self.start_color_btn.colorChanged.connect(self.on_start_color_changed)
-        hbox.addWidget(self.start_color_btn)
-        hbox.addWidget(QLabel("结束"))
         self.end_color_btn = ColorButton(self.canvas.end_color)
+        self.end_color_btn.setFixedSize(22, 22)
         self.end_color_btn.colorChanged.connect(self.on_end_color_changed)
-        hbox.addWidget(self.end_color_btn)
-        hbox.addWidget(QLabel("背景"))
         self.bg_color_btn = ColorButton(self.canvas.bg_color)
+        self.bg_color_btn.setFixedSize(22, 22)
         self.bg_color_btn.colorChanged.connect(self.on_bg_color_changed)
-        hbox.addWidget(self.bg_color_btn)
-        hbox.addStretch()
+        color_row.addWidget(self.start_color_btn)
+        color_row.addWidget(QLabel("→"))
+        color_row.addWidget(self.end_color_btn)
+        color_row.addSpacing(6)
+        color_row.addWidget(QLabel("背景"))
+        color_row.addWidget(self.bg_color_btn)
+        color_row.addStretch(1)
+        grid.addWidget(QLabel("颜色"), 2, 2)
+        grid.addWidget(colors, 2, 3)
+        grid.setColumnStretch(3, 1)
         layout.addWidget(group)
 
     def create_rules_section(self, layout):
